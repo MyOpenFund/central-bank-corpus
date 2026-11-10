@@ -28,6 +28,13 @@ class Config:
     download_timeout: float = 90.0  # TOTAL deadline for a body download (defeats
                                     # slow-trickle hosts that never trip `timeout`)
     max_retries: int = 3
+    # HTTP 4xx statuses Fetcher.get/get_bytes still RETRY (with backoff). Any other
+    # 4xx fails at once: a 404/410 will not heal in 7 s, and retrying it only burns
+    # backoff (issue #30). 403 stays retried (anti-bot blocks can be transient),
+    # 408/429 are transient by definition. () = never retry a 4xx. Entries must
+    # be 4xx codes (400-499): 5xx are always retried, so listing one would
+    # silently do nothing -> rejected with a ValueError.
+    retry_http_4xx: tuple[int, ...] = (403, 408, 429)
     # No robots.txt enforcement. No domain guard. We scrape whatever the
     # discovery layer hands us.
     prefer_pdf: bool = True
@@ -36,6 +43,27 @@ class Config:
     # When True, text/html responses are rendered to PDF via headless Chrome
     # so the on-disk corpus stays uniformly PDF for downstream ingestion.
     html_to_pdf: bool = True
+
+    def __post_init__(self) -> None:
+        # Normalize retry_http_4xx (a list from a caller is fine) and reject
+        # anything that is not an iterable of ints, with a clear message.
+        raw = self.retry_http_4xx
+        try:
+            codes = tuple(raw)
+        except TypeError:
+            raise ValueError(
+                f"Config.retry_http_4xx must be an iterable of int HTTP status "
+                f"codes, got {raw!r}") from None
+        if any(isinstance(c, bool) or not isinstance(c, int) for c in codes):
+            raise ValueError(
+                f"Config.retry_http_4xx must contain only int HTTP status codes, "
+                f"got {raw!r}")
+        outside = [c for c in codes if not 400 <= c <= 499]
+        if outside:
+            raise ValueError(
+                f"Config.retry_http_4xx must contain only 4xx codes (400-499), "
+                f"got {outside!r} in {raw!r}")
+        self.retry_http_4xx = codes
 
     @property
     def raw_dir(self) -> Path:

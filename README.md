@@ -61,7 +61,9 @@ no machine-translated or model-generated text.
 - **Completeness matrix** (`completeness.py`) → expected-vs-downloaded per (bank × type × year):
   `ok / partial / missing / unknown`.
 - **Fetcher** (`http.py`) → per-host rate limit (0.5s default) + retries with exponential
-  backoff. Deliberately **not** robots-gated; set your own contact via the
+  backoff (5xx and network errors). A 4xx is retried only if listed in
+  `Config.retry_http_4xx` (default 403/408/429); any other 4xx (404, 410, …) fails at once
+  without backoff. Deliberately **not** robots-gated; set your own contact via the
   `CRAWLER_CONTACT` env var (defaults to this repo's URL).
 - **Reproducible rebuild** (`pipeline.py`) → idempotent re-runs; `run(..., max_rounds=N)`
   re-crawls until a clean round (no new docs, no errors); discovery failures are logged to
@@ -83,7 +85,11 @@ python3.13 -m pytest -q
 Every work command (`discover`, `bis-sitemap`, `repec`) appends a structured
 run-report line to `data/runs.jsonl` (run id, per-source counters, fetch
 errors, an explicit `truncated` flag) and exits honestly: `0` clean, `1`
-fatal, `3` degraded — a run that did no useful work never exits 0. The NAS
+fatal, `3` degraded — a run that did no useful work never exits 0. An HTTP 404
+on an IDEAS listing page after the last one (not linked from the previous page)
+ends the RePEc walk cleanly (no truncation; the run can still be degraded for
+other reasons); a 404 on page 1, or on a page the previous one links to, stays a
+truncation (`3`). The NAS
 wrapper pushes an ntfy notification on non-zero exits when `NTFY_URL` is set
 (absent = no-op).
 

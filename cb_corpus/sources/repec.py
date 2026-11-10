@@ -17,12 +17,12 @@ import re
 import sys
 from datetime import date
 from typing import Callable, Iterator, Optional
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 from bs4 import BeautifulSoup
 
 from ..banks import get_bank
-from ..http import Fetcher, host_matches
+from ..http import Fetcher, host_matches, http_status
 from ..models import DocRecord
 from ..runreport import SourceStats
 from ..taxonomy import DocType
@@ -57,6 +57,47 @@ def parse_series_page(html: str, base_url: str = IDEAS) -> list[str]:
                 and href.endswith(".html"):
             urls.append(urljoin(base_url, href))
     return list(dict.fromkeys(urls))
+
+
+def links_to_listing_page(html: str, series: str, page: int) -> bool:
+    """True if a listing page links to `<series><page>.html` (IDEAS pagination bar).
+
+    Looks at any `<a href>` on the page, in any directory: the last path
+    segment is matched exactly and case-sensitively (IDEAS emits lowercase),
+    after dropping the query and fragment. So relative (`rbnkwp2.html`) and
+    absolute hrefs count, while share-button URLs that merely mention the file
+    in their query (`https://bsky.app/intent/compose?text=...rbnkwp2.html`) and
+    longer names (`rbnkwp23.html`) do not. Malformed hrefs that `urlsplit`
+    rejects are skipped. A page without any pagination bar -> False.
+    """
+    target = f"{series}{page}.html"
+    soup = BeautifulSoup(html, "lxml")
+    for a in soup.find_all("a", href=True):
+        try:
+            path = urlsplit(a["href"].strip()).path
+        except ValueError:  # e.g. "http://[bad/x.html" (invalid IPv6 netloc)
+            continue
+        if path.rsplit("/", 1)[-1] == target:
+            return True
+    return False
+
+
+def listing_error_truncation(exc: BaseException, page: int,
+                             prev_html: Optional[str],
+                             series: str) -> Optional[str]:
+    """Classify a listing-page fetch error (issue #30).
+
+    Returns None for a CLEAN end of walk: an HTTP 404 (status read from `exc`
+    or its __cause__/__context__ chain) on page > 1 that page - 1 does not
+    advertise -- IDEAS answers 404 on the page after the last one. Otherwise
+    returns the truncation sample to record: a 404 on page 1, a 404 on a page
+    that page - 1 links to, and any non-404 / non-HTTP error.
+    """
+    if http_status(exc) == 404 and page > 1 and prev_html is not None:
+        if not links_to_listing_page(prev_html, series, page):
+            return None
+        return f"page {page}: HTTP 404 although page {page - 1} links to it: {exc}"
+    return f"page {page}: {exc}"
 
 
 def extract_pdf(paper_html: str, bank_homepage: Optional[str] = None) -> Optional[str]:
@@ -141,24 +182,31 @@ class RePEcDiscovery:
 
         IDEAS caps a series listing at ~200 items per page; older papers live
         on numbered pages (`<handle>2.html`, ...). Pages are yielded newest
-        first; the walk ends when a page yields nothing new (last page repeats
-        / 404s) or the cap is hit.
+        first; the walk ends cleanly when a page yields nothing new, when the
+        cap is hit, or on an HTTP 404 for page k > 1 that page k-1 does not
+        link to (IDEAS answers 404 on the page after the last one; see
+        `listing_error_truncation`).
 
-        A page-FETCH FAILURE (network error, 5xx, ...) also ends the walk, but
-        with `stats` given it is recorded as `record_fetch_error(..., truncated=True)`
+        Any other page-FETCH FAILURE (404 on page 1, 404 on a page that page
+        k-1 advertises, network error, 5xx, ...) also ends the walk, but with
+        `stats` given it is recorded as `record_fetch_error(..., truncated=True)`
         first — this must never look like a clean "last page reached" in the
         run-report; it is a truncated listing, not a completed one.
         """
         base = f"{IDEAS}/s/{handle.replace(':', '/')}"
+        series = base.rsplit("/", 1)[-1]  # same name as the fetched URLs
         seen: set[str] = set()
+        prev_html: Optional[str] = None
         for page in range(1, self.max_pages + 1):
             url = f"{base}.html" if page == 1 else f"{base}{page}.html"
             try:
                 html = self.fetcher.get_text(url)
             except Exception as exc:
-                if stats is not None:
-                    stats.record_fetch_error(f"page {page}: {exc}", truncated=True)
+                msg = listing_error_truncation(exc, page, prev_html, series)
+                if msg is not None and stats is not None:
+                    stats.record_fetch_error(msg, truncated=True)
                 break
+            prev_html = html
             new = [u for u in parse_series_page(html) if u not in seen]
             if not new:
                 break
