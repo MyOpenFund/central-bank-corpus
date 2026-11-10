@@ -42,6 +42,22 @@ class Config:
     # so the on-disk corpus stays uniformly PDF for downstream ingestion.
     html_to_pdf: bool = True
 
+    def __post_init__(self) -> None:
+        # Normalize retry_http_4xx (a list from a caller is fine) and reject
+        # anything that is not an iterable of ints, with a clear message.
+        raw = self.retry_http_4xx
+        try:
+            codes = tuple(raw)
+        except TypeError:
+            raise ValueError(
+                f"Config.retry_http_4xx must be an iterable of int HTTP status "
+                f"codes, got {raw!r}") from None
+        if any(isinstance(c, bool) or not isinstance(c, int) for c in codes):
+            raise ValueError(
+                f"Config.retry_http_4xx must contain only int HTTP status codes, "
+                f"got {raw!r}")
+        self.retry_http_4xx = codes
+
     @property
     def raw_dir(self) -> Path:
         return self.data_dir / "raw"

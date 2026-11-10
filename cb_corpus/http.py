@@ -29,14 +29,31 @@ def host_matches(url: str, domain: str) -> bool:
 
 def http_status(exc: BaseException | None) -> int | None:
     """HTTP status carried by `exc` or its __cause__/__context__ chain, else None."""
+    # Walk BOTH links: `raise X from Y` inside `except HTTPError` puts Y on
+    # __cause__ and the HTTPError on __context__. Breadth-first, cycle-safe.
     seen: set[int] = set()
-    while exc is not None and id(exc) not in seen:
-        seen.add(id(exc))
-        code = getattr(getattr(exc, "response", None), "status_code", None)
+    queue: list[BaseException] = [exc] if exc is not None else []
+    while queue:
+        cur = queue.pop(0)
+        if id(cur) in seen:
+            continue
+        seen.add(id(cur))
+        code = getattr(getattr(cur, "response", None), "status_code", None)
         if isinstance(code, int):
             return code
-        exc = exc.__cause__ or exc.__context__
+        queue.extend(e for e in (cur.__cause__, cur.__context__) if e is not None)
     return None
+
+
+def _close_response(exc: BaseException) -> None:
+    """Release the connection held by an error response (best effort)."""
+    resp = getattr(exc, "response", None)
+    if resp is None:
+        return
+    try:
+        resp.close()
+    except Exception:  # noqa: BLE001 - closing is best effort
+        pass
 
 
 class Fetcher:
@@ -86,6 +103,7 @@ class Fetcher:
                 if code in (429, 403, 503):
                     print(f"!! HTTP {code} on {host} (attempt {attempt + 1}): {url}",
                           file=sys.stderr, flush=True)
+                _close_response(exc)
                 if self._fails_fast(code):
                     raise RuntimeError(
                         f"GET failed (HTTP {code}, not retried): {url}") from exc
@@ -131,6 +149,7 @@ class Fetcher:
                 if code in (429, 403, 503):
                     print(f"!! HTTP {code} on {host} (attempt {attempt + 1}): {url}",
                           file=sys.stderr, flush=True)
+                _close_response(exc)
                 if self._fails_fast(code):
                     raise RuntimeError(
                         f"GET bytes failed (HTTP {code}, not retried): {url}") from exc

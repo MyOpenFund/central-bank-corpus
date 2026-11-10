@@ -61,7 +61,9 @@ no machine-translated or model-generated text.
 - **Completeness matrix** (`completeness.py`) → expected-vs-downloaded per (bank × type × year):
   `ok / partial / missing / unknown`.
 - **Fetcher** (`http.py`) → per-host rate limit (0.5s default) + retries with exponential
-  backoff. Deliberately **not** robots-gated; set your own contact via the
+  backoff (5xx and network errors). A 4xx is retried only if listed in
+  `Config.retry_http_4xx` (default 403/408/429); any other 4xx (404, 410, …) fails at once
+  without backoff. Deliberately **not** robots-gated; set your own contact via the
   `CRAWLER_CONTACT` env var (defaults to this repo's URL).
 - **Reproducible rebuild** (`pipeline.py`) → idempotent re-runs; `run(..., max_rounds=N)`
   re-crawls until a clean round (no new docs, no errors); discovery failures are logged to
