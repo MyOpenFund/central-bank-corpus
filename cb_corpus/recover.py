@@ -455,6 +455,8 @@ def _run_candidates_pass(cfg: Config, storage: Storage, fetcher: Fetcher,
             )
             if date_precision:
                 rec.date_precision = date_precision
+            elif rec_date is None:
+                rec.date_precision = None           # no date -> no precision
             if date_source:
                 rec.date_source = date_source
 
@@ -677,8 +679,12 @@ def run_recover_downloads(bank_codes: Optional[Iterable[str]] = None,
                     )
                     if date_precision:
                         rec.date_precision = date_precision
-                    if date_source:
-                        rec.date_source = date_source
+                    elif rec_date is None:
+                        rec.date_precision = None   # no date -> no precision
+                    # No repec date recovered -> the date metadata (possibly
+                    # none) comes from the wayback hunt, never the DocRecord
+                    # default "bank_site" (same rule as the candidates pass).
+                    rec.date_source = date_source or "wayback"
                     try:
                         # bypass_quarantine=True: this whole inventory comes FROM
                         # download_errors.jsonl, the same file that feeds the

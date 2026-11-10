@@ -172,8 +172,10 @@ def build_report(bank: str, fetcher: Fetcher,
             "old_date": row.get("date"),
             "new_date": new_date,
             # the native source's own precision (e.g. Fed papers without a confirmed
-            # day, or revisions outside the listing month, stay "month")
-            "date_precision": native.date_precision,
+            # day, or revisions outside the listing month, stay "month"); an
+            # undated native record keeps the row's date, so its precision too
+            "date_precision": (native.date_precision if native.date
+                               else row.get("date_precision")),
             "match_type": match_type,
             "old_url": row.get("pdf_url"),
             "native_url": native_url,

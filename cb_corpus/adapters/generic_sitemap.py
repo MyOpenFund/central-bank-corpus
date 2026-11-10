@@ -103,9 +103,14 @@ class GenericSitemapAdapter(BankAdapter):
             if since and d and d < since:
                 continue
             mime = "application/pdf" if url.lower().endswith(".pdf") else "text/html"
+            # A sitemap <lastmod> is the page's last MODIFICATION day, not its
+            # publication date: label it as such so date quality stays
+            # auditable. A date read from the URL is the bank's own.
             yield DocRecord(
                 bank_code=self.bank.code, doc_type=doc_type,
                 title=url.rsplit("/", 1)[-1], pdf_url=url,
                 source_url=self.sitemap_url, date=d,
                 provenance="bank_site", mime_type=mime,
+                date_precision="day" if d else None,
+                date_source="sitemap_lastmod" if lastmod else "bank_site",
             )

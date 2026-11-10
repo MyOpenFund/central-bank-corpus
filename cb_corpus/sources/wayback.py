@@ -115,4 +115,6 @@ class WaybackSource(Source):
                 bank_code=self.bank_code, doc_type=self.doc_type, title=title,
                 pdf_url=original, alt_urls=[raw_url(original, ts)], date=d,
                 provenance="wayback", mime_type="application/pdf",
+                # Only the year in the archived URL is known (or nothing).
+                date_precision="year" if d else None, date_source="wayback",
             )

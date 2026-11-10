@@ -360,8 +360,10 @@ def test_metadata_refresh_falls_back_to_audit_fields_on_fetch_failure(tmp_path):
     row = rows[0]
     assert row["title"] == "Titre venant de l'audit"   # fallback to the audit line
     assert row["date"] is None                          # undated -- mirrors WaybackSource
-    assert row["date_precision"] == "day"               # DocRecord default, left untouched
-    assert row["date_source"] == "bank_site"            # DocRecord default, left untouched
+    # Undated wayback recovery: no precision, and the (absent) date is
+    # attributed to the wayback hunt, never the "bank_site" default (B2).
+    assert row["date_precision"] is None
+    assert row["date_source"] == "wayback"
 
 
 # --- --download: fallback chain + recovered accounting ---------------------

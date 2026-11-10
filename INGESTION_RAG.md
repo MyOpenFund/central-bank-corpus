@@ -36,8 +36,8 @@ Fields useful for ingestion:
 | `title` | chunk title / display |
 | `pdf_url` | **citation** (official source) |
 | `language` | filter (all `en` today) |
-| `date_precision` | `day` / `month` / `year` when set (mostly working papers); absent = not recorded (older rows: do not assume a day) |
-| `date_source` | where the date comes from: `bank_site`, `pdf_meta`, `wayback`, `repec` (working papers) |
+| `date_precision` | `day` / `month` / `year` when set (mostly working papers); absent = not recorded (older rows: do not assume a day); `null` on newer undated rows |
+| `date_source` | where the date comes from: `bank_site`, `pdf_meta`, `wayback`, `repec` (working papers), `sitemap_lastmod` (a sitemap's last-modified day, not a publication date) |
 | `mime_type` | `application/pdf` or `text/html` (the HTML is the artifact when PDF rendering failed); rarely another official format |
 | `html_path` | the kept raw HTML next to a rendered PDF, when there is one |
 | `alt_urls` | other official URLs of the same document (dedup; also valid citations) |

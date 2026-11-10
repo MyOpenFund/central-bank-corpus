@@ -141,7 +141,7 @@ def discover_riksbank_wp(fetcher: Fetcher, since: Optional[date] = None,
                 bank_code="se", doc_type=DocType.D1,
                 title=title, pdf_url=pdf_url, source_url=LISTING,
                 date=d, provenance="bank_site", mime_type="application/pdf",
-                date_precision="day" if d else "month", date_source="bank_site",
+                date_precision="day" if d else None, date_source="bank_site",
             )
         if since and not page_has_fresh:
             break

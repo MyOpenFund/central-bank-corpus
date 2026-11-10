@@ -28,8 +28,11 @@ class DocRecord:
     # case — a native bank-site listing with an exact day. Producers that yield a
     # coarser/different date MUST set these explicitly (e.g. RePEc → month/repec,
     # a year-only listing → year). This makes date quality auditable per row.
-    date_precision: str = "day"        # day | month | year
-    date_source: str = "bank_site"     # bank_site | repec | wayback | pdf_meta | nep_bound | llm_crawl
+    # `date_precision` is None when there is no date at all (`date` is None).
+    # `sitemap_lastmod` = a sitemap <lastmod> (last modification day, not a
+    # publication date) used for lack of anything better.
+    date_precision: Optional[str] = "day"  # day | month | year | None (undated)
+    date_source: str = "bank_site"     # bank_site | repec | wayback | pdf_meta | nep_bound | llm_crawl | sitemap_lastmod
     # RePEc handle (e.g. "RePEc:ecb:ecbwps:20253117"), stamped by repec-check /
     # the v2 migration when a manifest row is matched to its IDEAS record. Empty
     # when unknown. Optional metadata only — never part of doc_id.

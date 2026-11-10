@@ -206,7 +206,7 @@ def discover_fed_wp(fetcher: Fetcher, since: Optional[date] = None,
                 elif cpd:
                     d, prec = cpd, ("day" if cpd.day != 1 else "month")
                 else:
-                    d, prec = None, "month"
+                    d, prec = None, None     # no date -> no precision
                 if since and d and d < since:
                     continue
                 yield DocRecord(
