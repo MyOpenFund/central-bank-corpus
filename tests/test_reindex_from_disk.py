@@ -170,3 +170,60 @@ def test_duplicate_content_file_url_is_stamped_on_the_owner(tmp_path, monkeypatc
     assert rows[0]["pdf_url"] == SPEECH_URL
     assert rows[0]["alt_urls"] == [OTHER_URL]
     assert rows[0]["alt_source_urls"] == ["https://www.bis.org/review/r200220b.htm"]
+
+
+def test_native_reindex_flushes_duplicate_stamps(tmp_path, monkeypatch):
+    """reindex_native_from_disk drives storage.reindex() directly, so it must
+    flush the duplicate-content stamps itself (B1)."""
+    from cb_corpus.models import DocRecord
+    from cb_corpus.taxonomy import DocType
+
+    cfg = Config(data_dir=tmp_path)
+    recs = [DocRecord(bank_code="fr", doc_type=DocType.E1, title=n,
+                      pdf_url=f"https://www.banque-france.fr/{n}.pdf",
+                      source_url=f"https://www.banque-france.fr/{n}.html")
+            for n in ("a", "b")]
+    for r in recs:
+        p = tmp_path / "raw" / "fr" / "E1" / "0" / f"{r.doc_id}.pdf"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(PDF_BYTES)
+
+    class _Adapter:
+        errors: list = []
+
+        def discover_all(self, scope=None, since=None):
+            return iter(recs)
+    monkeypatch.setattr(pipeline, "get_adapter", lambda code, fetcher: _Adapter())
+
+    counts = pipeline.reindex_native_from_disk(bank_codes=["fr"], dry_run=False, config=cfg)
+    assert counts["reindexed"] == 1
+    rows = [json.loads(ln) for ln in
+            (tmp_path / "manifest" / "fr.jsonl").read_text().splitlines() if ln.strip()]
+    assert len(rows) == 1 and rows[0]["pdf_url"] == recs[0].pdf_url
+    assert rows[0]["alt_urls"] == [recs[1].pdf_url]
+    assert rows[0]["alt_source_urls"] == [recs[1].source_url]
+
+
+def test_reindex_flush_failure_never_replaces_the_original_exception(
+        tmp_path, monkeypatch, fetcher_factory, capsys):
+    """M4: the finally-flush in reindex_bis_from_disk warns on failure; the
+    exception that was already propagating is the one the caller sees."""
+    from cb_corpus.storage import Storage
+
+    cfg = Config(data_dir=tmp_path)
+    _seed_pdf(tmp_path, "de", 2020, _doc_id("de", SPEECH_URL))
+    _wire_sitemaps(monkeypatch, fetcher_factory)
+
+    def reindex(self, rec, path, dry_run=False):
+        self._pending_dups.append({"url": rec.pdf_url, "source_url": "",
+                                   "owner_doc_id": "x"})
+        raise RuntimeError("original failure")
+
+    def flush(self, dups, label):
+        raise ValueError("stamping broke")
+    monkeypatch.setattr(Storage, "reindex", reindex)
+    monkeypatch.setattr(Storage, "_flush", flush)
+    import pytest
+    with pytest.raises(RuntimeError, match="original failure"):
+        pipeline.reindex_bis_from_disk(dry_run=False, config=cfg)
+    assert "stamping broke" in capsys.readouterr().err

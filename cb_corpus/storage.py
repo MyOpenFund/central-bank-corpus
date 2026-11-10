@@ -413,6 +413,49 @@ def apply_row_updates(cfg: Config, updates: Mapping[str, dict]) -> int:
     return replaced
 
 
+def merge_rows_locked(cfg: Config, merges: Mapping[str, Mapping[str, object]]) -> int:
+    """Read-merge-write of manifest rows INSIDE each bank's sidecar lock.
+
+    `merges`: bank_code -> {doc_id: merge(row) -> bool}. Per bank, under the
+    lock (same discipline as apply_row_updates): re-read the file fresh, hand
+    each targeted row (a parsed dict) to its merge function, which mutates it
+    in place and returns True when it changed it; every other line is kept
+    VERBATIM. The file is rewritten (temp + os.replace) only when at least
+    one row changed. Because the row is re-read under the lock, a change made
+    to it by another writer after the caller's own snapshot is kept, not
+    reverted -- the difference with apply_row_updates, which writes whole
+    replacement rows built from a snapshot. Returns the number of rows
+    changed."""
+    migrate_legacy_layout(cfg)           # never let a legacy file shadow a write
+    changed_total = 0
+    for bank in sorted(merges):
+        bank_merges = merges[bank]
+        if not bank_merges:
+            continue
+        path = cfg.manifest_file(bank)
+        with _locked(path):
+            pairs = _read_rows_for_rewrite(path)
+            out: list[str] = []
+            changed = 0
+            for raw, did in pairs:
+                fn = bank_merges.get(did) if did else None
+                if fn is not None:
+                    row = json.loads(raw)
+                    if fn(row):
+                        out.append(json.dumps(row, ensure_ascii=False))
+                        changed += 1
+                        continue
+                out.append(raw)
+            if changed:
+                tmp = path.with_suffix(".jsonl.tmp")
+                with tmp.open("w") as fh:
+                    for line in out:
+                        fh.write(line + "\n")
+                os.replace(tmp, path)
+        changed_total += changed
+    return changed_total
+
+
 def _sweep_chrome_profiles(data_dir: Path, keep: Path) -> None:
     """Remove leftover per-PID Chrome profiles whose process is gone.
 
@@ -473,14 +516,14 @@ class Storage:
         self._ids: set[str] = set()
         self._urls: set[str] = set()
         self._source_urls: set[str] = set()
-        # Duplicate-content stamps queued by save()/reindex() (B1, grit wave
-        # 2026-11): owner doc_id -> ordered URLs to add to that row's
-        # `alt_urls` / `alt_source_urls`. Flushed in ONE locked rewrite by
-        # flush_duplicate_stamps() (end of save_many, in a finally). Ordered
-        # lists, not sets: alt_urls append order must not vary across runs.
-        self._pending_dup_stamps: dict[str, list[str]] = {}
-        self._pending_dup_sources: dict[str, list[str]] = {}
-        self._dup_count = 0
+        # doc_id -> bank_code of every indexed row (finds a duplicate's owner
+        # file without scanning every manifest).
+        self._bank_by_id: dict[str, str] = {}
+        # Duplicate-content records queued by save()/reindex() (B1, grit wave
+        # 2026-11), in arrival order (alt_urls append order must not vary
+        # across runs): {url, source_url, owner_doc_id}. Persisted on the
+        # owner row by flush_duplicate_stamps() (end of save_many, finally).
+        self._pending_dups: list[dict] = []
         # Chrome profile reused across every render in THIS process (a fresh
         # per-call temp profile is ~10x slower). Keyed by PID so multiple
         # concurrent download processes don't fight over one profile lock —
@@ -497,6 +540,7 @@ class Storage:
     def _load_existing(self) -> None:
         for rec in self.iter_manifest():
             self._ids.add(rec["doc_id"])
+            self._bank_by_id[rec["doc_id"]] = rec.get("bank_code") or "_unknown"
             if rec.get("sha256"):
                 self._hash_docid[rec["sha256"]] = rec["doc_id"]
             url = rec.get("pdf_url")
@@ -561,9 +605,94 @@ class Storage:
         """
         n = apply_row_updates(self.cfg, updates)
         self._ids.clear(); self._hash_docid.clear(); self._urls.clear()
-        self._source_urls.clear()
+        self._source_urls.clear(); self._bank_by_id.clear()
         self._load_existing()
         return n
+
+    def _bank_of(self, doc_ids: Iterable[str]) -> dict[str, str]:
+        """doc_id -> bank_code for already-indexed rows (the in-memory map,
+        falling back to one scan of every manifest for ids it lacks, e.g.
+        rows appended by another process)."""
+        out: dict[str, str] = {}
+        missing: set[str] = set()
+        for did in doc_ids:
+            bank = self._bank_by_id.get(did)
+            if bank:
+                out[did] = bank
+            else:
+                missing.add(did)
+        if missing:
+            for row in self.iter_manifest():
+                did = row.get("doc_id")
+                if did in missing:
+                    out[did] = row.get("bank_code") or "_unknown"
+                    self._bank_by_id[did] = out[did]
+        return out
+
+    def _merge_stamps(self, stamps: Mapping[str, Iterable[str]],
+                      source_stamps: Mapping[str, Iterable[str]],
+                      eligible=None) -> tuple[int, int, set[str]]:
+        """Add-only merge of `stamps` (into alt_urls) and `source_stamps`
+        (into alt_source_urls), INSIDE each owner bank's manifest lock
+        (merge_rows_locked): the owner row is re-read under the lock and
+        merged, so a concurrent change to it is never reverted. `eligible`
+        (row -> bool, optional) vetoes stamping a row. Comparisons use
+        normalize_url: a candidate equal (after normalisation) to the row's
+        pdf_url/alt_urls (or source_url/alt_source_urls) is not added.
+
+        Returns (urls_stamped, rows_modified, persisted_owner_ids) -- the
+        last being every owner row found AND eligible (its URLs are on the
+        row afterwards, whether newly added or already there)."""
+        owners = {d for d, u in stamps.items() if u} | {d for d, u in source_stamps.items() if u}
+        if not owners:
+            return (0, 0, set())
+        banks = self._bank_of(owners)
+        persisted: set[str] = set()
+        added: dict[str, int] = {}
+
+        def merger(did: str):
+            urls = list(stamps.get(did) or [])
+            srcs = list(source_stamps.get(did) or [])
+
+            def merge(row: dict) -> bool:
+                if eligible is not None and not eligible(row):
+                    return False
+                persisted.add(did)
+                n = 0
+                for field, own_key, cands in (("alt_urls", "pdf_url", urls),
+                                              ("alt_source_urls", "source_url", srcs)):
+                    current = list(row.get(field) or [])
+                    seen = {normalize_url(u) for u in current if u}
+                    if row.get(own_key):
+                        seen.add(normalize_url(row[own_key]))
+                    for url in cands:
+                        key = normalize_url(url) if url else ""
+                        if not url or key in seen:
+                            continue
+                        current.append(url)
+                        seen.add(key)
+                        n += 1
+                    if current != (row.get(field) or []):
+                        row[field] = current
+                if n:
+                    added[did] = n
+                return n > 0
+            return merge
+
+        by_bank: dict[str, dict] = {}
+        for did, bank in banks.items():
+            by_bank.setdefault(bank, {})[did] = merger(did)
+        merge_rows_locked(self.cfg, by_bank)
+        # Keep the in-memory indexes in step (add-only: no reload, which
+        # would drop this run's in-memory-only entries).
+        for did in persisted:
+            for u in stamps.get(did) or []:
+                if u:
+                    self._urls.add(normalize_url(u))
+            for u in source_stamps.get(did) or []:
+                if u:
+                    self._source_urls.add(normalize_url(u))
+        return (sum(added.values()), len(added), persisted)
 
     def stamp_alt_urls(self, stamps: Mapping[str, Iterable[str]],
                        source_stamps: Optional[Mapping[str, Iterable[str]]] = None,
@@ -575,111 +704,119 @@ class Storage:
         row gets stamped onto THAT row so `_skip_known_url`/`_is_converged`
         recognise it forever). For each row whose doc_id appears in
         `stamps`, every URL that is neither the row's own `pdf_url` nor
-        already present in its `alt_urls` is appended -- this only ADDS
-        alt_urls, never touches `pdf_url`/`doc_id` (dedup identity is never
-        rewritten). Unknown doc_ids are silently ignored (defensive; the
-        caller logs totals, this method doesn't need to explain a no-match).
+        already present in its `alt_urls` (compared after normalize_url) is
+        appended -- this only ADDS alt_urls, never touches `pdf_url`/`doc_id`
+        (dedup identity is never rewritten). Unknown doc_ids are silently
+        ignored (defensive; the caller logs totals).
 
         `source_stamps` (optional, same shape): source-page URLs to add to
         the row's optional `alt_source_urls` field, with the same add-only
-        semantics (a URL equal to the row's own `source_url` or already
-        listed is skipped; the field is only created when something is
-        added). Used by the duplicate-content bookkeeping of save_many (see
-        flush_duplicate_stamps) so `is_known_source_url` learns the source
-        page of a record whose bytes another row already owns.
+        semantics against `source_url`/`alt_source_urls`; the field is only
+        created when something is added. Used by the duplicate-content
+        bookkeeping (flush_duplicate_stamps) so `is_known_source_url`
+        learns the source page of a record whose bytes another row owns.
 
-        Rows are found across EVERY bank's manifest (the owner of a
-        duplicate may live in another bank's file); apply_row_updates
-        rewrites each row in its own bank file.
-
-        Only rows that actually changed are rewritten, in ONE
-        rewrite_manifest call (lock-protected keyed updates). Returns
-        (urls_stamped, rows_modified) -- urls_stamped counts alt_urls and
-        alt_source_urls additions together; (0, 0) means nothing changed and
-        no rewrite happened at all.
+        Rows may live in ANY bank's manifest (a duplicate's owner can be in
+        another bank's file). The merge happens under each bank's sidecar
+        lock on a fresh re-read of the owner row (merge_rows_locked), so a
+        concurrent change to that row is preserved, never reverted. A bank
+        file is only rewritten when one of its rows actually changed.
+        Returns (urls_stamped, rows_modified) -- urls_stamped counts
+        alt_urls and alt_source_urls additions together; (0, 0) = nothing
+        changed and nothing was rewritten.
         """
-        source_stamps = source_stamps or {}
-        if not stamps and not source_stamps:
-            return (0, 0)
-        updates: dict[str, dict] = {}
-        stamped = 0
-        for row in self.iter_manifest():
-            did = row.get("doc_id")
-            urls = stamps.get(did) or []
-            srcs = source_stamps.get(did) or []
-            if not urls and not srcs:
-                continue
-            changed = False
-            pdf_url = row.get("pdf_url")
-            alt_urls = list(row.get("alt_urls") or [])
-            for url in urls:
-                if not url or url == pdf_url or url in alt_urls:
-                    continue
-                alt_urls.append(url)
-                stamped += 1
-            if alt_urls != (row.get("alt_urls") or []):
-                row["alt_urls"] = alt_urls
-                changed = True
-            own_src = row.get("source_url")
-            alt_srcs = list(row.get("alt_source_urls") or [])
-            for url in srcs:
-                if not url or url == own_src or url in alt_srcs:
-                    continue
-                alt_srcs.append(url)
-                stamped += 1
-            if alt_srcs != (row.get("alt_source_urls") or []):
-                row["alt_source_urls"] = alt_srcs
-                changed = True
-            if changed:
-                updates[row["doc_id"]] = row
-        if stamped == 0:
-            return (0, 0)
-        self.rewrite_manifest(updates)
-        return (stamped, len(updates))
+        urls, rows, _ = self._merge_stamps(stamps, source_stamps or {})
+        return (urls, rows)
 
     def _note_duplicate(self, rec: DocRecord, owner_doc_id: str) -> None:
         """Remember a `skip:duplicate-content` record (B1, grit wave 2026-11).
 
         Without this, a URL whose bytes another row already owns is
         re-downloaded every night just to be discarded again. Its `pdf_url`
-        (and `source_url`) are added to the in-memory indexes at once, and
-        queued for stamping onto the OWNER row (`alt_urls` /
-        `alt_source_urls`) by flush_duplicate_stamps(). Accepted side
-        effect: the stamped URL becomes a fallback download URL for the
-        owner row. Never called in dry run (save()/reindex() return before
-        any duplicate detection there)."""
-        self._dup_count += 1
+        (and `source_url`) are added to the in-memory indexes at once (this
+        run never fetches it again), and queued for flush_duplicate_stamps(),
+        which persists them on the OWNER row (`alt_urls` / `alt_source_urls`)
+        only when that row is a PDF -- see Config.stamp_duplicate_html.
+        Accepted side effect of a persisted stamp: the URL becomes a fallback
+        download URL for the owner row. Never called in dry run
+        (save()/reindex() return before any duplicate detection there)."""
         self._urls.add(normalize_url(rec.pdf_url))
-        bucket = self._pending_dup_stamps.setdefault(owner_doc_id, [])
-        if rec.pdf_url and rec.pdf_url not in bucket:
-            bucket.append(rec.pdf_url)
         if rec.source_url:
             self._source_urls.add(normalize_url(rec.source_url))
-            sbucket = self._pending_dup_sources.setdefault(owner_doc_id, [])
-            if rec.source_url not in sbucket:
-                sbucket.append(rec.source_url)
+        self._pending_dups.append({"url": rec.pdf_url, "source_url": rec.source_url or "",
+                                   "owner_doc_id": owner_doc_id})
 
-    def flush_duplicate_stamps(self, label: str = "") -> tuple[int, int, int]:
-        """Write the queued duplicate-content stamps in ONE locked rewrite
-        (stamp_alt_urls, add-only) and print one stderr line
-        `[label] duplicate-content: N (stamped U urls on R rows)` when any
-        duplicate was seen since the last flush. Clears the queue and the
-        counter. Returns (duplicates, urls_stamped, rows_modified).
+    def discard_duplicate_stamps(self) -> int:
+        """Drop the queued duplicate-content stamps without writing anything
+        (dry runs; callers that must not persist). The in-memory index
+        entries stay for this run. Returns how many were dropped."""
+        n = len(self._pending_dups)
+        self._pending_dups = []
+        return n
 
-        Called by save_many() in a finally; callers driving save()/reindex()
-        directly (the reindex_* entry points) call it themselves."""
-        n = self._dup_count
-        stamps, sources = self._pending_dup_stamps, self._pending_dup_sources
-        self._pending_dup_stamps, self._pending_dup_sources = {}, {}
-        self._dup_count = 0
-        urls = rows = 0
-        if stamps or sources:
-            urls, rows = self.stamp_alt_urls(stamps, source_stamps=sources)
-        if n:
-            prefix = f"[{label}] " if label else ""
-            print(f"{prefix}duplicate-content: {n} (stamped {urls} urls on {rows} rows)",
-                  file=sys.stderr, flush=True)
-        return (n, urls, rows)
+    def flush_duplicate_stamps(self, label: str = "", *, dry_run: bool = False,
+                               safe: bool = False) -> tuple[int, int, int]:
+        """Persist the queued duplicate-content stamps and report them.
+
+        Each queued duplicate is stamped onto its owner row (add-only, one
+        locked merge per bank, see _merge_stamps) ONLY if the owner's
+        `mime_type` is `application/pdf` -- or any owner when
+        `Config.stamp_duplicate_html` is True. An HTML (or other non-PDF)
+        owner keeps the URL in this run's in-memory indexes only, so it is
+        retried next night as before (an HTML page can change while keeping
+        identical bytes today). Every duplicate is logged as one JSON line in
+        `<data_dir>/reports/duplicate_stamps.jsonl` (ts, url, source_url,
+        owner_doc_id, owner_bank, label, persisted). One stderr line
+        `[label] duplicate-content: N (stamped U urls on R rows)` when N > 0.
+        The queue is cleared in every case (also on failure). Returns
+        (duplicates, urls_stamped, rows_modified).
+
+        `dry_run`: nothing is written, the queue is just discarded.
+        `safe`: a failure while stamping is printed as a WARNING instead of
+        raised -- for `finally` blocks, so it never replaces the caller's
+        own exception. Called by save_many(); callers driving save()/
+        reindex() directly (reindex_*, recover.py) call it themselves."""
+        dups, self._pending_dups = self._pending_dups, []
+        if dry_run or not dups:
+            return (len(dups) if not dry_run else 0, 0, 0)
+        try:
+            return self._flush(dups, label)
+        except Exception as exc:
+            if not safe:
+                raise
+            print(f"[storage] WARNING: duplicate-content stamping failed: "
+                  f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+            return (len(dups), 0, 0)
+
+    def _flush(self, dups: list[dict], label: str) -> tuple[int, int, int]:
+        stamps: dict[str, list[str]] = {}
+        sources: dict[str, list[str]] = {}
+        for d in dups:
+            for bucket, url in ((stamps, d["url"]), (sources, d["source_url"])):
+                if url:
+                    lst = bucket.setdefault(d["owner_doc_id"], [])
+                    if url not in lst:
+                        lst.append(url)
+        allow_html = self.cfg.stamp_duplicate_html
+        eligible = None if allow_html else (
+            lambda row: (row.get("mime_type") or "").lower() == "application/pdf")
+        urls, rows, persisted = self._merge_stamps(stamps, sources, eligible)
+        banks = self._bank_of({d["owner_doc_id"] for d in dups})
+        ts = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
+        log = self.cfg.reports_dir / "duplicate_stamps.jsonl"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with log.open("a") as fh:
+            for d in dups:
+                fh.write(json.dumps({
+                    "ts": ts, "url": d["url"], "source_url": d["source_url"],
+                    "owner_doc_id": d["owner_doc_id"],
+                    "owner_bank": banks.get(d["owner_doc_id"], ""),
+                    "label": label, "persisted": d["owner_doc_id"] in persisted,
+                }, ensure_ascii=False) + "\n")
+        prefix = f"[{label}] " if label else ""
+        print(f"{prefix}duplicate-content: {len(dups)} (stamped {urls} urls on {rows} rows)",
+              file=sys.stderr, flush=True)
+        return (len(dups), urls, rows)
 
     # -- paths -----------------------------------------------------------
     def target_path(self, rec: DocRecord) -> Path:
@@ -795,6 +932,7 @@ class Storage:
         rec.local_path = str(path)
         self._ids.add(rec.doc_id)
         self._hash_docid[digest] = rec.doc_id
+        self._bank_by_id[rec.doc_id] = rec.bank_code
         self._urls.add(normalize_url(rec.pdf_url))
         if rec.source_url:
             self._source_urls.add(normalize_url(rec.source_url))
@@ -836,6 +974,7 @@ class Storage:
         rec.local_path = str(path)
         self._ids.add(rec.doc_id)
         self._hash_docid[digest] = rec.doc_id
+        self._bank_by_id[rec.doc_id] = rec.bank_code
         self._urls.add(normalize_url(rec.pdf_url))
         if rec.source_url:
             self._source_urls.add(normalize_url(rec.source_url))
@@ -880,11 +1019,15 @@ class Storage:
         cumulative total across every batch run so far).
 
         Duplicate-content records seen during the batch are stamped onto the
-        rows that own their content (flush_duplicate_stamps), in a finally so
-        a record iterator that raises mid-batch still persists what was
-        learnt; one `duplicate-content: N` stderr line when N > 0."""
+        rows that own their content (flush_duplicate_stamps: PDF owners only
+        by default), in a finally so a record iterator that raises mid-batch
+        still persists what was learnt; a stamping failure there is only a
+        WARNING (never masks the batch). Never written in dry run. One
+        `duplicate-content: N` line, and one `render refused: N` line, on
+        stderr when N > 0 for this batch."""
         counts: dict[str, int] = {}
         total = 0
+        refused_before = self.render_refused
         try:
             for rec in recs:
                 try:
@@ -902,11 +1045,14 @@ class Storage:
                     prefix = f"[{label}] " if label else ""
                     print(f"{prefix}processed {total} ({dict(counts)})", file=sys.stderr, flush=True)
         finally:
-            try:
-                self.flush_duplicate_stamps(label)
-            except Exception as exc:  # never mask the batch's own outcome
-                print(f"[storage] WARNING: duplicate-content stamping failed: "
-                      f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+            # safe=True: a stamping failure is a WARNING, never a replacement
+            # for the batch's own exception (or its return value).
+            self.flush_duplicate_stamps(label, dry_run=dry_run, safe=True)
+        refused = self.render_refused - refused_before
+        if refused:
+            prefix = f"[{label}] " if label else ""
+            print(f"{prefix}render refused: {refused} (private-network URL(s), HTML kept)",
+                  file=sys.stderr, flush=True)
         summary = self.quarantine.summary_line()
         if summary:
             print(summary, file=sys.stderr, flush=True)

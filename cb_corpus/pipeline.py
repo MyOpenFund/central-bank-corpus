@@ -286,7 +286,7 @@ def reindex_native_from_disk(bank_codes: Optional[Iterable[str]] = None,
             disc_errors.extend(getattr(adapter, "errors", []))
     finally:
         # Duplicate-content files: remember their URL on the owning row (B1).
-        storage.flush_duplicate_stamps("reindex(native)")
+        storage.flush_duplicate_stamps("reindex(native)", dry_run=dry_run, safe=True)
     _record_discovery_errors(cfg, disc_errors)
     counts["unmatched"] = len(missing)
     print(f"reindex(native): matched={counts['matched']} "
@@ -402,7 +402,7 @@ def reindex_bis_from_disk(only_banks: Optional[set[str]] = None,
                     break
     finally:
         # Duplicate-content files: remember their URL on the owning row (B1).
-        storage.flush_duplicate_stamps("reindex(bis)")
+        storage.flush_duplicate_stamps("reindex(bis)", dry_run=dry_run, safe=True)
 
     counts["unmatched"] = sum(len(b) for b in missing_by_year.values())
     print(f"reindex: matched={counts['matched']} "

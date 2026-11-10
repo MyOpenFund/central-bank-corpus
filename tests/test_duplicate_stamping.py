@@ -92,7 +92,7 @@ def test_dry_run_writes_nothing(tmp_path):
     counts = st.save_many([_rec("dup", source="https://s/d")], dry_run=True)
     assert counts == {"dry-run": 1}
     assert st.cfg.manifest_file("fr").read_bytes() == before
-    assert st._pending_dup_stamps == {} and st._pending_dup_sources == {}
+    assert st._pending_dups == []
 
 
 def test_flush_survives_exception_mid_iteration(tmp_path):
@@ -107,7 +107,7 @@ def test_flush_survives_exception_mid_iteration(tmp_path):
     with pytest.raises(RuntimeError, match="discovery crashed"):
         st.save_many(recs(), label="fr")
     assert _row(st.cfg, owner.doc_id)["alt_urls"] == [dup.pdf_url]
-    assert st._pending_dup_stamps == {}
+    assert st._pending_dups == []
 
 
 def test_owner_in_another_banks_manifest(tmp_path):
@@ -154,3 +154,168 @@ def test_stamp_alt_urls_source_stamps_add_only(tmp_path):
     assert st.stamp_alt_urls({}, source_stamps={owner.doc_id: ["https://s/x"]}) == (0, 0)
     assert _row(st.cfg, owner.doc_id)["alt_source_urls"] == ["https://s/x"]
     assert st.is_known_source_url("https://s/x")
+
+
+# ---- fix wave (review I1, M1-M4) --------------------------------------
+
+import json  # noqa: E402
+
+from cb_corpus import storage as storage_mod  # noqa: E402
+
+HTML_BODY = (b"<html>same page</html>", "text/html")
+
+
+def _log(cfg: Config) -> list[dict]:
+    p = cfg.reports_dir / "duplicate_stamps.jsonl"
+    return [json.loads(ln) for ln in p.read_text().splitlines()] if p.exists() else []
+
+
+def test_html_owner_not_persisted_kept_in_memory_and_logged(tmp_path):
+    st = Storage(Config(data_dir=tmp_path, html_to_pdf=False))
+    st.fetcher.get_bytes = lambda url: HTML_BODY
+    owner = _rec("owner")
+    dup = _rec("dup", source="https://s/d")
+    st.save_many([owner, dup], label="fr")
+    row = _row(st.cfg, owner.doc_id)
+    assert row["mime_type"] == "text/html"
+    assert "alt_urls" not in row or row["alt_urls"] == []
+    assert "alt_source_urls" not in row
+    assert st.is_known_url(dup.pdf_url)            # this run: no re-fetch
+    assert st.is_known_source_url("https://s/d")
+    assert not Storage(Config(data_dir=tmp_path)).is_known_url(dup.pdf_url)  # next night: retried
+    [entry] = _log(st.cfg)
+    assert entry["persisted"] is False and entry["owner_doc_id"] == owner.doc_id
+
+
+def test_stamp_duplicate_html_true_stamps_html_owner(tmp_path):
+    st = Storage(Config(data_dir=tmp_path, html_to_pdf=False, stamp_duplicate_html=True))
+    st.fetcher.get_bytes = lambda url: HTML_BODY
+    owner, dup = _rec("owner"), _rec("dup")
+    st.save_many([owner, dup], label="fr")
+    assert _row(st.cfg, owner.doc_id)["alt_urls"] == [dup.pdf_url]
+    assert _log(st.cfg)[0]["persisted"] is True
+
+
+def test_persisted_stamp_logged_as_json_line(tmp_path):
+    st = _storage(tmp_path)
+    owner = _rec("owner", bank="ecb")
+    dup = _rec("dup", bank="fr", source="https://s/d")
+    st.save_many([owner])
+    st.save_many([dup], label="fr")
+    [e] = _log(st.cfg)
+    assert {k: e[k] for k in ("url", "source_url", "owner_doc_id", "owner_bank", "label",
+                              "persisted")} == {
+        "url": dup.pdf_url, "source_url": "https://s/d", "owner_doc_id": owner.doc_id,
+        "owner_bank": "ecb", "label": "fr", "persisted": True}
+    assert e["ts"]
+
+
+def test_summary_line_only_when_duplicates(tmp_path, capsys):
+    st = _storage(tmp_path)
+    st.save_many([_rec("owner")], label="fr")
+    assert "duplicate-content" not in capsys.readouterr().err
+    assert not (st.cfg.reports_dir / "duplicate_stamps.jsonl").exists()
+
+
+def test_count_resets_per_batch(tmp_path, capsys):
+    st = _storage(tmp_path)
+    st.save_many([_rec("owner"), _rec("d1"), _rec("d2")], label="a")
+    assert "[a] duplicate-content: 2 " in capsys.readouterr().err
+    st.save_many([_rec("d3")], label="b")
+    err = capsys.readouterr().err
+    assert "[b] duplicate-content: 1 " in err and "duplicate-content: 3" not in err
+
+
+def test_flush_failure_never_masks_the_batch(tmp_path, monkeypatch, capsys):
+    st = _storage(tmp_path)
+
+    def boom(*a, **k):
+        raise ValueError("manifest corrupt")
+    monkeypatch.setattr(Storage, "_merge_stamps", boom)
+    counts = st.save_many([_rec("owner"), _rec("dup")], label="fr")
+    assert counts == {"saved": 1, "skip": 1}
+    assert "stamping failed" in capsys.readouterr().err
+    assert st._pending_dups == []
+
+
+def test_batch_exception_still_propagates_when_flush_fails(tmp_path, monkeypatch):
+    st = _storage(tmp_path)
+
+    def boom(*a, **k):
+        raise ValueError("manifest corrupt")
+    monkeypatch.setattr(Storage, "_merge_stamps", boom)
+
+    def recs():
+        yield _rec("owner")
+        yield _rec("dup")
+        raise RuntimeError("discovery crashed")
+    with pytest.raises(RuntimeError, match="discovery crashed"):
+        st.save_many(recs(), label="fr")
+
+
+def test_normalized_variant_of_owner_url_not_stamped(tmp_path):
+    st = _storage(tmp_path)
+    owner = DocRecord(bank_code="fr", doc_type=DocType.D1, title="o",
+                      pdf_url="https://www.example.org/fr/a.pdf", source_url="https://s/o")
+    variant = DocRecord(bank_code="fr", doc_type=DocType.D1, title="v",
+                        pdf_url="https://www.example.org//fr/a.pdf", source_url="https://s//o")
+    st.save_many([owner, variant])
+    row = _row(st.cfg, owner.doc_id)
+    assert row.get("alt_urls") == [] and "alt_source_urls" not in row
+    assert st.stamp_alt_urls({owner.doc_id: ["https://www.example.org/fr//a.pdf"]}) == (0, 0)
+
+
+def test_dry_run_flush_discards_queue_and_writes_nothing(tmp_path):
+    st = _storage(tmp_path)
+    owner = _rec("owner")
+    st.save(owner)
+    st._note_duplicate(_rec("dup"), owner.doc_id)      # leftover from a real save
+    before = st.cfg.manifest_file("fr").read_bytes()
+    st.save_many([], dry_run=True)
+    assert st._pending_dups == []
+    assert st.cfg.manifest_file("fr").read_bytes() == before
+    assert not (st.cfg.reports_dir / "duplicate_stamps.jsonl").exists()
+
+
+def test_merge_happens_under_lock_on_fresh_row(tmp_path, monkeypatch):
+    """A change made to the owner row by another writer after this Storage
+    loaded it (between scan and write) must survive the stamp."""
+    st = _storage(tmp_path)
+    owner = _rec("owner")
+    st.save(owner)
+    path = st.cfg.manifest_file("fr")
+    real_read = storage_mod._read_rows_for_rewrite
+
+    def concurrent_then_read(f):
+        if f == path:                      # another process retitles the row
+            row = json.loads(path.read_text())
+            row["title"] = "Corrected title"
+            path.write_text(json.dumps(row) + "\n")
+        return real_read(f)
+    monkeypatch.setattr(storage_mod, "_read_rows_for_rewrite", concurrent_then_read)
+    assert st.stamp_alt_urls({owner.doc_id: ["https://dead.example/a.pdf"]}) == (1, 1)
+    row = _row(st.cfg, owner.doc_id)
+    assert row["title"] == "Corrected title"
+    assert row["alt_urls"] == ["https://dead.example/a.pdf"]
+
+
+def test_no_rewrite_when_nothing_changes(tmp_path):
+    st = _storage(tmp_path)
+    owner = _rec("owner")
+    st.save(owner)
+    path = st.cfg.manifest_file("fr")
+    ino = path.stat().st_ino
+    assert st.stamp_alt_urls({owner.doc_id: [owner.pdf_url]}) == (0, 0)
+    assert path.stat().st_ino == ino
+
+
+def test_recover_discards_storage_queue(tmp_path, monkeypatch):
+    from cb_corpus.recover import run_recover_downloads
+    calls = []
+    real = Storage.discard_duplicate_stamps
+    monkeypatch.setattr(Storage, "discard_duplicate_stamps",
+                        lambda self: calls.append(1) or real(self))
+    run_recover_downloads(bank_codes=["fr"], download=True,
+                          config=Config(data_dir=tmp_path), fetcher=object(),
+                          csv_path=str(tmp_path / "r.csv"))
+    assert calls == [1]

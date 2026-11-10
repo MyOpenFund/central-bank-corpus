@@ -556,6 +556,11 @@ def _run_candidates_pass(cfg: Config, storage: Storage, fetcher: Fetcher,
         # would leave released-but-unstamped dead URLs that the nightly
         # sync resumes hammering. finally shrinks that window to the
         # entry being processed (PR #13 final review, Minor 1).
+        # storage.save()/reindex() also queue their own duplicate-content
+        # stamps (save_many's bookkeeping); this pass stamps duplicates itself
+        # (below), so drop that queue rather than let it leak into a later
+        # flush on this Storage.
+        storage.discard_duplicate_stamps()
         _apply_stamps(storage, stamps)
     return results, csv_rows
 
@@ -751,6 +756,11 @@ def run_recover_downloads(bank_codes: Optional[Iterable[str]] = None,
         # would leave released-but-unstamped dead URLs that the nightly
         # sync resumes hammering. finally shrinks that window to the
         # entry being processed (PR #13 final review, Minor 1).
+        # storage.save()/reindex() also queue their own duplicate-content
+        # stamps (save_many's bookkeeping); this pass stamps duplicates itself
+        # (below), so drop that queue rather than let it leak into a later
+        # flush on this Storage.
+        storage.discard_duplicate_stamps()
         _apply_stamps(storage, stamps)
 
     out = csv_path or str(cfg.reports_dir / "recover_downloads.csv")

@@ -63,6 +63,13 @@ class Config:
     # 2026-11-10. Reaching it while the last page still links to the next one
     # is recorded as a truncation (run-report / WARNING), never a clean end.
     repec_max_pages: int = REPEC_MAX_PAGES_DEFAULT
+    # Duplicate-content stamping (storage.flush_duplicate_stamps): a record
+    # whose bytes another row already owns has its URL (and source page)
+    # remembered on that owner row so it is never re-downloaded. By default
+    # only when the owner is a PDF: an HTML page can change while serving
+    # identical bytes today, so an HTML owner's duplicates stay in-memory for
+    # the run and are retried next night. True also stamps HTML owners.
+    stamp_duplicate_html: bool = False
     # Networks headless Chrome (run with --no-sandbox) must never be pointed
     # at: htmlpdf.render_allowed refuses a render when the URL's host is, or
     # resolves to, an address in one of these (the HTML then stays the
