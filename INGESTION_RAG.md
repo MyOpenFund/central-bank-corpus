@@ -3,18 +3,21 @@
 > ℹ️ **Ingestion itself is handled by a separate repo.** This document is the **data
 > contract**: what `cb_corpus` exposes (schema, paths, filters, citation, caveats) so that
 > any ingester can consume it. The code snippets are a **reference**, to be
-> adapted to the ingestion repo's stack — not an imposed implementation.
+> adapted to the ingestion repo's stack — not an imposed implementation. In MyOpenFund, the
+> [vault](https://github.com/MyOpenFund/vault) loads the manifests into Postgres and
+> [data-orchestrator](https://github.com/MyOpenFund/data-orchestrator) drives the RAG ingestion.
 
-Everything starts from `data/raw/` (files) + `data/manifest.jsonl` (the index). The goal on the RAG side:
+Everything starts from `data/raw/` (files) + the **per-bank manifests** `data/manifest/<bank>.jsonl`
+(the index; one file per bank code). The goal on the RAG side:
 **metadata filters** + **official-source citations**.
 
-> Data inventory (by country / type): `CORPUS.md` (generated). Coverage ~99% vs the official catalogs.
+> Data inventory (bank × type × year): `python -m cb_corpus report`. Coverage ~99% vs the official catalogs.
 
 ---
 
 ## 1. The manifest is your index
 
-`data/manifest.jsonl` = 1 JSON line per document. **Don't iterate the disk, iterate the manifest**:
+`data/manifest/<bank>.jsonl` = 1 JSON line per document. **Don't iterate the disk, iterate the manifest**:
 it carries all the metadata and points to the local file.
 
 > 🗄️ **The queryable store is your responsibility (RAG side).** `cb_corpus` produces a **handoff**
@@ -33,6 +36,11 @@ Fields useful for ingestion:
 | `title` | chunk title / display |
 | `pdf_url` | **citation** (official source) |
 | `language` | filter (all `en` today) |
+| `date_precision` | `day` / `month` / `year` when set (mostly working papers); absent = not recorded (older rows: do not assume a day) |
+| `date_source` | where the date comes from: `bank_site`, `pdf_meta`, `wayback`, `repec` (working papers) |
+| `mime_type` | `application/pdf` or `text/html` (the HTML is the artifact when PDF rendering failed); rarely another official format |
+| `html_path` | the kept raw HTML next to a rendered PDF, when there is one |
+| `alt_urls` | other official URLs of the same document (dedup; also valid citations) |
 | `doc_id` | stable primary key (ideal as a document `id` in the store) |
 | `sha256` | change detection / ingestion idempotence |
 
@@ -49,10 +57,10 @@ from cb_corpus.banks import get_bank
 from cb_corpus.taxonomy import by_code
 
 ROOT = Path("/path/to/cb_corpus")
-MANIFEST = ROOT / "data" / "manifest.jsonl"
+MANIFESTS = sorted((ROOT / "data" / "manifest").glob("*.jsonl"))  # one file per bank
 
 def iter_docs():
-    for line in MANIFEST.open():
+    for line in (l for m in MANIFESTS for l in m.open()):
         d = json.loads(line)
         # ingest only PDFs actually present
         lp = d.get("local_path")
@@ -177,9 +185,17 @@ With every answer, return the **official source**: `title` + `bank_name` + `date
   voice" base; the quantified decisions (A1/A2) and research (D1/D2) are present. Weight retrieval according to the use case.
 - **Language**: 100% English. Speeches from non-English-speaking banks are the **official EN
   versions**, not the originals.
-- **To exclude from ingestion**: orphan `.html` files in `data/raw/` (unconverted
-  pages), `.DS_Store`. The `local_path.endswith(".pdf")` filter in §2 takes care of it.
-- **Working papers (D1/D2)**: the date comes from the IDEAS metadata; a small number may be
-  undated (filed under a null `year`) — filter/handle if needed.
+- **HTML artifacts**: about 15 % of rows (6,040 of 39,452 in the 2026-09-03 manifest snapshot,
+  mostly working-paper landing pages (us, ca, ch) and ECB HTML-only documents) have `mime_type = "text/html"` and an `.html`
+  `local_path`: they are indexed documents, not junk. The §2 snippet keeps PDFs only (it uses a
+  PDF extractor); ingest the HTML rows with an HTML text extractor if you want them. Files in
+  `data/raw/` that no manifest row points to (and `.DS_Store`) are never reached when you iterate
+  the manifests.
+- **Working papers (D1/D2)**: dates come from the bank site where migrated (`ecb`, `jp`, `gb`,
+  `de` mostly at day precision; `us` mostly month, since the Fed published no day before ~2017),
+  otherwise from RePEc/IDEAS (usually month only, `date` = `YYYY-MM-01`) unless `wp-dates`
+  recovered the day; `fr` and `se` RePEc-era rows are not migrated yet. Read `date_precision` /
+  `date_source` before treating the day as exact (absent = not recorded); a small number of rows
+  may be undated (null `year`).
 - **Idempotence**: re-ingest based on `sha256` (unchanged = already indexed) to avoid
   recomputing everything on each corpus update.

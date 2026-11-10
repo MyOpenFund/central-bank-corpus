@@ -1,8 +1,15 @@
 # RePEc as a completeness check (no downloads)
 
-In v3, RePEc/IDEAS stops being a *source* for the 5 big banks and becomes an
-**audit oracle**: it answers "is the corpus missing any paper?" without ever
-downloading a document.
+In v3, RePEc/IDEAS stops being the *primary* source for the natively-covered
+banks (`ecb`, `us`, `jp`, `gb`, `de`, then `fr` and `se`) and also becomes an
+**audit oracle**: `repec-check` answers "is the corpus missing any paper?"
+without ever downloading a document. (The nightly sync still walks RePEc for
+every wired bank, natively-covered ones included, as a second source.)
+
+> **Status (2026-11):** shipped as `repec-check` on 2026-06-14
+> (`cb_corpus/repec_check.py`); results in [WP_V3_SUMMARY.md](WP_V3_SUMMARY.md).
+> This page was the June design; the sections below are marked where the code
+> differs.
 
 ## Why RePEc is a good oracle
 
@@ -13,16 +20,18 @@ downloading a document.
 - Its weaknesses (month-only dates, 1-2 week lag) don't matter for an
   *audit*: we only need the paper's existence, identity and approximate date.
 
-## Proposed command
+## Command
 
 ```
-python -m cb_corpus repec-check [--banks us,ecb,jp,gb,de] [--csv path] [--write]
+python -m cb_corpus repec-check [--banks us,ecb,...] [--csv path]
 ```
 
-**This command never downloads PDFs**, in either mode. Default is a pure
-dry-run report (stdout + optional CSV in `data/reports/`). With `--write`,
-it additionally persists match results into the manifest (metadata only —
-see "`--write` mode" below).
+**This command never downloads PDFs and never writes the manifest.** It prints a
+per-bank summary and writes a CSV (default `data/reports/repec_check.csv`).
+Default banks: every bank wired in `SERIES` (`cb_corpus/sources/repec.py`, 13
+banks; only `ecb` has a D2 series). The `--write` mode designed below was not
+built: handle stamping is done by `wp-migrate --write` and `repec-reconcile`
+(see "Handle stamping, as built").
 
 ## Algorithm
 
@@ -34,21 +43,32 @@ see "`--write` mode" below).
 2. **Load the manifest** — all D1/D2 rows for the requested banks.
 3. **Match** RePEc records against manifest rows. A RePEc record is *covered*
    (→ no need to download anything) if ANY of:
-   - **key match**: the bank-specific number (see table in
-     [WP_NATIVE_SOURCES.md](WP_NATIVE_SOURCES.md)) extracted from the RePEc
+   - **key match**: the bank-specific number (extractors `_KEY_FROM_HANDLE` /
+     `_KEY_FROM_PDF` in `cb_corpus/wp_migrate.py`) extracted from the RePEc
      handle equals a number extracted from a manifest row's `pdf_url` /
      `source_url`;
    - **URL match**: the RePEc download URL equals a manifest `pdf_url`
      (after normalization: scheme, doubled slashes, `~hash` suffix stripped);
    - **title match**: normalized titles are equal (see below).
+
+   *As built:* the cascade is handle (the full IDEAS handle found in a row's
+   `repec_handle` or `source_url`) → key → exact normalized title, on the
+   listing alone. Leftovers then get a **second pass**: the IDEAS paper page is
+   fetched and re-matched by the bank PDF URL (normalized) or the full canonical
+   title.
 4. **Classify the leftovers** (RePEc records with no manifest match):
+   *As built:* `missing_recent` means the paper id's year is at least the year
+   of today minus 45 days; everything older is `missing_legacy`.
+
    - `missing_recent` — paper's month is within the native scraper's reach
      (bank site still lists it) → fix = re-run the native scraper; if it
      still doesn't appear, the native scraper has a bug → investigate.
    - `missing_legacy` — paper is old / no longer on the bank site → ingest
      via the RePEc record itself + date recovery
      ([DATE_RECOVERY.md](DATE_RECOVERY.md)).
-5. **Reverse check** (manifest rows with no RePEc match) — two cases:
+5. **Reverse check** (manifest rows with no RePEc match). *Not implemented:*
+   the module docstring mentions it, but `repec-check` reports only the RePEc →
+   manifest direction. Designed as two cases:
    - **`pending_repec`** (expected, not an anomaly): row's `date` is within
      the last ~45 days → the paper was fetched from the bank site before
      RePEc indexed it (RePEc lags days to ~2 weeks; 45 d gives margin).
@@ -72,7 +92,11 @@ lowercase
 → collapse internal whitespace
 ```
 
-Match on equality of the normalized strings. Optionally add a fuzzy tier
+Match on equality of the normalized strings (`wp_migrate.normalize_title`).
+`repec-check` has no fuzzy tier. Fuzzy ranking exists only in
+`repec-reconcile --propose`, which writes candidates to a CSV for a human to
+approve; nothing fuzzy is ever written automatically. The June design said:
+optionally add a fuzzy tier
 (e.g. Levenshtein ratio ≥ 0.95) flagged as `match_fuzzy` in the report for
 human review — punctuation and subtitle drift between bank sites and RePEc
 is common ("ECB-global" vs "ECB-Global", em-dash vs hyphen, etc.).
@@ -80,7 +104,17 @@ is common ("ECB-global" vs "ECB-Global", em-dash vs hyphen, etc.).
 **Never auto-act on fuzzy matches.** Exact-normalized matches are safe to
 treat as duplicates; fuzzy ones go to the report only.
 
-## `--write` mode: enrich the manifest with `repec_handle`
+## Handle stamping, as built
+
+- `wp-migrate --write` stamps `repec_handle` on the rows it migrates whose
+  `source_url` is an IDEAS page.
+- `repec-reconcile [--write]` stamps IDEAS `source_url`s onto uniquely matched
+  rows (strict cascade, never fuzzy, never dates).
+- `repec-reconcile --propose` then `--apply-csv <csv> --write`: human-approved
+  reconciliation for title drift between RePEc and the published paper.
+
+The June design for a `repec-check --write` mode follows; its rationale still
+explains why stamping is safe.
 
 For every manifest row matched in step 3 (key / URL / exact-title only,
 never fuzzy), `--write` stamps the RePEc handle into a new metadata field:
@@ -103,13 +137,16 @@ Why this is safe and useful:
 - Rows with no RePEc match keep no field (absent ≠ empty), so the reverse
   check stays meaningful.
 
-Recommended workflow: `repec-check` (inspect the report) →
-`repec-check --write` (persist handles, and date fixes during the v2
-migration below).
+Workflow as built: `repec-check` (inspect the report) → `wp-migrate --write` /
+`repec-reconcile` to persist handles.
 
 ## Migration of v2 rows (one-off)
 
-The current manifest has thousands of D1/D2 rows with `date = YYYY-MM-01`
+*Done for `ecb`, `us`, `jp`, `gb`, `de` in June 2026 with `wp-migrate`; `fr` and
+`se` are wired but not applied in the committed manifests (see
+[IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)).*
+
+The manifest had thousands of D1/D2 rows with `date = YYYY-MM-01`
 sourced from RePEc. When native scrapers land:
 
 1. Run the native scraper in dry-run for the full history.
@@ -120,7 +157,7 @@ sourced from RePEc. When native scrapers land:
    `repec_handle` while we're at it. If the native scraper found the paper
    under a different URL, register it in `alt_urls` so dedup recognises it
    — **this is what prevents mass re-downloads when native scrapers go
-   live** (see the ordering warning in
+   live** (see the ordering rule in
    [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)). Keep `doc_id`,
    `sha256`, `local_path` untouched — the PDF on disk is the same file.
 4. Rows that match nothing on the bank site are `missing_legacy` →
@@ -130,6 +167,7 @@ This fixes dates in place with **zero re-downloads**.
 
 ## Scheduling
 
-- Native scrapers: run with the regular `discover` cadence.
-- `repec-check`: weekly is plenty (RePEc itself lags by days anyway).
-- Treat a non-empty `missing_recent` bucket as a CI-style failure signal.
+- Native scrapers: run inside the nightly `sync` (`deploy/crontab`).
+- `repec-check`: designed as weekly, but **not scheduled** in `deploy/crontab`
+  today; it runs by hand.
+- Treat a non-empty `missing_recent` bucket as a failure signal.

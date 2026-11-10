@@ -13,7 +13,9 @@ bank publishes them, honest provenance on every row, and a self-healing nightly 
 domain, or `*.bis.org` (the official re-host for speeches). No academic-curated datasets,
 no machine-translated or model-generated text.
 
-> 📊 Data reference: run `python gen_corpus.py` → **`CORPUS.md`** (counts, per-bank / per-type inventory).
+> 📊 Counts: `python -m cb_corpus report` (bank × type × year completeness matrix). `gen_corpus.py`
+> (→ uncommitted `CORPUS.md`) still reads the pre-split single `data/manifest.jsonl` and fails on the
+> per-bank layout.
 > 🤖 RAG handoff contract (schema, filters, citation): **`INGESTION_RAG.md`**.
 
 ## What's wired up
@@ -23,19 +25,23 @@ no machine-translated or model-generated text.
   (`banks.py::BIS_ALIASES`, accent/apostrophe-insensitive) so renamed / historical / native
   BIS labels (e.g. "Bank of Latvia" → `lv`, pre-2010 "…US Federal Reserve System" → `us`)
   still map to the right bank instead of being silently dropped.
-- **RePEc / IDEAS discovery** (`sources/repec.py`) → working papers (D1/D2) for banks **without**
-  a native source. **Paginates** the full series back-catalogue and reads the publication month
+- **RePEc / IDEAS discovery** (`sources/repec.py`) → working papers (D1/D2) for every bank in
+  `SERIES` (13), including those with a native source (second source, deduped).
+  **Paginates** the full series back-catalogue and reads the publication month
   from the IDEAS `citation_*` metadata (RePEc is month-only → `date_precision="month"`).
-- **Working Papers v3 — native bank-site discovery** (the 5 big banks: ecb, us, jp, gb, de).
-  Each gets a native scraper with the **exact publication day** from the bank's own site
-  (`sources/{ecb_foedb,fed_wp,boj_wp,boe_wp,buba_wp}.py`), replacing RePEc for D1/D2.
+- **Working Papers v3 — native bank-site discovery** (the 5 big banks: ecb, us, jp, gb, de;
+  fr and se added 2026-08). Each gets a native scraper with the **exact publication day** from
+  the bank's own site (`sources/{ecb_foedb,fed_wp,boj_wp,boe_wp,buba_wp,bdf_wp,riksbank_wp}.py`),
+  RePEc stays a second source. Rule: migrate a bank's rows before switching it to native download
+  ([docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md)).
   `wp-migrate` rewrites existing rows' dates in place (key→URL→exact-title join, `doc_id`/
   `sha256`/`local_path` untouched, zero re-downloads); `wp-dates` recovers the day for legacy
   rows via PDF `/CreationDate` + Wayback into the **committed** `data/wp_dates_index.jsonl`
   (run-once, replay-forever). See [docs/WP_V3_SUMMARY.md](docs/WP_V3_SUMMARY.md).
 - **Per-bank adapters** (`adapters/`) → site-specific listings (A/B/E/F + native D1/D2). Bespoke
   `ECBAdapter`, `FedAdapter`, `BoJAdapter` (jp), `BoEAdapter` (gb), `BubaAdapter` (de),
-  `RBAAdapter` (au); TOML-declarative adapters (`banks_sources.toml`: ch/ca/fr). `GenericAdapter`
+  `BdfAdapter` (fr), `RiksbankAdapter` (se), `RBAAdapter` (au); TOML-declarative adapters
+  (`banks_sources.toml`: ch/ca). `GenericAdapter`
   (C1 + RePEc D) is the default. **Rate decisions, policy statements & minutes (A1/A2/A3) are
   wired for the majors.**
 - **Bank-of-England official recovery** (`sources/boe_wp.py` + `pipeline.run_boe_wp_recovery` /
@@ -128,7 +134,7 @@ python -m cb_corpus list-banks
 # Speeches (C1) — single pass over the BIS yearly sitemaps, all banks at once
 python -m cb_corpus bis-sitemap --download
 
-# Working papers (D1/D2) via RePEc (paginated, dated) — banks without a native source
+# Working papers (D1/D2) via RePEc (paginated, dated) — every wired bank, native ones included
 python -m cb_corpus repec --download                  # all wired series
 python -m cb_corpus repec --banks ecb,us --download
 
@@ -165,7 +171,7 @@ run(dry_run=False, max_rounds=3)    # native A/B/E/F per bank (converges)
    User-Agent of every request — it's how central-bank webmasters reach *you* (not the
    project) about *your* crawls; part of being a polite crawler. Without it, the UA points
    to this repository. Throughput is bounded by politeness
-   (`min_delay_seconds`, default ~2 s/domain); the rate limit is **per-host**, so banks on
+   (`min_delay_seconds`, default 0.5 s/domain); the rate limit is **per-host**, so banks on
    different domains crawl in parallel.
 2. **Validate on a small window first.** Parsers were written to each site's documented markup,
    not all validated against live HTML. Dry-run one or two banks before a full crawl:
@@ -228,19 +234,32 @@ cb_corpus/
   completeness.py    expected-vs-downloaded matrix
   pipeline.py        run() (convergence), run_bis_sitemap(), run_repec(),
                      reindex_*_from_disk() (manifest recovery, no re-download), run_*_recovery()
-  cli.py             command line (list-banks, discover, bis-sitemap, repec, reindex-from-disk, report, ...)
+  cli.py             command line (`python -m cb_corpus --help` lists every subcommand)
+  runreport.py       run reports (data/runs.jsonl) + honest exit codes
+  cadence.py         median-gap silence watchdog (cadence-watch)
+  quarantine.py      per-URL download quarantine (dead-letter state)
+  recover.py         recover-downloads (inventory-driven Wayback recovery)
+  orphans.py         sweep-orphans (quarantine on-disk duplicates)
+  convert.py / retry_html.py   HTML -> PDF migration and retries
+  wp_migrate.py      WP v3 date migration (native bank-site dates, zero re-download)
+  wp_dates.py        WP v3 day recovery (PDF /CreationDate + Wayback, committed index)
+  repec_check.py     RePEc completeness audit + repec-reconcile
+  c2_migrate.py      one-shot ECB C2 enrichment from foedb
   sources/
     bis_speeches.py  BIS speech index         -> C1 (alias-aware attribution)
     repec.py         RePEc discovery          -> D1/D2 (paginated, dated)
     wayback.py       Wayback CDX recovery      -> dead-but-official PDFs/HTML
+    recovery.py      uniform recovery-source abstraction
     ecb_pub.py       ECB per-section includes  -> A1/B1/C2/E1-E4/G2 (primary -> CDX fallback)
-    boe_wp.py        BoE official sitemaps     -> working papers + MPC minutes
+    ecb_foedb.py     ECB foedb JSON DB         -> D1/D2 native
+    fed_wp.py / boj_wp.py / boe_wp.py / buba_wp.py / bdf_wp.py / riksbank_wp.py
+                     native working papers (us / jp / gb / de / fr / se); boe_wp also MPC minutes
   adapters/
     base.py          BankAdapter ABC + registry + GenericAdapter + _fetch_text
-    fed.py / ecb.py / rba.py  worked native examples (us / ecb / au)
+    fed.py / ecb.py / boj.py / boe.py / buba.py / bdf.py / se.py / rba.py  bespoke adapters
     declarative.py + generic_sitemap.py + listing_crawler.py  TOML-driven adapters
-tests/               398 tests (taxonomy, registry, parsers, dedup, matrix, reliability,
-                     quarantine, recovery, cadence)
+tests/               596 tests at 2026-11-10 (taxonomy, registry, parsers, dedup, matrix,
+                     reliability, quarantine, recovery, cadence, ...)
 ```
 
 ## Notes
