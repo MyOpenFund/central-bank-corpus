@@ -13,9 +13,17 @@ Site 3: cb_corpus/pipeline.py -- run_repec_wayback_recovery. It has no
          is the "third pagination copy" the task brief points at in the
          wayback/recovery path.
 
-Listing markup below mirrors the REAL builders already used elsewhere in
-this suite to drive these exact parsers (tests/fixtures has no RePEc/IDEAS
-HTML of its own -- `grep -rl "repec|ideas" tests/fixtures` is empty):
+Issue #30: IDEAS answers HTTP 404 on the page after the last listing page.
+Such a 404 is a CLEAN end of walk iff it hits page k > 1 and page k-1 does not
+link to `<series>k.html`; any other failure stays a truncation. The real-markup
+fixtures tests/fixtures/repec/rbnkwp.html and rbnkwp2.html are the IDEAS
+listing pages of hhs:rbnkwp (Riksbank), captured from
+https://ideas.repec.org/s/hhs/rbnkwp.html and .../rbnkwp2.html on 2026-11-10
+(200 + 199 papers, 397 distinct; page 1 links to page 2, page 2 links to no
+page 3; both carry share-button URLs that mention the page file name).
+
+Synthetic listing markup below mirrors the REAL builders already used
+elsewhere in this suite to drive these exact parsers:
   - the `/p/<arch>/<slug>/<pid>.html` <li><a> shape from
     tests/test_repec_incremental.py::_series_html (parse_series_page,
     site 1) and tests/test_repec_reconcile.py::_series_html
@@ -273,3 +281,226 @@ def test_wayback_recovery_report_none_preserves_silent_behavior(monkeypatch):
 
     counts = P.run_repec_wayback_recovery("se", dry_run=True)
     assert counts == {"saved": 0}  # paper page itself 404s -> extract skipped, nothing saved
+
+
+# ---------------------------------------------------------------------------
+# Issue #30: a 404 after the last IDEAS listing page is a clean end of walk
+# ---------------------------------------------------------------------------
+
+from pathlib import Path
+
+import pytest
+import requests
+
+from cb_corpus.sources.repec import links_to_listing_page
+
+_FIX = Path(__file__).parent / "fixtures" / "repec"
+
+
+def _fixture(name):
+    return (_FIX / name).read_text(encoding="utf-8")
+
+
+def _http_exc(status, url="https://ideas.repec.org/s/x/y3.html"):
+    """The exception the real Fetcher raises for an HTTP error: a RuntimeError
+    chained (`raise ... from`) from requests' HTTPError carrying the response."""
+    r = requests.Response()
+    r.status_code = status
+    msg = (f"GET bytes failed (HTTP {status}, not retried): {url}"
+           if status < 500 else f"GET bytes failed after retries: {url}")
+    try:
+        try:
+            raise requests.exceptions.HTTPError(f"{status} error", response=r)
+        except requests.exceptions.HTTPError as he:
+            raise RuntimeError(msg) from he
+    except RuntimeError as exc:
+        assert exc.__cause__ is not None
+        return exc
+
+
+def _context_404():
+    """404 carried on __context__ only (implicit chaining, no `from`)."""
+    r = requests.Response()
+    r.status_code = 404
+    try:
+        try:
+            raise requests.exceptions.HTTPError("404", response=r)
+        except requests.exceptions.HTTPError:
+            raise RuntimeError("GET bytes failed: https://ideas.repec.org/s/x/y2.html")
+    except RuntimeError as exc:
+        assert exc.__cause__ is None and exc.__context__ is not None
+        return exc
+
+
+def _with_next_link(html, series, page):
+    """Append an IDEAS pagination-bar link to `<series><page>.html` (appended
+    at the end: the real pages close with an uppercase `</BODY>`)."""
+    link = (f'<ul class="pagination"><li class="page-item">'
+            f'<a class="page-link" href="{series}{page}.html">{page}</a></li></ul>')
+    assert not links_to_listing_page(html, series, page)
+    out = html + link
+    assert links_to_listing_page(out, series, page)
+    return out
+
+
+def _walk_discovery(pages):
+    d = _mk_discovery(FakeFetcher(pages))
+    stats = SourceStats("se")
+    out = list(d._series_paper_pages("hhs:rbnkwp", stats=stats))
+    return out, stats
+
+
+def _walk_enumerate(pages, handle="arch:series"):
+    stats = SourceStats("x")
+    rows = enumerate_series(FakeFetcher(pages), handle, stats=stats)
+    return rows, stats
+
+
+# -- unit: links_to_listing_page -------------------------------------------
+
+def test_links_to_listing_page_real_page1_links_to_page2():
+    assert links_to_listing_page(_fixture("rbnkwp.html"), "rbnkwp", 2) is True
+
+
+def test_links_to_listing_page_real_page2_does_not_link_to_page3():
+    assert links_to_listing_page(_fixture("rbnkwp2.html"), "rbnkwp", 3) is False
+
+
+def test_links_to_listing_page_ignores_share_button_urls():
+    html = ('<html><body><a href="https://bsky.app/intent/compose?text=Found%20on'
+            '%20RePEc/IDEAS:%20https://ideas.repec.org//s/hhs/rbnkwp2.html%20">'
+            'share</a></body></html>')
+    assert links_to_listing_page(html, "rbnkwp", 2) is False
+
+
+def test_links_to_listing_page_absolute_href_and_query_fragment():
+    html = ('<a href="https://ideas.repec.org/s/hhs/rbnkwp2.html?x=1#top">2</a>')
+    assert links_to_listing_page(html, "rbnkwp", 2) is True
+
+
+def test_links_to_listing_page_exact_basename_only():
+    html = '<a class="page-link" href="rbnkwp23.html">23</a>'
+    assert links_to_listing_page(html, "rbnkwp", 2) is False
+    assert links_to_listing_page('<a href="xrbnkwp2.html">2</a>', "rbnkwp", 2) is False
+
+
+def test_links_to_listing_page_no_pagination_bar():
+    assert links_to_listing_page(_discovery_page_html(["0001"]), "rbnkwp", 2) is False
+
+
+# -- RePEcDiscovery._series_paper_pages -------------------------------------
+
+def test_discovery_real_fixtures_404_after_last_page_is_clean_end():
+    out, stats = _walk_discovery({1: _fixture("rbnkwp.html"),
+                                  2: _fixture("rbnkwp2.html"),
+                                  3: _http_exc(404)})
+    assert len(out) == 2
+    assert len({u for page in out for u in page}) == 397
+    assert stats.truncated is False and stats.fetch_errors == 0
+
+
+def test_discovery_404_on_page1_is_truncation():
+    out, stats = _walk_discovery({1: _http_exc(404)})
+    assert out == []
+    assert stats.truncated is True and stats.fetch_errors == 1
+
+
+def test_discovery_503_on_page3_is_truncation():
+    _, stats = _walk_discovery({1: _fixture("rbnkwp.html"),
+                                2: _fixture("rbnkwp2.html"),
+                                3: _http_exc(503)})
+    assert stats.truncated is True and stats.fetch_errors == 1
+    assert stats.error_samples[-1].startswith("page 3: ")
+
+
+def test_discovery_404_on_advertised_page_is_truncation():
+    _, stats = _walk_discovery({1: _fixture("rbnkwp.html"),
+                                2: _with_next_link(_fixture("rbnkwp2.html"), "rbnkwp", 3),
+                                3: _http_exc(404)})
+    assert stats.truncated is True and stats.fetch_errors == 1
+    assert "page 3: HTTP 404 although page 2 links to it" in stats.error_samples[-1]
+
+
+def test_discovery_bare_runtime_error_is_truncation():
+    _, stats = _walk_discovery({1: _fixture("rbnkwp.html"),
+                                2: _fixture("rbnkwp2.html"),
+                                3: RuntimeError("404")})
+    assert stats.truncated is True and stats.fetch_errors == 1
+
+
+def test_discovery_404_after_page_without_pagination_bar_is_clean_end():
+    out, stats = _walk_discovery({1: _discovery_page_html(["0001"]), 2: _http_exc(404)})
+    assert len(out) == 1
+    assert stats.truncated is False and stats.fetch_errors == 0
+
+
+def test_discovery_404_on_context_is_clean_end():
+    _, stats = _walk_discovery({1: _discovery_page_html(["0001"]), 2: _context_404()})
+    assert stats.truncated is False and stats.fetch_errors == 0
+
+
+# -- repec_check.enumerate_series -------------------------------------------
+
+def test_enumerate_real_fixtures_404_after_last_page_is_clean_end():
+    rows, stats = _walk_enumerate({1: _fixture("rbnkwp.html"),
+                                   2: _fixture("rbnkwp2.html"),
+                                   3: _http_exc(404)}, handle="hhs:rbnkwp")
+    assert len(rows) == 397
+    assert stats.truncated is False and stats.fetch_errors == 0
+
+
+def test_enumerate_404_on_page1_is_truncation():
+    rows, stats = _walk_enumerate({1: _http_exc(404)})
+    assert rows == []
+    assert stats.truncated is True and stats.fetch_errors == 1
+
+
+def test_enumerate_503_on_page3_is_truncation():
+    _, stats = _walk_enumerate({1: _page_html(["p1"]), 2: _page_html(["p2"]),
+                                3: _http_exc(503)})
+    assert stats.truncated is True and stats.fetch_errors == 1
+    assert stats.error_samples[-1].startswith("page 3: ")
+
+
+def test_enumerate_404_on_advertised_page_is_truncation():
+    _, stats = _walk_enumerate({1: _page_html(["p1"]),
+                                2: _with_next_link(_page_html(["p2"]), "series", 3),
+                                3: _http_exc(404)})
+    assert stats.truncated is True and stats.fetch_errors == 1
+    assert "page 3: HTTP 404 although page 2 links to it" in stats.error_samples[-1]
+
+
+def test_enumerate_synthetic_404_after_unlinked_page_is_clean_end():
+    rows, stats = _walk_enumerate({1: _page_html(["p1"]), 2: _page_html(["p2"]),
+                                   3: _http_exc(404)})
+    assert len(rows) == 2
+    assert stats.truncated is False and stats.fetch_errors == 0
+
+
+def test_enumerate_bare_runtime_error_is_truncation():
+    _, stats = _walk_enumerate({1: _page_html(["p1"]), 2: _page_html(["p2"]),
+                                3: RuntimeError("404")})
+    assert stats.truncated is True and stats.fetch_errors == 1
+
+
+def test_enumerate_404_after_page_without_pagination_bar_is_clean_end():
+    rows, stats = _walk_enumerate({1: _page_html(["p1"]), 2: _http_exc(404)})
+    assert len(rows) == 1
+    assert stats.truncated is False and stats.fetch_errors == 0
+
+
+def test_enumerate_404_on_context_is_clean_end():
+    _, stats = _walk_enumerate({1: _page_html(["p1"]), 2: _context_404()})
+    assert stats.truncated is False and stats.fetch_errors == 0
+
+
+def test_run_repec_check_404_after_last_page_prints_no_warning(tmp_path, monkeypatch, capsys):
+    from cb_corpus.config import Config
+    from cb_corpus import repec_check as RC
+
+    fetcher = FakeFetcher({1: _boe_page_html(["20250001"]), 2: _http_exc(404)})
+    monkeypatch.setattr(RC, "Fetcher", lambda cfg: fetcher)
+    cfg = Config(data_dir=tmp_path / "data")
+    RC.run_repec_check(bank_codes=["gb"], config=cfg)
+    err = capsys.readouterr().err
+    assert "WARNING: IDEAS listing truncated" not in err

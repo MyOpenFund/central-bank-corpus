@@ -31,7 +31,8 @@ from .banks import get_bank
 from .config import Config
 from .http import Fetcher
 from .runreport import SourceStats
-from .sources.repec import IDEAS, SERIES, _paper_meta, extract_pdf_candidates
+from .sources.repec import (IDEAS, SERIES, _paper_meta, extract_pdf_candidates,
+                            listing_error_truncation)
 from .storage import Storage
 from .wp_migrate import (_KEY_FROM_HANDLE, _KEY_FROM_PDF, normalize_title,
                          normalize_url, repec_handle_from_source_url)
@@ -65,24 +66,32 @@ def enumerate_series(fetcher: Fetcher, handle: str, max_pages: int = 80,
                      ) -> list[tuple[str, str]]:
     """All (paper_id, title) for an IDEAS series, following pagination.
 
-    A listing-page fetch failure ends the walk (still correct — skipping a
-    page would lose ordering guarantees), but with `stats` given it is
-    recorded via `record_fetch_error(..., truncated=True)` first, so it is
-    never indistinguishable from a genuinely completed listing. `stats=None`
-    (the default) preserves the prior silent-break behavior for callers not
-    yet wired to a run-report.
+    The walk ends cleanly when a page yields nothing new, when `max_pages` is
+    hit, or on an HTTP 404 for page k > 1 that page k-1 does not link to
+    (IDEAS answers 404 on the page after the last one; see
+    `sources.repec.listing_error_truncation`). Any other listing-page fetch
+    failure (404 on page 1, 404 on a page that page k-1 advertises, network
+    error, 5xx, ...) also ends the walk (skipping a page would lose ordering
+    guarantees), but with `stats` given it is recorded via
+    `record_fetch_error(..., truncated=True)` first, so it is never
+    indistinguishable from a genuinely completed listing. `stats=None` (the
+    default) preserves the prior silent-break behavior for callers not yet
+    wired to a run-report.
     """
     arch, series = handle.split(":")
     base = f"{IDEAS}/s/{arch}/{series}"
     seen: dict[str, str] = {}
+    prev_html: Optional[str] = None
     for page in range(1, max_pages + 1):
         url = f"{base}.html" if page == 1 else f"{base}{page}.html"
         try:
             html = fetcher.get_text(url)
         except Exception as exc:
-            if stats is not None:
-                stats.record_fetch_error(f"page {page}: {exc}", truncated=True)
+            msg = listing_error_truncation(exc, page, prev_html, series)
+            if msg is not None and stats is not None:
+                stats.record_fetch_error(msg, truncated=True)
             break
+        prev_html = html
         rows = parse_series_listing(html, arch, series)
         new = [(pid, t) for pid, t in rows if pid not in seen]
         if not new:
