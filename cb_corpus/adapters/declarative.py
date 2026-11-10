@@ -84,6 +84,8 @@ class TomlLoadReport:
     error: Optional[str] = None
     unknown_codes: list[str] = field(default_factory=list)
     unknown_sections: list[str] = field(default_factory=list)
+    # banks declaring BOTH a sitemap and a listing section (sitemap wins)
+    ambiguous: list[str] = field(default_factory=list)
 
     def warnings(self) -> list[str]:
         """One human-readable line per problem; [] when the load was clean."""
@@ -99,6 +101,9 @@ class TomlLoadReport:
         if self.unknown_sections:
             out.append(f"{name}: unknown section(s) ignored (expected "
                        f"{' / '.join(_SECTIONS)}): {', '.join(self.unknown_sections)}")
+        if self.ambiguous:
+            out.append(f"{name}: both sitemap and listing declared for "
+                       f"{', '.join(self.ambiguous)} (sitemap used, listing ignored)")
         if not self.loaded:
             out.append(f"{name}: 0 bank(s) loaded from {self.path}")
         return out
@@ -129,15 +134,18 @@ def load_toml(path: Optional[Path] = None) -> TomlLoadReport:
                 continue
             report.unknown_sections.extend(
                 f"{bank_code}.{k}" for k in sections if k not in _SECTIONS)
+            if "sitemap" in sections and "listing" in sections:
+                report.ambiguous.append(bank_code)
             if "sitemap" in sections:
                 staged[bank_code] = _make_sitemap_factory(sections["sitemap"])
             elif "listing" in sections:
                 staged[bank_code] = _make_listing_factory(sections["listing"])
     except (tomllib.TOMLDecodeError, OSError, UnicodeDecodeError,
-            KeyError, TypeError, ValueError, IndexError) as exc:
+            KeyError, TypeError, ValueError, IndexError, AttributeError) as exc:
         report.error = f"{type(exc).__name__}: {exc}"
         report.unknown_codes.clear()
         report.unknown_sections.clear()
+        report.ambiguous.clear()
         return report
     for code, factory in staged.items():
         INSTANCE_FACTORIES[code] = factory

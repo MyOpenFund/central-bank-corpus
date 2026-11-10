@@ -103,3 +103,32 @@ def test_import_hook_survives_an_unexpected_exception(monkeypatch, capsys):
 def test_shipped_file_loads_cleanly(registry):
     rep = declarative.load_toml()
     assert rep.loaded and rep.warnings() == []
+
+
+@pytest.mark.parametrize("bad", [
+    '[ch.sitemap]\nsitemap_url = "https://x"\npatterns = ["a"]\n',          # list, not table
+    '[ca.listing]\nentries = 5\n',                                          # not a table
+    '[ca.listing]\n[ca.listing.entries]\nA3 = [5]\n',                       # pair not a list
+    '[ch]\nsitemap = "https://x"\n',                                        # section not a table
+])
+def test_wrong_shapes_never_raise(tmp_path, registry, bad):
+    rep = declarative.load_toml(_write(tmp_path, bad))
+    assert rep.error and registry == {}
+    assert any("malformed" in w for w in rep.warnings())
+
+
+def test_non_table_bank_entry_is_an_unknown_section(tmp_path, registry):
+    text = ('ch = 1\n'
+            '[ca.listing]\n[ca.listing.entries]\nA3 = [["https://b/l", "/a3/"]]\n')
+    rep = declarative.load_toml(_write(tmp_path, text))
+    assert rep.unknown_sections == ["ch"]
+    assert rep.loaded == ["ca"] and "ch" not in registry
+    assert any("unknown section" in w and "ch" in w for w in rep.warnings())
+
+
+def test_both_sitemap_and_listing_warned(tmp_path, registry):
+    text = GOOD + '\n[ch.listing]\n[ch.listing.entries]\nA3 = [["https://b/l", "/a3/"]]\n'
+    rep = declarative.load_toml(_write(tmp_path, text))
+    assert rep.ambiguous == ["ch"]
+    assert any("both sitemap and listing" in w and "ch" in w for w in rep.warnings())
+    assert set(registry) == {"ch", "ca"}
