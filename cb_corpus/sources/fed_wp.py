@@ -10,10 +10,10 @@ page:
     /econres/{feds,ifdp}/files/{YYYYNNN}pap.pdf   (modern)
     /pubs/{feds,ifdp}/{YYYY}/.../...pap.(pdf|ps)  (legacy)
 
-So one landing fetch per paper is needed for the day (Q2: day precision
-everywhere). The landing date is the CURRENT version's date — for a revised
-paper it is the revision date, which can fall in a later month/year than the
-original. The listing month is therefore authoritative: we keep the landing DAY
+So one landing fetch per paper is needed for the day (WP v3 decision,
+2026-06-12: day precision everywhere, backfill included). The landing date is
+the CURRENT version's date — for a revised paper it is the revision date,
+which can fall in a later month/year than the original. The listing month is therefore authoritative: we keep the landing DAY
 only when its (year, month) equals the listing's; otherwise the paper stays at
 month precision (the listing month).
 

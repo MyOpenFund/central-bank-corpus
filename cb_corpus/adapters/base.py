@@ -97,9 +97,10 @@ class BankAdapter(ABC):
         elif doc_type in (DocType.D1, DocType.D2):
             # WP v3: a bank that declares D1/D2 in `native_types` discovers them
             # from its own site (precise dates, no RePEc lag); every other bank
-            # keeps the RePEc path. No bank opts in until its v2 rows have been
-            # date-migrated (see docs/IMPLEMENTATION_PLAN.md phase 3) — flipping
+            # keeps the RePEc path. A bank must not opt in until its v2 rows have
+            # been date-migrated (see docs/IMPLEMENTATION_PLAN.md phase 3) — flipping
             # before migration would re-download papers found under new URLs.
+            # fr and se opted in before their migration was applied (see that doc).
             if doc_type in self.native_types:
                 recs = self._discover_native(doc_type, since)
                 # Zero re-download after migration: a native scraper often finds a

@@ -179,8 +179,8 @@ def discover_ecb_wp(fetcher: Fetcher,
     Reads the live DB version, then walks every data chunk. Records are globally
     sorted by ``pub_timestamp`` descending, so with ``since`` we stop as soon as we
     reach an older publication (efficient incremental runs); without it the whole
-    archive is yielded. Network/schema errors propagate (fail loudly — Q7); there
-    is deliberately no RePEc fallback.
+    archive is yielded. Network/schema errors propagate (fail loudly — WP v3 decision
+    2026-06-12); there is deliberately no RePEc fallback.
     """
     version, db_hash = parse_versions(json.loads(fetcher.get_text(f"{FOEDB_DB}/versions.json")))
     base = f"{FOEDB_DB}/{version}/{db_hash}"

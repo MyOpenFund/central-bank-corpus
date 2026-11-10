@@ -178,6 +178,12 @@ def main(argv: list[str] | None = None) -> int:
                              "(missing papers per bank). Never downloads.")
     rc.add_argument("--banks", default="", help="restrict to wired banks (default: all)")
     rc.add_argument("--csv", default="", help="CSV output path (default data/reports/repec_check.csv)")
+    rc.add_argument("--reverse-csv", default="",
+                    help="CSV of manifest rows RePEc does not list "
+                         "(default data/reports/repec_check_reverse.csv)")
+    rc.add_argument("--grace-days", type=int, default=45,
+                    help="a manifest row RePEc does not list yet is `pending_repec` "
+                         "within this many days of its date, else `unmatched_old` (default 45)")
 
     rr = sub.add_parser("repec-reconcile",
                         help="Stamp IDEAS source_urls onto uniquely-matched manifest "
@@ -341,7 +347,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "repec-check":
         from .repec_check import run_repec_check
-        run_repec_check(bank_codes=banks, csv_path=args.csv or None)
+        run_repec_check(bank_codes=banks, csv_path=args.csv or None,
+                        reverse_csv_path=args.reverse_csv or None,
+                        grace_days=args.grace_days)
         return 0
 
     if args.cmd == "repec-reconcile":

@@ -101,19 +101,35 @@ def enumerate_series(fetcher: Fetcher, handle: str, max_pages: int = 80,
     return list(seen.items())
 
 
+def _row_date(row: dict) -> Optional[date]:
+    try:
+        return date.fromisoformat((row.get("date") or "")[:10])
+    except ValueError:
+        return None
+
+
 def run_repec_check(bank_codes: Optional[Iterable[str]] = None,
                     csv_path: Optional[str] = None,
-                    config: Optional[Config] = None) -> dict[str, dict]:
+                    config: Optional[Config] = None,
+                    reverse_csv_path: Optional[str] = None,
+                    grace_days: int = _GRACE_DAYS) -> dict[str, dict]:
     """Audit RePEc coverage for the requested banks (default: all wired). Never
-    downloads. Returns {bank: summary}; writes a CSV of missing papers."""
+    downloads, never writes the manifest. Returns {bank: summary}; writes a CSV of
+    missing papers (RePEc -> manifest) and a CSV of manifest rows RePEc does not
+    list (reverse: `pending_repec` within `grace_days`, else `unmatched_old`).
+    The reverse check only covers a bank's doc types that have a RePEc series, and
+    is skipped (flagged `reverse_skipped_truncated`) when a listing was truncated."""
+    if grace_days < 0:
+        raise ValueError(f"grace_days must be >= 0, got {grace_days}")
     cfg = config or Config()
     fetcher = Fetcher(cfg)
     storage = Storage(cfg, fetcher)
     codes = [c for c in (bank_codes or SERIES.keys()) if c in SERIES]
-    cutoff = date.today() - timedelta(days=_GRACE_DAYS)
+    cutoff = date.today() - timedelta(days=grace_days)
 
     results: dict[str, dict] = {}
     missing_rows: list[dict] = []
+    reverse_rows: list[dict] = []
     for bank in codes:
         # Manifest coverage sets for this bank: handles, native keys, normalized
         # titles, and normalized PDF/alt URLs (the last catches non-RePEc-sourced
@@ -124,26 +140,49 @@ def run_repec_check(bank_codes: Optional[Iterable[str]] = None,
         urls: set[str] = set()
         manifest_n = 0
         key_pdf, key_handle = _KEY_FROM_PDF.get(bank), _KEY_FROM_HANDLE.get(bank)
+        # Reverse check: the rows RePEc should list (doc types with a series) and
+        # each match key -> doc_ids, so every tier that matches marks its rows.
+        series_types = {dt.code for _, dt in SERIES[bank]}
+        rev_rows: dict[str, dict] = {}
+        by_h: dict[str, set] = {}
+        by_k: dict = {}
+        by_t: dict[str, set] = {}
+        by_u: dict[str, set] = {}
+        matched: set[str] = set()
+        truncated_any = False
         for row in storage.iter_manifest(bank):
             if row.get("doc_type") not in ("D1", "D2"):
                 continue
             manifest_n += 1
+            did = row.get("doc_id") or ""
+            track = row.get("doc_type") in series_types and bool(did)
+            if track:
+                rev_rows[did] = row
             h = (row.get("repec_handle") or repec_handle_from_source_url(row.get("source_url") or ""))
             if h:
                 handles.add(h)
+                if track:
+                    by_h.setdefault(h, set()).add(did)
             if key_pdf:
                 k = key_pdf(row.get("pdf_url") or "") or (key_handle and key_handle(row.get("source_url") or ""))
                 if k:
                     keys.add(k)
+                    if track:
+                        by_k.setdefault(k, set()).add(did)
             t = normalize_title(row.get("title") or "")
             if t:
                 titles.add(t)
+                if track:
+                    by_t.setdefault(t, set()).add(did)
             for u in [row.get("pdf_url"), *(row.get("alt_urls") or [])]:
                 if u:
                     urls.add(normalize_url(u))
+                    if track:
+                        by_u.setdefault(normalize_url(u), set()).add(did)
 
         summary = {"repec_total": 0, "covered": 0, "recovered_pagefetch": 0,
-                   "missing_recent": 0, "missing_legacy": 0, "manifest_total": manifest_n}
+                   "missing_recent": 0, "missing_legacy": 0, "manifest_total": manifest_n,
+                   "pending_repec": 0, "unmatched_old": 0, "reverse_skipped_truncated": 0}
         bank_home = get_bank(bank).homepage
         for handle, doc_type in SERIES[bank]:
             arch, series = handle.split(":")
@@ -151,18 +190,25 @@ def run_repec_check(bank_codes: Optional[Iterable[str]] = None,
             stats = SourceStats(f"repec_check:{bank}")
             entries = enumerate_series(fetcher, handle, stats=stats)
             if stats.truncated:
+                truncated_any = True
                 sample = stats.error_samples[-1] if stats.error_samples else ""
                 print(f"WARNING: IDEAS listing truncated for {handle}: {sample}",
                      file=sys.stderr)
             for pid, title in entries:
                 summary["repec_total"] += 1
                 full_handle = f"RePEc:{arch}:{series}:{pid}"
+                k = key_handle(f"{series}:{pid}") if key_handle else None
+                nt = normalize_title(title) if title else ""
+                matched |= by_h.get(full_handle, set())
+                if k:
+                    matched |= by_k.get(k, set())
+                if nt:
+                    matched |= by_t.get(nt, set())
                 covered = full_handle in handles
                 if not covered and key_handle:
-                    k = key_handle(f"{series}:{pid}")
                     covered = bool(k and k in keys)
                 if not covered and title:
-                    covered = normalize_title(title) in titles
+                    covered = nt in titles
                 if covered:
                     summary["covered"] += 1
                 else:
@@ -176,8 +222,13 @@ def run_repec_check(bank_codes: Optional[Iterable[str]] = None,
                     html = fetcher.get_text(f"{IDEAS}/p/{arch}/{series}/{pid}.html")
                     ftitle, _ = _paper_meta(html)
                     cands = extract_pdf_candidates(html, bank_home)
+                    nft = normalize_title(ftitle) if ftitle else ""
+                    for c in cands:
+                        matched |= by_u.get(normalize_url(c), set())
+                    if nft:
+                        matched |= by_t.get(nft, set())
                     recovered = (any(normalize_url(c) in urls for c in cands)
-                                 or bool(ftitle and normalize_title(ftitle) in titles))
+                                 or bool(nft and nft in titles))
                 except Exception:
                     recovered = False
                 if recovered:
@@ -189,6 +240,20 @@ def run_repec_check(bank_codes: Optional[Iterable[str]] = None,
                 summary["missing_recent" if recent else "missing_legacy"] += 1
                 missing_rows.append({"bank": bank, "handle": full_handle,
                                      "title": title, "bucket": "recent" if recent else "legacy"})
+        if truncated_any:
+            summary["reverse_skipped_truncated"] = 1
+        else:
+            for did, row in rev_rows.items():
+                if did in matched:
+                    continue
+                d = _row_date(row)
+                bucket = "pending_repec" if (d and d >= cutoff) else "unmatched_old"
+                summary[bucket] += 1
+                reverse_rows.append({"bank": bank, "doc_id": did,
+                                     "doc_type": row.get("doc_type", ""),
+                                     "date": row.get("date", ""),
+                                     "title": row.get("title", ""),
+                                     "pdf_url": row.get("pdf_url", ""), "bucket": bucket})
         results[bank] = summary
         print(f"{bank}: {summary}")
 
@@ -200,6 +265,15 @@ def run_repec_check(bank_codes: Optional[Iterable[str]] = None,
         for r in missing_rows:
             w.writerow(r)
     print(f"wrote {len(missing_rows)} missing paper(s) -> {out}", file=sys.stderr)
+    rout = reverse_csv_path or str(cfg.reports_dir / "repec_check_reverse.csv")
+    with open(rout, "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=["bank", "doc_id", "doc_type", "date",
+                                           "title", "pdf_url", "bucket"])
+        w.writeheader()
+        for r in reverse_rows:
+            w.writerow(r)
+    print(f"wrote {len(reverse_rows)} manifest row(s) RePEc does not list -> {rout}",
+          file=sys.stderr)
     return results
 
 
@@ -459,7 +533,7 @@ def run_repec_reconcile(bank_codes: Optional[Iterable[str]] = None,
 
 # ---------------------------------------------------------------------------
 # --propose / --apply-csv: human-approved reconciliation for title drift
-# (spec docs/superpowers/specs/2026-07-16-recovery-phase2-design.md §B2).
+# (recovery phase-2 design, 2026-07-16, §B2).
 # ---------------------------------------------------------------------------
 
 _PROPOSE_CSV_FIELDS = ("bank", "ideas_url", "repec_title", "candidate_doc_id",

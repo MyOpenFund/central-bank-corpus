@@ -1,6 +1,6 @@
 """repec-reconcile: strict one-shot stamping of IDEAS source_urls onto
-uniquely-matched manifest rows (spec docs/superpowers/specs/2026-07-16-
-download-failures-design.md §3). Adversarial fixtures on purpose: singleton
+uniquely-matched manifest rows (download-failures design,
+2026-07-16, §3). Adversarial fixtures on purpose: singleton
 vs. duplicated titles, empty vs. non-empty source_url, multi-byte UTF-8
 titles (a French accented title, per the house lesson that ASCII-only
 fixtures mask bugs)."""
@@ -300,7 +300,7 @@ def test_two_listing_entries_matching_one_row_only_first_stamps(tmp_path):
 
 # =============================================================================
 # --propose / --apply-csv: human-approved reconciliation for title drift
-# (spec docs/superpowers/specs/2026-07-16-recovery-phase2-design.md §B2).
+# (recovery phase-2 design, 2026-07-16, §B2).
 # =============================================================================
 
 def _write_propose_csv(path, rows):
