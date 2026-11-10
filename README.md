@@ -25,13 +25,14 @@ no machine-translated or model-generated text.
   (`banks.py::BIS_ALIASES`, accent/apostrophe-insensitive) so renamed / historical / native
   BIS labels (e.g. "Bank of Latvia" → `lv`, pre-2010 "…US Federal Reserve System" → `us`)
   still map to the right bank instead of being silently dropped.
-- **RePEc / IDEAS discovery** (`sources/repec.py`) → working papers (D1/D2) for banks **without**
-  a native source. **Paginates** the full series back-catalogue and reads the publication month
+- **RePEc / IDEAS discovery** (`sources/repec.py`) → working papers (D1/D2) for every bank in
+  `SERIES` (13), including those with a native source (second source, deduped).
+  **Paginates** the full series back-catalogue and reads the publication month
   from the IDEAS `citation_*` metadata (RePEc is month-only → `date_precision="month"`).
 - **Working Papers v3 — native bank-site discovery** (the 5 big banks: ecb, us, jp, gb, de;
   fr and se added 2026-08). Each gets a native scraper with the **exact publication day** from
   the bank's own site (`sources/{ecb_foedb,fed_wp,boj_wp,boe_wp,buba_wp,bdf_wp,riksbank_wp}.py`),
-  replacing RePEc for D1/D2. Rule: migrate a bank's rows before switching it to native download
+  RePEc stays a second source. Rule: migrate a bank's rows before switching it to native download
   ([docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md)).
   `wp-migrate` rewrites existing rows' dates in place (key→URL→exact-title join, `doc_id`/
   `sha256`/`local_path` untouched, zero re-downloads); `wp-dates` recovers the day for legacy
@@ -170,7 +171,7 @@ run(dry_run=False, max_rounds=3)    # native A/B/E/F per bank (converges)
    User-Agent of every request — it's how central-bank webmasters reach *you* (not the
    project) about *your* crawls; part of being a polite crawler. Without it, the UA points
    to this repository. Throughput is bounded by politeness
-   (`min_delay_seconds`, default ~2 s/domain); the rate limit is **per-host**, so banks on
+   (`min_delay_seconds`, default 0.5 s/domain); the rate limit is **per-host**, so banks on
    different domains crawl in parallel.
 2. **Validate on a small window first.** Parsers were written to each site's documented markup,
    not all validated against live HTML. Dry-run one or two banks before a full crawl:

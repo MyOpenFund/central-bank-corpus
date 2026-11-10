@@ -13,7 +13,7 @@ local notes (`*.local.md`).
    GitHub → repo → Settings → Deploy keys → "Add deploy key", paste
    `nas_deploy_key.pub`, **check "Allow write access"**.
 2. **GHCR visibility**: after the first CI build, GitHub → profile → Packages →
-   `cb_corpus` → Package settings → Change visibility → **Public**
+   `central-bank-corpus` → Package settings → Change visibility → **Public**
    (otherwise the NAS can't pull without authentication).
 
 ## 1. Path/UID discovery (disposable stack)

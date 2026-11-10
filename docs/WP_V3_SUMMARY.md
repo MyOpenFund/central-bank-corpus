@@ -46,14 +46,16 @@ elsewhere) — discoverable via `discover --download`.
   copies, so the join uses the DP number from the RePEc handle, then the exact
   title; the Bundesbank blob goes into `alt_urls`.
 - **fr / se** (August 2026): `sources/bdf_wp.py` (both site generations) and
-  `sources/riksbank_wp.py`, wired into `wp_migrate._NATIVE`. In the committed
-  manifests (2026-09-03 snapshot) most of their D1 rows still carry RePEc-era
-  dates: their back-catalogue migration is only partly applied.
+  `sources/riksbank_wp.py`, wired into `wp_migrate._NATIVE`, and both adapters
+  declare D1 native. In the committed manifests (2026-09-03 snapshot) their
+  back-catalogue is **not migrated** (no `repec_handle`, no migrated date on the
+  RePEc-era rows; the `bank_site` rows are new native downloads). See the
+  warning in [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
 
 ## Architecture
 
 - Hand-written adapter per bank (`adapters/{ecb,fed,boj,boe,buba,bdf,se}.py`);
-  jp/gb/de/fr moved out of `banks_sources.toml`. `base.discover` routes D1/D2 native-first
+  jp and fr moved out of `banks_sources.toml` (gb and de were generic). `base.discover` routes D1/D2 native-first
   only when the type is in `native_types`, with a `_skip_known_url` hook
   (injected by the pipeline) so a flipped bank never re-downloads its migrated
   back-catalogue.
@@ -99,8 +101,9 @@ clone replays every date with **no re-crawl**; PDFs are rebuilt from the manifes
   Applied to the manifest + recorded in the committed `wp_dates_index.jsonl`.
 - The remaining ~8,261 have no in-month PDF date. A Wayback pass extends the
   index (slow, archive.org-bound; resumable; yield is bank-dependent — high for
-  promptly-archived 2000s papers, ~0 for pre-2000/digitised). It is a **scheduled
-  job**, not a one-shot — materialise its results anytime with
+  promptly-archived 2000s papers, ~0 for pre-2000/digitised). It was designed as a
+  **scheduled job**, but `deploy/crontab` does not run `wp-dates` today (manual
+  runs only) — materialise its results anytime with
   `wp-dates --apply-only --write` (the same command a fresh clone runs to replay
   the committed index, no network).
 - **Honest ceiling:** many legacy WPs (esp. pre-2000 and Fed pre-2017) have **no
@@ -113,7 +116,7 @@ clone replays every date with **no re-crawl**; PDFs are rebuilt from the manifes
   the committed index; `--apply-only` to materialise.
 - **es/gb leftovers** — see the repec-check results below: language-variant
   duplicates (ignore) plus a real legacy tail (ingest via RePEc + `wp-dates`).
-- **D2 for the non-five banks (Q3)** — wire each bank's occasional/discussion-paper
+- **D2 for the non-five banks** (June 2026 decision: D2 for every bank that has one) — wire each bank's occasional/discussion-paper
   RePEc series handle into `SERIES` (one-off IDEAS research per bank).
 - **Missing papers** — the ~462 Bundesbank DPs (and small tails elsewhere) the
   corpus lacks: `discover --download` to fetch.
@@ -132,12 +135,15 @@ clone replays every date with **no re-crawl**; PDFs are rebuilt from the manifes
   Phase 2 (`repec-check`) ✅ · Phase 3 (migration) ✅ for the 5 · Phase 4
   (`wp-dates`) ✅ · Phase 5 (CLI/docs) ✅
 - Phase 6 (`fetch-from-manifest`) — not built · D2 handles for non-five banks
-  (decision Q3) — pending.
+  (June 2026 decision: D2 for every bank that has one) — pending.
+- RePEc is still walked by the nightly sync (`repec` in `deploy/run-job.sh`) for
+  every bank in `SERIES`, natively-covered ones included: dual source, with
+  dedup on `doc_id` / `alt_urls`.
 
 ## RePEc completeness audit — results (2026-06-14)
 
 `repec-check` across the wired WP banks (12 with results below; read-only, never downloads; full list
-in `data/reports/repec_check.csv`, gitignored). Coverage ≥ 91 % everywhere,
+in `data/reports/repec_check.csv`, gitignored). Coverage ≥ 90 % everywhere (es lowest at 90.8 %),
 **0 `missing_recent`** for every bank (native discovery keeps up); au, ch and nl
 at 100 %.
 

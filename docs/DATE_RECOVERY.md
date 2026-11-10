@@ -16,8 +16,9 @@ exist anywhere in RePEc** (IDEAS meta tags, EconPapers, API — all carry
 > `alt_urls`. Rungs 3 (cover-page text) and 4 (NEP bound) and the LLM-assisted
 > tail were **not built**. A recovered day must also not be the 1st of the month.
 > The committed `data/wp_dates_index.jsonl` held 1,444 entries in the 2026-09-03
-> manifest snapshot (1,309 `pdf_meta`, 135 `wayback`). Results by bank:
-> [WP_V3_SUMMARY.md](WP_V3_SUMMARY.md).
+> manifest snapshot (1,309 `pdf_meta`, 135 `wayback`); the June run report in
+> [WP_V3_SUMMARY.md](WP_V3_SUMMARY.md) counted 1,328 `pdf_meta` days (au 151 there,
+> 132 in the index).
 
 ## The waterfall (June 2026 design)
 
@@ -96,7 +97,7 @@ data/wp_dates_index.jsonl     (one line per resolved paper, committed to git)
 ```
 
 ```json
-{"key": "ecb:ecbwps:19991001", "title_norm": "some legacy paper title",
+{"key": "RePEc:ecb:ecbwps:19991001", "title_norm": "some legacy paper title",
  "date": "1999-10-14", "date_precision": "day", "date_source": "wayback",
  "evidence_url": "https://web.archive.org/web/19991014.../pub/pdf/scpwps/ecbwp001.pdf",
  "resolved_at": "2026-06-12"}
@@ -147,8 +148,8 @@ python -m cb_corpus wp-dates [--banks ...] [--csv path] [--write] [--no-wayback]
   covered all 13 wired WP banks).
 - Default dry-run: prints a summary and writes a CSV (`doc_id, new_date,
   date_source`; default `data/reports/wp_dates.csv`) for human review.
-- `--write`: rewrites manifest rows in place (only `date`, `date_precision`,
-  `date_source`; never touches `doc_id`/`sha256`/`local_path`) and appends
+- `--write`: rewrites manifest rows in place (only `date`, `year`,
+  `date_precision`, `date_source`; never touches `doc_id`/`sha256`/`local_path`) and appends
   new resolutions to `data/wp_dates_index.jsonl`.
 - Idempotent: rows already at `date_precision="day"` are skipped; index
   entries short-circuit the waterfall.
@@ -156,7 +157,7 @@ python -m cb_corpus wp-dates [--banks ...] [--csv path] [--write] [--no-wayback]
 - `--apply-only`: replay the committed index onto the manifest, no recovery and
   no network; what a fresh clone runs to materialise dates.
 
-## Expected yield (honest estimate)
+## Expected yield (June 2026 design estimate, rung numbers as designed)
 
 - Rung 1 (Wayback): high hit-rate for ECB/Fed/BoE post-2000 URLs; weaker for
   BoJ (URL churn) and pre-1998 anything.

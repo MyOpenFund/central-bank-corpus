@@ -1,8 +1,10 @@
 # RePEc as a completeness check (no downloads)
 
-In v3, RePEc/IDEAS stops being a *source* for the natively-covered banks (`ecb`,
-`us`, `jp`, `gb`, `de`, then `fr` and `se`) and becomes an **audit oracle**: it
-answers "is the corpus missing any paper?" without ever downloading a document.
+In v3, RePEc/IDEAS stops being the *primary* source for the natively-covered
+banks (`ecb`, `us`, `jp`, `gb`, `de`, then `fr` and `se`) and also becomes an
+**audit oracle**: `repec-check` answers "is the corpus missing any paper?"
+without ever downloading a document. (The nightly sync still walks RePEc for
+every wired bank, natively-covered ones included, as a second source.)
 
 > **Status (2026-11):** shipped as `repec-check` on 2026-06-14
 > (`cb_corpus/repec_check.py`); results in [WP_V3_SUMMARY.md](WP_V3_SUMMARY.md).
@@ -104,7 +106,8 @@ treat as duplicates; fuzzy ones go to the report only.
 
 ## Handle stamping, as built
 
-- `wp-migrate --write` stamps `repec_handle` on every row it migrates.
+- `wp-migrate --write` stamps `repec_handle` on the rows it migrates whose
+  `source_url` is an IDEAS page.
 - `repec-reconcile [--write]` stamps IDEAS `source_url`s onto uniquely matched
   rows (strict cascade, never fuzzy, never dates).
 - `repec-reconcile --propose` then `--apply-csv <csv> --write`: human-approved
@@ -140,7 +143,8 @@ Workflow as built: `repec-check` (inspect the report) → `wp-migrate --write` /
 ## Migration of v2 rows (one-off)
 
 *Done for `ecb`, `us`, `jp`, `gb`, `de` in June 2026 with `wp-migrate`; `fr` and
-`se` are wired but only partly applied (see [WP_V3_SUMMARY.md](WP_V3_SUMMARY.md)).*
+`se` are wired but not applied in the committed manifests (see
+[IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)).*
 
 The manifest had thousands of D1/D2 rows with `date = YYYY-MM-01`
 sourced from RePEc. When native scrapers land:
