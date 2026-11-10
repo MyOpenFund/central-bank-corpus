@@ -43,6 +43,11 @@ class Config:
     # When True, text/html responses are rendered to PDF via headless Chrome
     # so the on-disk corpus stays uniformly PDF for downstream ingestion.
     html_to_pdf: bool = True
+    # Max IDEAS listing pages walked per RePEc series (discovery and repec-check).
+    # A loop guard, NOT a data limit: the largest IDEAS series had 17 pages on
+    # 2026-11-10. Reaching it while the last page still links to the next one
+    # is recorded as a truncation (run-report / WARNING), never a clean end.
+    repec_max_pages: int = 200
 
     def __post_init__(self) -> None:
         # Normalize retry_http_4xx (a list from a caller is fine) and reject

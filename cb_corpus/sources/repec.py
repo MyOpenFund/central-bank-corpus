@@ -168,13 +168,35 @@ def extract_official_pdf(paper_html: str, bank_homepage: str,
     return None
 
 
+DEFAULT_MAX_PAGES = 200  # mirrors Config.repec_max_pages, for cfg-less fetchers
+
+
+def default_max_pages(fetcher: object) -> int:
+    """The IDEAS listing-page cap for `fetcher`: its `cfg.repec_max_pages` when
+    it carries a Config (the real Fetcher does), else DEFAULT_MAX_PAGES."""
+    cfg = getattr(fetcher, "cfg", None)
+    return getattr(cfg, "repec_max_pages", DEFAULT_MAX_PAGES)
+
+
+def cap_truncation(html: Optional[str], series: str,
+                   max_pages: int) -> Optional[str]:
+    """The truncation sample when a walk read page `max_pages` (the cap) and
+    that page still links to page `max_pages + 1`; None for a clean end."""
+    if html is not None and links_to_listing_page(html, series, max_pages + 1):
+        return (f"page {max_pages}: max_pages ({max_pages}) reached, "
+                f"page {max_pages + 1} advertised")
+    return None
+
+
 class RePEcDiscovery:
     def __init__(self, fetcher: Optional[Fetcher] = None,
                  max_items_per_series: int = 5000,
-                 max_pages: int = 80):
+                 max_pages: Optional[int] = None):
         self.fetcher = fetcher or Fetcher()
         self.max_items = max_items_per_series
-        self.max_pages = max_pages
+        # None -> Config.repec_max_pages via the fetcher (loop guard, see config.py)
+        self.max_pages = (default_max_pages(self.fetcher)
+                          if max_pages is None else max_pages)
 
     def _series_paper_pages(self, handle: str,
                             stats: Optional[SourceStats] = None) -> Iterator[list[str]]:
@@ -192,6 +214,12 @@ class RePEcDiscovery:
         `stats` given it is recorded as `record_fetch_error(..., truncated=True)`
         first — this must never look like a clean "last page reached" in the
         run-report; it is a truncated listing, not a completed one.
+
+        Reaching the cap (`max_pages`) is a clean end when that last page
+        advertises no next page, and a truncation (with `stats`) when it links
+        to page `max_pages + 1`. The check runs only once the consumer resumes
+        past the last yield: a consumer that stops early (stop_on_known,
+        max_items) never triggers it.
         """
         base = f"{IDEAS}/s/{handle.replace(':', '/')}"
         series = base.rsplit("/", 1)[-1]  # same name as the fetched URLs
@@ -212,6 +240,13 @@ class RePEcDiscovery:
                 break
             seen.update(new)
             yield new
+        else:
+            # Loop exhausted: page max_pages was read, had new papers, and the
+            # consumer asked for more. (break / an early-closed generator never
+            # gets here.)
+            msg = cap_truncation(prev_html, series, self.max_pages)
+            if msg is not None and stats is not None:
+                stats.record_fetch_error(msg, truncated=True)
 
     def _series_paper_urls(self, handle: str) -> list[str]:
         """All paper-page URLs for a series, FOLLOWING IDEAS pagination.
