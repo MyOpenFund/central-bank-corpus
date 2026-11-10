@@ -40,7 +40,9 @@ no machine-translated or model-generated text.
 - **Per-bank adapters** (`adapters/`) → site-specific listings (A/B/E/F + native D1/D2). Bespoke
   `ECBAdapter`, `FedAdapter`, `BoJAdapter` (jp), `BoEAdapter` (gb), `BubaAdapter` (de),
   `BdfAdapter` (fr), `RiksbankAdapter` (se), `RBAAdapter` (au); TOML-declarative adapters
-  (`banks_sources.toml`: ch/ca). `GenericAdapter`
+  (`banks_sources.toml`: ch/ca; a missing/empty/malformed file, an unknown bank code or an
+  unknown section prints an `[adapters] WARNING` on stderr — a malformed file only skips the
+  declarative adapters, it never breaks the CLI). `GenericAdapter`
   (C1 + RePEc D) is the default. **Rate decisions, policy statements & minutes (A1/A2/A3) are
   wired for the majors.**
 - **Bank-of-England official recovery** (`sources/boe_wp.py` + `pipeline.run_boe_wp_recovery` /

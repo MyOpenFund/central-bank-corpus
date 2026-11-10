@@ -10,7 +10,23 @@ from . import se    # noqa: F401  -> overrides "se" (native D1 working papers)
 from . import rba   # noqa: F401  -> overrides "au" (A1 decisions)
 from . import declarative as _declarative
 
-_declarative.load_toml()
+
+def _load_declarative() -> None:
+    """Register the `banks_sources.toml` adapters, printing every problem
+    (missing file, 0 banks, unknown bank code / section, malformed file) on
+    stderr. Never raises: a broken TOML must not break the CLI import -- the
+    declarative adapters are skipped and the bespoke/generic ones still work."""
+    import sys
+    try:
+        warnings = _declarative.load_toml().warnings()
+    except Exception as exc:  # noqa: BLE001 -- belt and braces, see docstring
+        warnings = [f"banks_sources.toml could not be loaded "
+                    f"({type(exc).__name__}: {exc}): declarative adapters skipped"]
+    for w in warnings:
+        print(f"[adapters] WARNING: {w}", file=sys.stderr, flush=True)
+
+
+_load_declarative()
 
 from .base import (  # noqa: E402,F401
     ADAPTERS, INSTANCE_FACTORIES, BankAdapter, GenericAdapter,
