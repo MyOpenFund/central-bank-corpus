@@ -235,6 +235,12 @@ class RePEcDiscovery:
         `stats`, when given, is forwarded to `_series_paper_pages` for every
         series so a listing-page fetch failure is recorded as truncation
         (see that method's docstring) rather than silently ending the walk.
+        It also counts the unknown papers this walk passes over, via
+        `stats.record_skip`: `paper_fetch_failed` (the paper page fetch
+        raised; sample `"<paper_url>: <exc>"`) and `paper_no_pdf` (the page
+        has no PDF candidate; sample = the paper URL). Skips are visibility
+        only -- they never change the run's exit code. Without `stats`, such
+        papers are dropped silently, as before.
 
         `skip_url(paper_page_url)` short-circuits BEFORE the per-paper fetch
         (mirror of the BIS hook). With `stop_on_known`, a listing page whose
@@ -277,10 +283,15 @@ class RePEcDiscovery:
                         unknown_on_page += 1
                         try:
                             paper_html = self.fetcher.get_text(paper_url)
-                        except Exception:
+                        except Exception as exc:
+                            if stats is not None:
+                                stats.record_skip("paper_fetch_failed",
+                                                  f"{paper_url}: {exc}")
                             continue
                         cands = extract_pdf_candidates(paper_html, bank.homepage)
                         if not cands:
+                            if stats is not None:
+                                stats.record_skip("paper_no_pdf", paper_url)
                             continue
                         title, pub_date = _paper_meta(paper_html)
                         yield DocRecord(
