@@ -11,6 +11,8 @@ Doctrine: a run that did no useful work must never exit 0.
   3 = degraded = any truncation, OR zero useful work (zero new documents)
       while errors occurred (save errors and/or fetch errors) —
       recovered transient errors alongside actual new documents do NOT degrade.
+Skips (`SourceStats.record_skip`) are counted for visibility only and never
+affect the exit code.
 """
 from __future__ import annotations
 
@@ -36,6 +38,13 @@ class SourceStats:
     fetch_errors: int = 0
     truncated: bool = False
     error_samples: list = field(default_factory=list)
+    # Items deliberately passed over, tallied by reason (e.g. a RePEc paper
+    # page that 404s or carries no PDF), with up to _SAMPLE_CAP samples PER
+    # reason (so a flood of one reason never hides another). Visibility only:
+    # finish() ignores them, a skip is never an error and never changes the
+    # exit code.
+    skipped: dict = field(default_factory=dict)        # reason -> count
+    skip_samples: dict = field(default_factory=dict)   # reason -> [sample, ...]
 
     def record_fetch_error(self, msg: str, truncated: bool = False) -> None:
         self.fetch_errors += 1
@@ -43,6 +52,13 @@ class SourceStats:
             self.truncated = True
         if len(self.error_samples) < _SAMPLE_CAP:
             self.error_samples.append(str(msg)[:300])
+
+    def record_skip(self, reason: str, sample: str) -> None:
+        """Count one skipped item under `reason`; keep a sample (capped per reason)."""
+        self.skipped[reason] = self.skipped.get(reason, 0) + 1
+        samples = self.skip_samples.setdefault(reason, [])
+        if len(samples) < _SAMPLE_CAP:
+            samples.append(str(sample)[:300])
 
     def record_saved_counts(self, counts: dict) -> None:
         """Fold a storage.save_many-style {status: count} dict into the stats."""
@@ -59,6 +75,8 @@ class SourceStats:
             "fetch_errors": self.fetch_errors,
             "truncated": self.truncated,
             "error_samples": list(self.error_samples),
+            "skipped": dict(self.skipped),
+            "skip_samples": {r: list(v) for r, v in self.skip_samples.items()},
         }
 
 

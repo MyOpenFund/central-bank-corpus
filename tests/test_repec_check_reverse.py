@@ -235,12 +235,16 @@ def test_max_pages_reached_is_a_truncation():
     from cb_corpus.runreport import SourceStats
 
     class Endless:
+        """Every page links to the next one (IDEAS pagination bar)."""
         def get_text(self, url):
             n = re.search(r"bojwps(\d*)\.html$", url).group(1) or "1"
-            return _listing([(f"wp{int(n):02d}e01", f"p{n}")])
+            nxt = f'<a class="page-link" href="bojwps{int(n) + 1}.html">next</a>'
+            return _listing([(f"wp{int(n):02d}e01", f"p{n}")]).replace(
+                "</body>", nxt + "</body>")
     stats = SourceStats("t")
     out = RC.enumerate_series(Endless(), "boj:bojwps", max_pages=3, stats=stats)
     assert len(out) == 3 and stats.truncated
+    assert stats.error_samples == ["bojwps page 3: max_pages (3) reached, page 4 advertised"]
 
 
 def test_se_key_tier_matches(tmp_path, monkeypatch):

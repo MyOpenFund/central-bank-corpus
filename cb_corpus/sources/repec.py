@@ -22,6 +22,7 @@ from urllib.parse import urljoin, urlsplit
 from bs4 import BeautifulSoup
 
 from ..banks import get_bank
+from ..config import REPEC_MAX_PAGES_DEFAULT, check_max_pages
 from ..http import Fetcher, host_matches, http_status
 from ..models import DocRecord
 from ..runreport import SourceStats
@@ -168,13 +169,38 @@ def extract_official_pdf(paper_html: str, bank_homepage: str,
     return None
 
 
+def default_max_pages(fetcher: object) -> int:
+    """The IDEAS listing-page cap for `fetcher`: its `cfg.repec_max_pages` when
+    it carries a Config (the real Fetcher does), else the Config default."""
+    cfg = getattr(fetcher, "cfg", None)
+    return getattr(cfg, "repec_max_pages", REPEC_MAX_PAGES_DEFAULT)
+
+
+def resolve_max_pages(fetcher: object, max_pages: Optional[int]) -> int:
+    """An explicit `max_pages` (validated), else `default_max_pages(fetcher)`."""
+    if max_pages is None:
+        return check_max_pages(default_max_pages(fetcher), "repec_max_pages")
+    return check_max_pages(max_pages, "max_pages")
+
+
+def cap_truncation(html: Optional[str], series: str,
+                   max_pages: int) -> Optional[str]:
+    """The truncation sample when a walk read page `max_pages` (the cap) and
+    that page still links to page `max_pages + 1`; None for a clean end."""
+    if html is not None and links_to_listing_page(html, series, max_pages + 1):
+        return (f"{series} page {max_pages}: max_pages ({max_pages}) reached, "
+                f"page {max_pages + 1} advertised")
+    return None
+
+
 class RePEcDiscovery:
     def __init__(self, fetcher: Optional[Fetcher] = None,
                  max_items_per_series: int = 5000,
-                 max_pages: int = 80):
+                 max_pages: Optional[int] = None):
         self.fetcher = fetcher or Fetcher()
         self.max_items = max_items_per_series
-        self.max_pages = max_pages
+        # None -> Config.repec_max_pages via the fetcher (loop guard, see config.py)
+        self.max_pages = resolve_max_pages(self.fetcher, max_pages)
 
     def _series_paper_pages(self, handle: str,
                             stats: Optional[SourceStats] = None) -> Iterator[list[str]]:
@@ -183,8 +209,9 @@ class RePEcDiscovery:
         IDEAS caps a series listing at ~200 items per page; older papers live
         on numbered pages (`<handle>2.html`, ...). Pages are yielded newest
         first; the walk ends cleanly when a page yields nothing new, when the
-        cap is hit, or on an HTTP 404 for page k > 1 that page k-1 does not
-        link to (IDEAS answers 404 on the page after the last one; see
+        cap (`max_pages`) is reached on a page that advertises no next page,
+        or on an HTTP 404 for page k > 1 that page k-1 does not link to
+        (IDEAS answers 404 on the page after the last one; see
         `listing_error_truncation`).
 
         Any other page-FETCH FAILURE (404 on page 1, 404 on a page that page
@@ -192,6 +219,12 @@ class RePEcDiscovery:
         `stats` given it is recorded as `record_fetch_error(..., truncated=True)`
         first — this must never look like a clean "last page reached" in the
         run-report; it is a truncated listing, not a completed one.
+
+        Reaching the cap (`max_pages`) is a clean end when that last page
+        advertises no next page, and a truncation (with `stats`) when it links
+        to page `max_pages + 1`. The check runs only once the consumer resumes
+        past the last yield: a consumer that stops early (stop_on_known,
+        max_items) never triggers it.
         """
         base = f"{IDEAS}/s/{handle.replace(':', '/')}"
         series = base.rsplit("/", 1)[-1]  # same name as the fetched URLs
@@ -212,6 +245,13 @@ class RePEcDiscovery:
                 break
             seen.update(new)
             yield new
+        else:
+            # Loop exhausted: page max_pages was read, had new papers, and the
+            # consumer asked for more. (break / an early-closed generator never
+            # gets here.)
+            msg = cap_truncation(prev_html, series, self.max_pages)
+            if msg is not None and stats is not None:
+                stats.record_fetch_error(msg, truncated=True)
 
     def _series_paper_urls(self, handle: str) -> list[str]:
         """All paper-page URLs for a series, FOLLOWING IDEAS pagination.
@@ -235,6 +275,14 @@ class RePEcDiscovery:
         `stats`, when given, is forwarded to `_series_paper_pages` for every
         series so a listing-page fetch failure is recorded as truncation
         (see that method's docstring) rather than silently ending the walk.
+        It also counts the unknown papers this walk passes over, via
+        `stats.record_skip` (samples kept per reason): `paper_gone` (the paper
+        page answered HTTP 404/410; sample `"<paper_url>: <exc>"`),
+        `paper_fetch_failed` (any other fetch failure: other 4xx, 5xx, timeout, network;
+        same sample shape) and `paper_no_pdf` (the page has no PDF candidate;
+        sample = the paper URL). Skips are visibility only -- they never change
+        the run's exit code. Without `stats`, such papers are dropped silently,
+        as before.
 
         `skip_url(paper_page_url)` short-circuits BEFORE the per-paper fetch
         (mirror of the BIS hook). With `stop_on_known`, a listing page whose
@@ -277,10 +325,17 @@ class RePEcDiscovery:
                         unknown_on_page += 1
                         try:
                             paper_html = self.fetcher.get_text(paper_url)
-                        except Exception:
+                        except Exception as exc:
+                            if stats is not None:
+                                reason = ("paper_gone"
+                                          if http_status(exc) in (404, 410)
+                                          else "paper_fetch_failed")
+                                stats.record_skip(reason, f"{paper_url}: {exc}")
                             continue
                         cands = extract_pdf_candidates(paper_html, bank.homepage)
                         if not cands:
+                            if stats is not None:
+                                stats.record_skip("paper_no_pdf", paper_url)
                             continue
                         title, pub_date = _paper_meta(paper_html)
                         yield DocRecord(

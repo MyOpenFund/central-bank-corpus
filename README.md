@@ -94,7 +94,15 @@ fatal, `3` degraded — a run that did no useful work never exits 0. An HTTP 404
 on an IDEAS listing page after the last one (not linked from the previous page)
 ends the RePEc walk cleanly (no truncation; the run can still be degraded for
 other reasons); a 404 on page 1, or on a page the previous one links to, stays a
-truncation (`3`). The NAS
+truncation (`3`). IDEAS listings are walked up to `Config.repec_max_pages`
+pages per series (default 200): a loop guard, not a data limit (the largest
+series had 17 pages in November 2026). Reaching it is a clean end when the last
+page read advertises no next page, and a truncation when it does. Each source
+in the run-report also carries `skipped` (reason → count) and `skip_samples`
+(reason → up to 5 samples) for the RePEc paper pages a walk passes over:
+`paper_gone` (HTTP 404/410), `paper_fetch_failed` (any other fetch failure) and
+`paper_no_pdf` (no PDF link on the page). They are counted for visibility and
+never affect the exit code. The NAS
 wrapper pushes an ntfy notification on non-zero exits when `NTFY_URL` is set
 (absent = no-op).
 

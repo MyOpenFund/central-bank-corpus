@@ -31,8 +31,9 @@ from .banks import get_bank
 from .config import Config
 from .http import Fetcher
 from .runreport import SourceStats
-from .sources.repec import (IDEAS, SERIES, _paper_meta, extract_pdf_candidates,
-                            listing_error_truncation)
+from .sources.repec import (IDEAS, SERIES, _paper_meta, cap_truncation,
+                            extract_pdf_candidates, listing_error_truncation,
+                            resolve_max_pages)
 from .storage import Storage
 from .wp_migrate import (_KEY_FROM_HANDLE, _KEY_FROM_PDF, normalize_title,
                          normalize_url, repec_handle_from_source_url)
@@ -61,7 +62,8 @@ def parse_series_listing(html: str, arch: str, series: str) -> list[tuple[str, s
     return list(best.items())
 
 
-def enumerate_series(fetcher: Fetcher, handle: str, max_pages: int = 80,
+def enumerate_series(fetcher: Fetcher, handle: str,
+                     max_pages: Optional[int] = None,
                      stats: Optional[SourceStats] = None
                      ) -> list[tuple[str, str]]:
     """All (paper_id, title) for an IDEAS series, following pagination.
@@ -76,9 +78,11 @@ def enumerate_series(fetcher: Fetcher, handle: str, max_pages: int = 80,
     `record_fetch_error(..., truncated=True)` first, so it is never
     indistinguishable from a genuinely completed listing. `stats=None` (the
     default) preserves the prior silent-break behavior for callers not yet
-    wired to a run-report. Hitting `max_pages` is also recorded as a
-    truncation: the listing may have more pages than were read.
+    wired to a run-report. `max_pages` defaults to the fetcher's
+    `cfg.repec_max_pages` (200 without a cfg); reaching it is a truncation only
+    when the last page read still links to the next one, else a clean end.
     """
+    max_pages = resolve_max_pages(fetcher, max_pages)
     arch, series = handle.split(":")
     base = f"{IDEAS}/s/{arch}/{series}"
     seen: dict[str, str] = {}
@@ -100,9 +104,9 @@ def enumerate_series(fetcher: Fetcher, handle: str, max_pages: int = 80,
         for pid, t in new:
             seen[pid] = t
     else:
-        if stats is not None:
-            stats.record_fetch_error(
-                f"{handle}: stopped at max_pages={max_pages}", truncated=True)
+        msg = cap_truncation(prev_html, series, max_pages)
+        if msg is not None and stats is not None:
+            stats.record_fetch_error(msg, truncated=True)
     return list(seen.items())
 
 
@@ -139,8 +143,9 @@ def run_repec_check(bank_codes: Optional[Iterable[str]] = None,
     `grace_days` is the one grace window of the design (decision Q4): it also
     splits the forward `missing_recent` / `missing_legacy` buckets.
     The reverse check only covers a bank's doc types that have a RePEc series, and
-    is skipped (flagged `reverse_skipped_truncated`) when a listing was truncated,
-    hit `max_pages`, or came back empty. Leftover page fetches that fail are
+    is skipped (flagged `reverse_skipped_truncated`) when a listing was truncated
+    (including reaching `max_pages` on a page that still advertises a next
+    page), or came back empty. Leftover page fetches that fail are
     counted in `pagefetch_errors` (rows they would have matched may then read as
     unmatched)."""
     if grace_days < 0:
