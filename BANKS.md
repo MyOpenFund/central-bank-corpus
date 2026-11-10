@@ -4,7 +4,7 @@ Maintained by hand from `cb_corpus/banks.py` (the 63 banks) and the adapter regi
 
 > ⚠️ Some native adapters have **known discovery gaps** (stale URL patterns, frozen snapshots) — validate their A/B/E/F output before trusting it.
 >
-> ✅ **Solid as of 2026-06**: **ECB** (A1/A2/A3), **Fed `us`** (A2/A3), **RBA `au`** (A1, now `RBAAdapter` — not TOML), **BoE `gb`** (full working papers + MPC minutes A3, from the bank's own sitemaps). Counts: `python -m cb_corpus report` (bank × type × year matrix). `gen_corpus.py` (which writes the uncommitted `CORPUS.md`) still reads the pre-split single `data/manifest.jsonl` and fails on the per-bank layout.
+> ✅ **Solid as of 2026-06**: **ECB** (A1/A2/A3), **Fed `us`** (A2/A3), **RBA `au`** (A1, now `RBAAdapter` — not TOML), **BoE `gb`** (full working papers + MPC minutes A3, from the bank's own sitemaps). Counts: `python -m cb_corpus report` (bank × type × year matrix). Full inventory: `python gen_corpus.py` → `CORPUS.md` (generated, not committed).
 
 | # | code | bank | country | domain | verify | adapter |
 |--:|------|------|---------|--------|:------:|---------|

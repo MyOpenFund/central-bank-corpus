@@ -13,9 +13,8 @@ bank publishes them, honest provenance on every row, and a self-healing nightly 
 domain, or `*.bis.org` (the official re-host for speeches). No academic-curated datasets,
 no machine-translated or model-generated text.
 
-> 📊 Counts: `python -m cb_corpus report` (bank × type × year completeness matrix). `gen_corpus.py`
-> (→ uncommitted `CORPUS.md`) still reads the pre-split single `data/manifest.jsonl` and fails on the
-> per-bank layout.
+> 📊 Counts: `python -m cb_corpus report` (bank × type × year completeness matrix). Full inventory:
+> `python gen_corpus.py` → **`CORPUS.md`** (generated from the per-bank manifests, not committed).
 > 🤖 RAG handoff contract (schema, filters, citation): **`INGESTION_RAG.md`**.
 
 ## What's wired up
