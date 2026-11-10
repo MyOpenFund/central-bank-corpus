@@ -299,13 +299,20 @@ def _fixture(name):
     return (_FIX / name).read_text(encoding="utf-8")
 
 
-def _http_exc(status, url="https://ideas.repec.org/s/x/y3.html"):
+def _http_exc(status, url="https://ideas.repec.org/s/x/y3.html", msg=None):
     """The exception the real Fetcher raises for an HTTP error: a RuntimeError
-    chained (`raise ... from`) from requests' HTTPError carrying the response."""
+    chained (`raise ... from`) from requests' HTTPError carrying the response.
+    The default message mirrors Fetcher.get_bytes: a 4xx outside the default
+    Config.retry_http_4xx fails fast ("not retried"); anything else is retried
+    and ends "failed after retries"."""
+    from cb_corpus.config import Config
+
     r = requests.Response()
     r.status_code = status
-    msg = (f"GET bytes failed (HTTP {status}, not retried): {url}"
-           if status < 500 else f"GET bytes failed after retries: {url}")
+    if msg is None:
+        fails_fast = 400 <= status < 500 and status not in Config().retry_http_4xx
+        msg = (f"GET bytes failed (HTTP {status}, not retried): {url}" if fails_fast
+               else f"GET bytes failed after retries: {url}")
     try:
         try:
             raise requests.exceptions.HTTPError(f"{status} error", response=r)
@@ -595,7 +602,7 @@ class _FakeSession:
         return r
 
 
-def _real_fetcher(monkeypatch, page3_status):
+def _real_fetcher(monkeypatch, page3_status, extra_routes=None, config=None):
     import cb_corpus.http as H
     from cb_corpus.config import Config
 
@@ -605,8 +612,9 @@ def _real_fetcher(monkeypatch, page3_status):
         f"{base}.html": (200, _fixture("rbnkwp.html")),
         f"{base}2.html": (200, _fixture("rbnkwp2.html")),
         f"{base}3.html": (page3_status, "<html>error</html>"),
+        **(extra_routes or {}),
     })
-    f = H.Fetcher(Config())
+    f = H.Fetcher(config or Config())
     f.session = session
     return f, session
 
@@ -628,3 +636,60 @@ def test_enumerate_real_fetcher_503_on_page3_is_truncation(monkeypatch):
     assert session.calls.count(f"{IDEAS}/s/hhs/rbnkwp3.html") == f.cfg.max_retries
     assert stats.truncated is True and stats.fetch_errors == 1
     assert stats.error_samples[-1].startswith("page 3: ")
+
+
+# -- final review: pipeline.run_repec end to end, real Fetcher -> exit code --
+
+class _OneUnknownStorage:
+    """Fake storage: every IDEAS paper page is already known except `unknown`,
+    so the walk visits all three listing pages but fetches one paper page."""
+    def __init__(self, unknown):
+        self.unknown = unknown
+        self.saved = []
+
+    def is_known_source_url(self, url):
+        return url != self.unknown
+
+    def save_many(self, recs, dry_run=True, label=""):
+        self.saved = list(recs)
+        return {"saved": len(self.saved)}
+
+
+def _run_repec_se(monkeypatch, tmp_path, page3_status):
+    import cb_corpus.pipeline as P
+    from cb_corpus.config import Config
+    from cb_corpus.sources import repec as R
+    from cb_corpus.sources.repec import parse_series_page
+    from cb_corpus.taxonomy import DocType
+
+    monkeypatch.setitem(R.SERIES, "se", [("hhs:rbnkwp", DocType.D1)])
+    paper = parse_series_page(_fixture("rbnkwp.html"))[0]
+    paper_html = ('<html><head><title>A paper</title></head><body>'
+                  '<a href="https://www.riksbank.se/wp/a-paper.pdf">pdf</a></body></html>')
+    cfg = Config(data_dir=tmp_path / "data", min_delay_seconds=0.0)
+    fetcher, session = _real_fetcher(monkeypatch, page3_status,
+                                     extra_routes={paper: (200, paper_html)}, config=cfg)
+    storage = _OneUnknownStorage(paper)
+    monkeypatch.setattr(P, "_make_storage",
+                        lambda config=None, html_to_pdf=None: (cfg, fetcher, storage))
+
+    report = RunReport("central-bank-corpus", "repec")
+    P.run_repec(["se"], dry_run=True, config=cfg, report=report)
+    return report, storage, session
+
+
+def test_run_repec_404_after_last_page_exits_0(monkeypatch, tmp_path):
+    report, storage, session = _run_repec_se(monkeypatch, tmp_path, 404)
+    stats = report.source("se")
+    assert f"{IDEAS}/s/hhs/rbnkwp3.html" in session.calls
+    assert len(storage.saved) == 1 and stats.docs_new == 1 and stats.docs_failed == 0
+    assert stats.truncated is False and stats.fetch_errors == 0
+    assert report.finish() == 0
+
+
+def test_run_repec_503_on_page3_exits_3(monkeypatch, tmp_path):
+    report, storage, _ = _run_repec_se(monkeypatch, tmp_path, 503)
+    stats = report.source("se")
+    assert len(storage.saved) == 1 and stats.docs_new == 1
+    assert stats.truncated is True and stats.fetch_errors == 1
+    assert report.finish() == 3

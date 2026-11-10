@@ -31,7 +31,9 @@ class Config:
     # HTTP 4xx statuses Fetcher.get/get_bytes still RETRY (with backoff). Any other
     # 4xx fails at once: a 404/410 will not heal in 7 s, and retrying it only burns
     # backoff (issue #30). 403 stays retried (anti-bot blocks can be transient),
-    # 408/429 are transient by definition. () = never retry a 4xx.
+    # 408/429 are transient by definition. () = never retry a 4xx. Entries must
+    # be 4xx codes (400-499): 5xx are always retried, so listing one would
+    # silently do nothing -> rejected with a ValueError.
     retry_http_4xx: tuple[int, ...] = (403, 408, 429)
     # No robots.txt enforcement. No domain guard. We scrape whatever the
     # discovery layer hands us.
@@ -56,6 +58,11 @@ class Config:
             raise ValueError(
                 f"Config.retry_http_4xx must contain only int HTTP status codes, "
                 f"got {raw!r}")
+        outside = [c for c in codes if not 400 <= c <= 499]
+        if outside:
+            raise ValueError(
+                f"Config.retry_http_4xx must contain only 4xx codes (400-499), "
+                f"got {outside!r} in {raw!r}")
         self.retry_http_4xx = codes
 
     @property
