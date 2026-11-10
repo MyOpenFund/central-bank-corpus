@@ -59,7 +59,7 @@ class DocRecord:
     # (since WP v3) so dedup recognises alternate URLs across restarts.
     alt_urls: list[str] = field(default_factory=list)
     # NOT a field: manifest rows may also carry an optional `alt_source_urls`
-    # list, written only by Storage.stamp_alt_urls (source pages of records
+    # list, written only by Storage's duplicate stamping (source pages of records
     # whose content duplicated this row) and indexed by Storage._load_existing
     # into the known-source-URL index. Absent on most rows.
 

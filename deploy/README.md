@@ -192,9 +192,11 @@ transparency) but never alerted.
 - A `PARTIAL` status is not an emergency: failed banks are retried the next
   night. Investigate a bank only when it fails several nights in a row
   (its log under `reports/discover/<date>/<code>.log` has the traceback).
-- `data/reports/duplicate_stamps.jsonl`: one JSON line per record whose bytes
-  another row already owns (`skip:duplicate-content`), from the nightly sync and
-  from `recover-downloads` (`label`), with `persisted` = whether the URL was
+- `data/reports/duplicate_stamps.jsonl`: one JSON line per URL found to
+  duplicate a row that already owns its content (`skip:duplicate-content` in the
+  nightly sync; in `recover-downloads` also its `skip:already-indexed` self-heals
+  and a candidate's final URL, so one recovered record can log two lines; see
+  `label`), with `persisted` = whether the URL was
   stamped onto the owner row (`owner_doc_id`, `owner_bank`), plus an `error`
   field when the stamping itself failed. Only a real PDF owner (no `html_path`)
   is stamped by default, so a duplicate of an HTML page — or of a page rendered

@@ -102,7 +102,10 @@ def test_candidates_pdf_owner_stamped_logged_released(tmp_path, monkeypatch):
     owner = _seed_owner(cfg, tmp_path, rendered=False)
     _quarantine(cfg, DEAD_URL)
     _run_candidates(cfg, tmp_path, monkeypatch)
-    assert _owner_row(cfg, owner.doc_id)["alt_urls"] == [DEAD_URL, "https://web.archive.org/alias"]
+    row = _owner_row(cfg, owner.doc_id)
+    assert row["alt_urls"] == [DEAD_URL, "https://web.archive.org/alias"]
+    # recover stamps alt_urls only: its source pages never go to alt_source_urls.
+    assert not row.get("alt_source_urls")
     log = _log(cfg)
     assert len(log) == 2 and all(e["persisted"] is True and e["label"] == "recover"
                                  and e["owner_bank"] == "fr" for e in log)
@@ -192,3 +195,20 @@ def test_download_pass_logs_source_url(tmp_path):
                           fetcher=fetcher, csv_path=str(tmp_path / "r.csv"))
     [e] = _log(cfg)
     assert e["source_url"] == SOURCE
+
+
+def test_unwritable_log_never_fails_a_persisted_stamp(tmp_path, monkeypatch, capsys):
+    """The merge is authoritative: a log write failure after a persisted stamp
+    only warns, so recover still releases the quarantine."""
+    from cb_corpus.storage import Storage
+    cfg = Config(data_dir=tmp_path)
+    owner = _seed_owner(cfg, tmp_path, rendered=False)
+    _quarantine(cfg, DEAD_URL)
+
+    def boom(self, *a, **k):
+        raise OSError("reports dir read-only")
+    monkeypatch.setattr(Storage, "_log_duplicates", boom)
+    _run_candidates(cfg, tmp_path, monkeypatch)
+    assert DEAD_URL in _owner_row(cfg, owner.doc_id)["alt_urls"]
+    assert _released(cfg, DEAD_URL)
+    assert "duplicate log not written" in capsys.readouterr().err

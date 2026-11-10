@@ -719,10 +719,12 @@ class Storage:
                        ) -> tuple[int, int]:
         """Add URLs to the `alt_urls` of already-indexed rows, by doc_id.
 
-        `stamps`: doc_id -> URLs to add (recover.py's duplicate-path
-        self-healing: a dead URL whose content/doc_id matched an existing
-        row gets stamped onto THAT row so `_skip_known_url`/`_is_converged`
-        recognise it forever). For each row whose doc_id appears in
+        `stamps`: doc_id -> URLs to add (a URL whose content/doc_id matched an
+        existing row gets stamped onto THAT row so `_skip_known_url` /
+        `_is_converged` recognise it forever). Low-level and UNCONDITIONAL:
+        production paths go through `stamp_duplicates()`, which applies
+        `is_stampable_owner` and writes the audit log; this method is kept
+        for direct/administrative use and tests. For each row whose doc_id appears in
         `stamps`, every URL that is neither the row's own `pdf_url` nor
         already present in its `alt_urls` (compared after normalize_url) is
         appended -- this only ADDS alt_urls, never touches `pdf_url`/`doc_id`
@@ -842,10 +844,21 @@ class Storage:
                 stamps, sources, lambda row: is_stampable_owner(row, self.cfg))
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}".replace("\n", " ")[:500]
-            self._log_duplicates(dups, label, persisted, error)
+            self._safe_log_duplicates(dups, label, persisted, error)
             raise
-        self._log_duplicates(dups, label, persisted, error)
+        self._safe_log_duplicates(dups, label, persisted, error)
         return (urls, rows, persisted)
+
+    def _safe_log_duplicates(self, dups: list[dict], label: str,
+                             persisted: set[str], error: Optional[str]) -> None:
+        """`_log_duplicates`, but an unwritable log never fails the stamping:
+        the merge result (already on disk) stays authoritative and a merge
+        error is never masked by a log error. Warns on stderr instead."""
+        try:
+            self._log_duplicates(dups, label, persisted, error)
+        except Exception as exc:  # noqa: BLE001 - audit must not break the crawl
+            print(f"[{label}] WARNING: duplicate log not written: "
+                  f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
 
     def _log_duplicates(self, dups: list[dict], label: str, persisted: set[str],
                         error: Optional[str]) -> None:
