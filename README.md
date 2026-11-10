@@ -257,7 +257,7 @@ cb_corpus/
     base.py          BankAdapter ABC + registry + GenericAdapter + _fetch_text
     fed.py / ecb.py / boj.py / boe.py / buba.py / bdf.py / se.py / rba.py  bespoke adapters
     declarative.py + generic_sitemap.py + listing_crawler.py  TOML-driven adapters
-tests/               510 tests at 2026-11-10 (taxonomy, registry, parsers, dedup, matrix,
+tests/               596 tests at 2026-11-10 (taxonomy, registry, parsers, dedup, matrix,
                      reliability, quarantine, recovery, cadence, ...)
 ```
 
