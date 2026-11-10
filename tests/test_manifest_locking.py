@@ -298,14 +298,15 @@ def test_convert_existing_preserves_concurrent_append(tmp_path, monkeypatch):
             fh.write(json.dumps(r) + "\n")
     monkeypatch.setattr(convert_mod, "find_chrome", lambda: "/usr/bin/true")
 
-    def fake_render(url, pdf_path, user_data_dir=None):
+    def fake_render(url, pdf_path, user_data_dir=None, **kw):
         Path(pdf_path).write_bytes(b"%PDF-1.4 fake")
         # An append lands while "Chrome" renders — the heart of issue #18.
         subprocess.run([sys.executable, "-c", APPENDER, str(path), "mid-render"],
                        check=True)
     monkeypatch.setattr(convert_mod, "render_url_to_pdf", fake_render)
 
-    counts = convert_mod.convert_existing(config=cfg)
+    from tests.conftest import public_resolver
+    counts = convert_mod.convert_existing(config=cfg, resolver=public_resolver)
     assert counts.get("converted") == 1
     ids = {json.loads(l)["doc_id"] for l in path.read_text().splitlines() if l.strip()}
     assert "mid-render" in ids, "convert-html erased the row appended mid-render"

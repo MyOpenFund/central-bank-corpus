@@ -71,5 +71,12 @@ def _storage_render_guard_without_dns(monkeypatch):
     but via a warning-raising error; this default makes every Storage in the
     suite fail closed quietly instead (render refused, HTML kept). A test that
     needs a render to go through sets `storage.render_resolver` to a fake."""
+    from cb_corpus import htmlpdf
     from cb_corpus.storage import Storage
     monkeypatch.setattr(Storage, "render_resolver", staticmethod(_no_dns_resolver))
+    monkeypatch.setattr(htmlpdf, "DEFAULT_RESOLVER", _no_dns_resolver)
+
+
+def public_resolver(host, port, *args, **kwargs):
+    """Fake getaddrinfo: every name resolves to one public address."""
+    return [(2, 1, 6, "", ("93.184.216.34", port or 0))]

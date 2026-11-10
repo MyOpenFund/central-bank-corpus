@@ -4,6 +4,11 @@ Used by Storage to render text/html responses (e.g. ECB monetary policy
 accounts) into PDFs so the corpus stays uniform for downstream ingestion
 (eigenmind handles PDF, not HTML).
 
+Render guard: Chrome runs with --no-sandbox, so every launch goes through
+`render_allowed` (see there) -- render_url_to_pdf and chrome_print_to_pdf
+check it before starting Chrome and raise RenderRefused otherwise. All the
+callers (Storage, convert-html, retry-html) share this one choke point.
+
 Why Chrome and not the cached HTML file:
   ECB pages reference CSS by relative URL; rendering the local cached .html
   with file:// loses the styling. We point Chrome at the live URL so external
@@ -17,11 +22,29 @@ import socket
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Optional
+from typing import Callable, Optional
 from urllib.parse import urlsplit
 
-if TYPE_CHECKING:
-    from .config import Config
+from .config import Config
+
+# Resolver used when a caller passes none: None = socket.getaddrinfo (looked
+# up at call time). A hook for the test suite, which installs a no-DNS fake.
+DEFAULT_RESOLVER: Optional[Callable] = None
+
+
+class RenderRefused(RuntimeError):
+    """Chrome was not launched: the URL fails `render_allowed`. `.reason`
+    says why. Callers keep the HTML as the artifact and count it."""
+
+    def __init__(self, url: str, reason: str):
+        super().__init__(f"render refused for {url}: {reason}")
+        self.url, self.reason = url, reason
+
+
+# Refused before any parsing: Chrome (WHATWG URL parsing) and urllib disagree
+# on these -- e.g. `http://10.0.0.1\@8.8.8.8/` is host 8.8.8.8 for urllib but
+# 10.0.0.1 for Chrome, which treats a backslash as a path separator.
+_UNSAFE_URL_CHARS = frozenset("\\ \t\n\r\f\v") | frozenset(chr(c) for c in range(0x20)) | {chr(0x7f)}
 
 
 def _blocked_by(addr: str, networks) -> Optional[str]:
@@ -43,7 +66,7 @@ def _blocked_by(addr: str, networks) -> Optional[str]:
     return None
 
 
-def render_allowed(url: str, cfg: "Config",
+def render_allowed(url: str, cfg: Config,
                    resolver: Optional[Callable] = None) -> Optional[str]:
     """Whether headless Chrome may be pointed at `url`: None = allowed, else
     the reason it is refused.
@@ -57,11 +80,19 @@ def render_allowed(url: str, cfg: "Config",
     and EVERY resolved address must lie outside the blocked networks; a
     resolution failure or an empty answer is refused (fail closed).
 
+    A URL containing a backslash, ASCII whitespace or a control character is
+    refused before parsing (parsers disagree on those, see _UNSAFE_URL_CHARS).
+    The host is taken from the parsed URL (userinfo ignored, a trailing dot
+    dropped, an IPv6 zone id stripped); an invalid port is refused.
+
     Limits: only the top-level URL is inspected. Chrome's own sub-resource
-    requests (scripts, frames, redirects, CSS) are NOT -- that would need an
-    egress proxy. Chrome also resolves the name again itself, so a DNS answer
-    that changes between this check and the render is not covered either.
+    requests (scripts, frames, CSS) and the redirects it follows are NOT --
+    that would need an egress proxy. Chrome also resolves the name again
+    itself, so a DNS answer that changes between this check and the render
+    is not covered either.
     """
+    if any(ch in _UNSAFE_URL_CHARS for ch in url):
+        return "URL contains a backslash, whitespace or control character"
     try:
         parts = urlsplit(url)
     except ValueError as exc:
@@ -74,6 +105,8 @@ def render_allowed(url: str, cfg: "Config",
         port = parts.port
     except ValueError as exc:
         return f"unparseable URL ({exc})"
+    if host and host.endswith(".") and not host.endswith(".."):
+        host = host[:-1]                       # "localhost." == "localhost"
     if not host:
         return "no host in URL"
     networks = [ipaddress.ip_network(n, strict=False) for n in cfg.render_blocked_networks]
@@ -85,7 +118,7 @@ def render_allowed(url: str, cfg: "Config",
     if is_literal:
         net = _blocked_by(host, networks)
         return f"address {host} is in blocked network {net}" if net else None
-    resolve = resolver or socket.getaddrinfo
+    resolve = resolver or DEFAULT_RESOLVER or socket.getaddrinfo
     try:
         infos = resolve(host, port or (443 if scheme == "https" else 80),
                         type=socket.SOCK_STREAM)
@@ -126,8 +159,14 @@ def find_chrome() -> Optional[str]:
 def render_url_to_pdf(url: str, output: Path,
                       chrome: Optional[str] = None,
                       timeout: float = 60.0,
-                      user_data_dir: Optional[str] = None) -> None:
+                      user_data_dir: Optional[str] = None,
+                      *, cfg: Optional[Config] = None,
+                      resolver: Optional[Callable] = None) -> None:
     """Render the page at `url` to `output` via headless Chrome.
+
+    Guarded: raises RenderRefused, without launching Chrome, when
+    `render_allowed(url, cfg, resolver)` refuses the URL (`cfg` defaults to
+    `Config()`, i.e. the default blocked networks).
 
     If `user_data_dir` is given, the directory is reused across calls —
     avoids cold-start cost (per-call temp profile is ~10x slower because
@@ -136,6 +175,7 @@ def render_url_to_pdf(url: str, output: Path,
 
     Raises RuntimeError if Chrome is not found or the conversion fails.
     """
+    _guard(url, cfg, resolver)
     chrome = chrome or find_chrome()
     if chrome is None:
         raise RuntimeError("no Chrome / Chromium binary found")
@@ -149,19 +189,47 @@ def render_url_to_pdf(url: str, output: Path,
         raise RuntimeError(f"Chrome produced no PDF for {url}")
 
 
-def _run_chrome(chrome: str, url: str, output: Path,
-                user_data_dir: str, timeout: float) -> None:
+def chrome_print_to_pdf(chrome: str, url: str, output: Path, user_data_dir: str,
+                        timeout: float, extra_args: tuple[str, ...] = (),
+                        *, cfg: Optional[Config] = None,
+                        resolver: Optional[Callable] = None) -> None:
+    """One guarded Chrome print-to-pdf run with optional `extra_args`
+    (e.g. `--virtual-time-budget=...`). Raises RenderRefused (Chrome never
+    launched) when the URL fails render_allowed; subprocess errors
+    (CalledProcessError, TimeoutExpired) propagate as raised by Chrome."""
+    _guard(url, cfg, resolver)
+    cmd = _chrome_cmd(chrome, url, output, user_data_dir, extra_args)
+    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL,
+                   stderr=subprocess.DEVNULL, timeout=timeout)
+
+
+def _guard(url: str, cfg: Optional[Config], resolver: Optional[Callable]) -> None:
+    reason = render_allowed(url, cfg or Config(), resolver=resolver)
+    if reason:
+        raise RenderRefused(url, reason)
+
+
+def _chrome_cmd(chrome: str, url: str, output: Path, user_data_dir: str,
+                extra_args: tuple[str, ...] = ()) -> list[str]:
     # `--headless=new` is ~25x slower than legacy `--headless` for print-to-pdf
     # (cold-startup overhead per invocation). Use legacy.
-    cmd = [
+    return [
         chrome,
         "--headless",
         "--disable-gpu",
         "--no-sandbox",
         f"--user-data-dir={user_data_dir}",
         f"--print-to-pdf={output}",
+        *extra_args,
         url,
     ]
+
+
+def _run_chrome(chrome: str, url: str, output: Path,
+                user_data_dir: str, timeout: float) -> None:
+    """UNGUARDED launch -- only ever called by render_url_to_pdf, after its
+    guard."""
+    cmd = _chrome_cmd(chrome, url, output, user_data_dir)
     # IMPORTANT: do NOT use capture_output / PIPE here.
     # Chrome streams verbose output to stderr; if we capture it via a pipe
     # without draining, the pipe buffer (~64KB) fills and Chrome blocks for

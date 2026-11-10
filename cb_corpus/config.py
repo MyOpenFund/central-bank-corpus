@@ -77,7 +77,9 @@ class Config:
     # (incl. the 169.254.169.254 cloud-metadata endpoint), CGNAT 100.64/10
     # (the tailnet), "this network", multicast, reserved, and their IPv6
     # counterparts (loopback, ULA fc00::/7, link-local, unspecified,
-    # multicast). Blocks the private network rather than allowlisting
+    # multicast, deprecated site-local fec0::/10) plus the IPv6 forms that
+    # embed an IPv4 address (NAT64 64:ff9b::/96, 6to4 2002::/16,
+    # IPv4-compatible ::/96) -- these could smuggle a private IPv4 target. Blocks the private network rather than allowlisting
     # domains, which would not scale to crawlers of many sites. CIDR strings;
     # an invalid entry is rejected with a ValueError.
     render_blocked_networks: tuple[str, ...] = (
@@ -85,6 +87,7 @@ class Config:
         "169.254.0.0/16", "100.64.0.0/10", "0.0.0.0/8", "224.0.0.0/4",
         "240.0.0.0/4",
         "::1/128", "fc00::/7", "fe80::/10", "::/128", "ff00::/8",
+        "fec0::/10", "64:ff9b::/96", "2002::/16", "::/96",
     )
 
     def __post_init__(self) -> None:

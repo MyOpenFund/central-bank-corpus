@@ -33,7 +33,7 @@ from typing import Iterable, Iterator, Mapping, Optional
 
 from .config import Config
 from .http import Fetcher
-from .htmlpdf import render_allowed, render_url_to_pdf
+from .htmlpdf import RenderRefused, render_allowed, render_url_to_pdf
 from .models import DocRecord
 from .quarantine import Quarantine
 
@@ -484,7 +484,9 @@ class Storage:
     # Name resolver handed to htmlpdf.render_allowed before every render
     # (None = socket.getaddrinfo). A class attribute so the test suite can
     # swap in a no-DNS default for every Storage (tests/conftest.py); a test
-    # injects its own fake per instance.
+    # injects its own fake per instance. NB: a plain function stored on the
+    # CLASS must be wrapped in staticmethod(...), or attribute access through
+    # an instance would bind it as a method (self passed as the host).
     render_resolver = None
 
     def __init__(self, config: Optional[Config] = None,
@@ -915,9 +917,17 @@ class Storage:
                     # budget so this render + the get_bytes above don't burst.
                     self.fetcher.throttle(rec.pdf_url)
                     render_url_to_pdf(rec.pdf_url, pdf_path,
-                                      user_data_dir=str(self._chrome_profile))
+                                      user_data_dir=str(self._chrome_profile),
+                                      cfg=self.cfg, resolver=self.render_resolver)
                     rec.mime_type = "application/pdf"
                     path = pdf_path
+                except RenderRefused as exc:
+                    # The choke-point guard disagreed with the pre-check
+                    # above (e.g. DNS answer changed): still refused.
+                    self.render_refused += 1
+                    print(f"[storage] {exc} (HTML kept as the artifact)",
+                          file=sys.stderr, flush=True)
+                    path = html_path
                 except Exception:
                     # Render failed -> canonical artifact stays the HTML.
                     path = html_path

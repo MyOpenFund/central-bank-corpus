@@ -53,12 +53,17 @@ no machine-translated or model-generated text.
   from archive.org's raw snapshot (`provenance="wayback"`, fully audited). Used for the Riksbank.
 - **HTML→PDF** (`htmlpdf.py`) → HTML-only documents (e.g. ECB monetary-policy accounts) are
   rendered to PDF via headless Chrome; the **raw HTML is also kept** (`html_path`). Chrome runs
-  with `--no-sandbox`, so a render is **refused** when the URL is not http(s) or its host is, or
-  resolves to, an address in `Config.render_blocked_networks` (default: loopback, RFC 1918,
-  link-local incl. cloud metadata, CGNAT `100.64.0.0/10` = the tailnet, multicast/reserved, and
-  the IPv6 equivalents); the HTML then stays the artifact, with a `render refused` stderr line
-  (counted in `Storage.render_refused`). Only the top-level URL is checked: Chrome's own
-  sub-resource requests are not inspected (that would need an egress proxy).
+  with `--no-sandbox`, so **every** launch (Storage, `convert-html`, `retry-html`) goes through one
+  guard (`htmlpdf.render_allowed`): a render is **refused** when the URL is not http(s), contains a
+  backslash/whitespace/control character, or its host is, or resolves to, an address in
+  `Config.render_blocked_networks` (default: loopback, RFC 1918, link-local incl. cloud metadata,
+  CGNAT `100.64.0.0/10` = the tailnet, multicast/reserved, the IPv6 equivalents, and IPv6 forms
+  that embed an IPv4 address: NAT64, 6to4, IPv4-compatible). The HTML then stays the artifact;
+  each refusal prints a `render refused` stderr line and is counted (`render refused: N` per
+  `save_many` batch, `refused` in the `convert-html` / `retry-html` summaries).
+  **Residual limits:** only the top-level URL is checked — Chrome follows redirects, loads
+  sub-resources and re-resolves DNS itself, none of which is inspected; a full guarantee needs
+  an egress proxy (Backlog follow-up).
 - **Storage / dedup** (`storage.py`) → **per-bank manifests** `data/manifest/<bank>.jsonl`
   (a legacy single `data/manifest.jsonl` is auto-split on first use); committed to git for
   replayability. Dedup on `doc_id` (stable hash of bank+type+**url** — date-independent, so

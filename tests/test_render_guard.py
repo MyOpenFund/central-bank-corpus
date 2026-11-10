@@ -170,3 +170,167 @@ def test_default_resolver_failure_fails_closed():
     it raises (here pytest-socket's block) refuses the render, never crashes."""
     reason = render_allowed("https://www.ecb.europa.eu/x", CFG, resolver=None)
     assert reason and "could not resolve" in reason
+
+
+# ---- fix wave: parser confusion, embedded-IPv4 ranges, choke point -----
+
+import json  # noqa: E402
+import subprocess  # noqa: E402
+
+from cb_corpus import htmlpdf  # noqa: E402
+from cb_corpus.htmlpdf import RenderRefused, chrome_print_to_pdf, render_url_to_pdf  # noqa: E402
+
+
+@pytest.mark.parametrize("url", [
+    "http://10.0.0.1\\@8.8.8.8/",            # urllib: 8.8.8.8 -- Chrome: 10.0.0.1
+    "http://8.8.8.8\\x",
+    "http://8.8.8.8/a b", "http://8.8.8.8/\tx", "http://8.8.8.8/\nx",
+    " http://8.8.8.8/", "http://8.8.8.8/\x00", "http://8.8.8.8/\x7f",
+])
+def test_backslash_whitespace_control_refused_before_parsing(url):
+    res = _resolver({})
+    reason = render_allowed(url, CFG, resolver=res)
+    assert reason and "backslash, whitespace or control" in reason
+    assert res.calls == []
+
+
+@pytest.mark.parametrize("url", [
+    "http://[64:ff9b::a00:1]/",              # NAT64 of 10.0.0.1
+    "http://[2002:a00:1::1]/",               # 6to4 of 10.0.0.1
+    "http://[::a00:1]/",                     # IPv4-compatible 10.0.0.1
+    "http://[fec0::1]/",                     # deprecated site-local
+])
+def test_ipv6_forms_embedding_ipv4_or_site_local_refused(url):
+    reason = render_allowed(url, CFG, resolver=_resolver({}))
+    assert reason and "blocked network" in reason
+
+
+def test_userinfo_is_not_the_host():
+    assert "blocked" in render_allowed("http://user:pw@10.0.0.1/x", CFG, resolver=_resolver({}))
+    # userinfo that LOOKS like a private IP: the real host is the public one
+    res = _resolver({"pub.example": [PUBLIC_V4]})
+    assert render_allowed("http://10.0.0.1@pub.example/x", CFG, resolver=res) is None
+
+
+def test_uppercase_scheme_still_checked():
+    assert "blocked" in render_allowed("HTTP://127.0.0.1/", CFG, resolver=_resolver({}))
+    res = _resolver({"www.ecb.europa.eu": [PUBLIC_V4]})
+    assert render_allowed("HTTPS://www.ecb.europa.eu/x", CFG, resolver=res) is None
+
+
+def test_trailing_dot_host():
+    assert "blocked" in render_allowed("http://127.0.0.1./x", CFG, resolver=_resolver({}))
+    res = _resolver({"localhost": ["127.0.0.1"]})
+    assert "127.0.0.1" in render_allowed("http://localhost./x", CFG, resolver=res)
+    assert res.calls == ["localhost"]
+
+
+@pytest.mark.parametrize("url", ["http://x.example:99999/", "http://x.example:port/"])
+def test_bad_port_refused(url):
+    assert "unparseable" in render_allowed(url, CFG, resolver=_resolver({"x.example": [PUBLIC_V4]}))
+
+
+def test_unparseable_resolved_address_fails_closed():
+    def res(host, port, *a, **k):
+        return [(2, 1, 6, "", ("not-an-ip", 0))]
+    reason = render_allowed("http://odd.example/", CFG, resolver=res)
+    assert reason and "unparseable address" in reason
+
+
+def test_ipv6_zone_id_stripped():
+    assert "blocked" in render_allowed("http://[fe80::1%25eth0]/", CFG, resolver=_resolver({}))
+    reason = render_allowed("http://scoped.example/", CFG,
+                            resolver=_resolver({"scoped.example": ["fe80::1%eth0"]}))
+    assert reason and "fe80::/10" in reason
+
+
+def _no_launch(monkeypatch):
+    def launched(*a, **k):
+        raise AssertionError("Chrome launched")
+    monkeypatch.setattr(htmlpdf.subprocess, "run", launched)
+
+
+def test_render_url_to_pdf_is_guarded(tmp_path, monkeypatch):
+    _no_launch(monkeypatch)
+    with pytest.raises(RenderRefused) as ei:
+        render_url_to_pdf("http://169.254.169.254/latest", tmp_path / "o.pdf",
+                          chrome="/fake/chrome", resolver=_resolver({}))
+    assert "blocked" in ei.value.reason
+
+
+def test_chrome_print_to_pdf_is_guarded(tmp_path, monkeypatch):
+    _no_launch(monkeypatch)
+    with pytest.raises(RenderRefused):
+        chrome_print_to_pdf("/fake/chrome", "file:///etc/passwd", tmp_path / "o.pdf",
+                            str(tmp_path), 10)
+
+
+def test_chrome_print_to_pdf_launches_for_public_url(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(htmlpdf.subprocess, "run", lambda cmd, **k: seen.append(cmd))
+    chrome_print_to_pdf("/fake/chrome", "https://pub.example/x", tmp_path / "o.pdf",
+                        str(tmp_path), 10, extra_args=("--virtual-time-budget=5",),
+                        resolver=_resolver({"pub.example": [PUBLIC_V4]}))
+    [cmd] = seen
+    assert "--no-sandbox" in cmd and "--virtual-time-budget=5" in cmd
+    assert cmd[-1] == "https://pub.example/x"
+
+
+def _html_manifest(tmp_path, url):
+    html = tmp_path / "raw" / "ecb" / "A3" / "2024" / "d1.html"
+    html.parent.mkdir(parents=True, exist_ok=True)
+    html.write_bytes(b"<html>x</html>")
+    row = {"bank_code": "ecb", "doc_type": "A3", "title": "x", "pdf_url": url,
+           "date": "2024-01-01", "year": 2024, "doc_id": "d1", "mime_type": "text/html",
+           "local_path": str(html), "sha256": None, "language": "en"}
+    mf = tmp_path / "manifest" / "ecb.jsonl"
+    mf.parent.mkdir(parents=True, exist_ok=True)
+    mf.write_text(json.dumps(row) + "\n")
+    return mf
+
+
+def test_convert_html_refuses_private_url_and_leaves_row(tmp_path, monkeypatch, capsys):
+    from cb_corpus import convert as convert_mod
+    mf = _html_manifest(tmp_path, "http://192.168.1.5/x.en.html")
+    before = mf.read_bytes()
+    monkeypatch.setattr(convert_mod, "find_chrome", lambda: "/fake/chrome")
+    _no_launch(monkeypatch)
+    counts = convert_mod.convert_existing(Config(data_dir=tmp_path), resolver=_resolver({}))
+    assert counts["refused"] == 1 and "converted" not in counts
+    assert mf.read_bytes() == before
+    assert "[convert-html] render refused: 1" in capsys.readouterr().err
+
+
+def test_retry_html_refuses_private_url_and_leaves_row(tmp_path, monkeypatch, capsys):
+    from cb_corpus import retry_html as retry_mod
+    mf = _html_manifest(tmp_path, "http://intranet.example/x.en.html")
+    before = mf.read_bytes()
+    monkeypatch.setattr(retry_mod, "find_chrome", lambda: "/fake/chrome")
+    _no_launch(monkeypatch)
+    counts = retry_mod.retry_failed(Config(data_dir=tmp_path),
+                                    resolver=_resolver({"intranet.example": ["10.9.8.7"]}))
+    assert counts["refused"] == 1 and "still-fail" not in counts
+    assert mf.read_bytes() == before
+    assert not (tmp_path / "failed_urls.txt").exists()
+    assert "[retry-html] render refused: 1" in capsys.readouterr().err
+
+
+def test_retry_html_strategy_goes_through_the_guard(tmp_path, monkeypatch):
+    from cb_corpus import retry_html as retry_mod
+    _no_launch(monkeypatch)
+    with pytest.raises(RenderRefused):
+        retry_mod._try_strategy("/fake/chrome", "http://127.0.0.1/", tmp_path / "o.pdf",
+                                timeout=1, virtual_time_budget_ms=None,
+                                user_data_dir=str(tmp_path))
+
+
+def test_save_many_prints_render_refused_summary(tmp_path, monkeypatch, capsys):
+    st, _rendered = _html_storage(tmp_path, monkeypatch, _resolver({}))
+    recs = [DocRecord(bank_code="ecb", doc_type=DocType.A3, title=n,
+                      pdf_url=f"http://10.0.0.{i}/{n}.html")
+            for i, n in enumerate(("a", "b"), start=1)]
+    st.fetcher.get_bytes = lambda url: (url.encode(), "text/html")   # distinct bytes
+    st.save_many(recs, label="ecb")
+    assert "[ecb] render refused: 2" in capsys.readouterr().err
+    st.save_many([], label="ecb")
+    assert "render refused" not in capsys.readouterr().err   # per batch, only when > 0
