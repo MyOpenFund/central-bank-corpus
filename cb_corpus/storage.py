@@ -453,6 +453,14 @@ class Storage:
         self._ids: set[str] = set()
         self._urls: set[str] = set()
         self._source_urls: set[str] = set()
+        # Duplicate-content stamps queued by save()/reindex() (B1, grit wave
+        # 2026-11): owner doc_id -> ordered URLs to add to that row's
+        # `alt_urls` / `alt_source_urls`. Flushed in ONE locked rewrite by
+        # flush_duplicate_stamps() (end of save_many, in a finally). Ordered
+        # lists, not sets: alt_urls append order must not vary across runs.
+        self._pending_dup_stamps: dict[str, list[str]] = {}
+        self._pending_dup_sources: dict[str, list[str]] = {}
+        self._dup_count = 0
         # Chrome profile reused across every render in THIS process (a fresh
         # per-call temp profile is ~10x slower). Keyed by PID so multiple
         # concurrent download processes don't fight over one profile lock —
@@ -485,6 +493,12 @@ class Storage:
             src = rec.get("source_url")
             if src:
                 self._source_urls.add(normalize_url(src))
+            # Optional row field (B1, grit wave 2026-11): source pages of
+            # records whose content turned out to duplicate this row. Indexed
+            # so is_known_source_url() (RePEc's pre-fetch skip) learns them.
+            for alt_src in rec.get("alt_source_urls") or []:
+                if alt_src:
+                    self._source_urls.add(normalize_url(alt_src))
 
     def is_known_url(self, url: str) -> bool:
         """True if a record with this pdf_url is already in the manifest
@@ -531,7 +545,9 @@ class Storage:
         self._load_existing()
         return n
 
-    def stamp_alt_urls(self, stamps: Mapping[str, Iterable[str]]) -> tuple[int, int]:
+    def stamp_alt_urls(self, stamps: Mapping[str, Iterable[str]],
+                       source_stamps: Optional[Mapping[str, Iterable[str]]] = None,
+                       ) -> tuple[int, int]:
         """Add URLs to the `alt_urls` of already-indexed rows, by doc_id.
 
         `stamps`: doc_id -> URLs to add (recover.py's duplicate-path
@@ -544,19 +560,36 @@ class Storage:
         rewritten). Unknown doc_ids are silently ignored (defensive; the
         caller logs totals, this method doesn't need to explain a no-match).
 
+        `source_stamps` (optional, same shape): source-page URLs to add to
+        the row's optional `alt_source_urls` field, with the same add-only
+        semantics (a URL equal to the row's own `source_url` or already
+        listed is skipped; the field is only created when something is
+        added). Used by the duplicate-content bookkeeping of save_many (see
+        flush_duplicate_stamps) so `is_known_source_url` learns the source
+        page of a record whose bytes another row already owns.
+
+        Rows are found across EVERY bank's manifest (the owner of a
+        duplicate may live in another bank's file); apply_row_updates
+        rewrites each row in its own bank file.
+
         Only rows that actually changed are rewritten, in ONE
         rewrite_manifest call (lock-protected keyed updates). Returns
-        (urls_stamped, rows_modified); (0, 0) means nothing changed and no
-        rewrite happened at all.
+        (urls_stamped, rows_modified) -- urls_stamped counts alt_urls and
+        alt_source_urls additions together; (0, 0) means nothing changed and
+        no rewrite happened at all.
         """
-        if not stamps:
+        source_stamps = source_stamps or {}
+        if not stamps and not source_stamps:
             return (0, 0)
         updates: dict[str, dict] = {}
         stamped = 0
         for row in self.iter_manifest():
-            urls = stamps.get(row.get("doc_id"))
-            if not urls:
+            did = row.get("doc_id")
+            urls = stamps.get(did) or []
+            srcs = source_stamps.get(did) or []
+            if not urls and not srcs:
                 continue
+            changed = False
             pdf_url = row.get("pdf_url")
             alt_urls = list(row.get("alt_urls") or [])
             for url in urls:
@@ -566,11 +599,67 @@ class Storage:
                 stamped += 1
             if alt_urls != (row.get("alt_urls") or []):
                 row["alt_urls"] = alt_urls
+                changed = True
+            own_src = row.get("source_url")
+            alt_srcs = list(row.get("alt_source_urls") or [])
+            for url in srcs:
+                if not url or url == own_src or url in alt_srcs:
+                    continue
+                alt_srcs.append(url)
+                stamped += 1
+            if alt_srcs != (row.get("alt_source_urls") or []):
+                row["alt_source_urls"] = alt_srcs
+                changed = True
+            if changed:
                 updates[row["doc_id"]] = row
         if stamped == 0:
             return (0, 0)
         self.rewrite_manifest(updates)
         return (stamped, len(updates))
+
+    def _note_duplicate(self, rec: DocRecord, owner_doc_id: str) -> None:
+        """Remember a `skip:duplicate-content` record (B1, grit wave 2026-11).
+
+        Without this, a URL whose bytes another row already owns is
+        re-downloaded every night just to be discarded again. Its `pdf_url`
+        (and `source_url`) are added to the in-memory indexes at once, and
+        queued for stamping onto the OWNER row (`alt_urls` /
+        `alt_source_urls`) by flush_duplicate_stamps(). Accepted side
+        effect: the stamped URL becomes a fallback download URL for the
+        owner row. Never called in dry run (save()/reindex() return before
+        any duplicate detection there)."""
+        self._dup_count += 1
+        self._urls.add(normalize_url(rec.pdf_url))
+        bucket = self._pending_dup_stamps.setdefault(owner_doc_id, [])
+        if rec.pdf_url and rec.pdf_url not in bucket:
+            bucket.append(rec.pdf_url)
+        if rec.source_url:
+            self._source_urls.add(normalize_url(rec.source_url))
+            sbucket = self._pending_dup_sources.setdefault(owner_doc_id, [])
+            if rec.source_url not in sbucket:
+                sbucket.append(rec.source_url)
+
+    def flush_duplicate_stamps(self, label: str = "") -> tuple[int, int, int]:
+        """Write the queued duplicate-content stamps in ONE locked rewrite
+        (stamp_alt_urls, add-only) and print one stderr line
+        `[label] duplicate-content: N (stamped U urls on R rows)` when any
+        duplicate was seen since the last flush. Clears the queue and the
+        counter. Returns (duplicates, urls_stamped, rows_modified).
+
+        Called by save_many() in a finally; callers driving save()/reindex()
+        directly (the reindex_* entry points) call it themselves."""
+        n = self._dup_count
+        stamps, sources = self._pending_dup_stamps, self._pending_dup_sources
+        self._pending_dup_stamps, self._pending_dup_sources = {}, {}
+        self._dup_count = 0
+        urls = rows = 0
+        if stamps or sources:
+            urls, rows = self.stamp_alt_urls(stamps, source_stamps=sources)
+        if n:
+            prefix = f"[{label}] " if label else ""
+            print(f"{prefix}duplicate-content: {n} (stamped {urls} urls on {rows} rows)",
+                  file=sys.stderr, flush=True)
+        return (n, urls, rows)
 
     # -- paths -----------------------------------------------------------
     def target_path(self, rec: DocRecord) -> Path:
@@ -630,7 +719,9 @@ class Storage:
             rec.mime_type = mime
         digest = hashlib.sha256(content).hexdigest()
         if digest in self._hash_docid:
-            return f"skip:duplicate-content:{self._hash_docid[digest]}"
+            owner = self._hash_docid[digest]
+            self._note_duplicate(rec, owner)
+            return f"skip:duplicate-content:{owner}"
 
         is_html = mime.startswith("text/html") or mime.startswith("application/xhtml")
         if is_html:
@@ -703,7 +794,9 @@ class Storage:
         content = path.read_bytes()
         digest = hashlib.sha256(content).hexdigest()
         if digest in self._hash_docid:
-            return f"skip:duplicate-content:{self._hash_docid[digest]}"
+            owner = self._hash_docid[digest]
+            self._note_duplicate(rec, owner)
+            return f"skip:duplicate-content:{owner}"
 
         ext = path.suffix.lower().lstrip(".")
         rec.mime_type = {"pdf": "application/pdf", "html": "text/html"}.get(ext, rec.mime_type)
@@ -754,25 +847,36 @@ class Storage:
         which CONSUMES/resets the skip counter -- so calling `save_many()`
         again on this same `Storage` afterwards, e.g. for the next bank in a
         multi-bank discovery run, reports THAT batch's own skip count, not a
-        cumulative total across every batch run so far)."""
-        import sys
+        cumulative total across every batch run so far).
+
+        Duplicate-content records seen during the batch are stamped onto the
+        rows that own their content (flush_duplicate_stamps), in a finally so
+        a record iterator that raises mid-batch still persists what was
+        learnt; one `duplicate-content: N` stderr line when N > 0."""
         counts: dict[str, int] = {}
         total = 0
-        for rec in recs:
+        try:
+            for rec in recs:
+                try:
+                    status = self.save(rec, dry_run=dry_run).split(":")[0]
+                except Exception as exc:
+                    status = "error"
+                    if not dry_run:
+                        try:
+                            self._record_download_error(rec, exc, label)
+                        except Exception:
+                            pass  # auditing must never break the crawl
+                counts[status] = counts.get(status, 0) + 1
+                total += 1
+                if progress_every and total % progress_every == 0:
+                    prefix = f"[{label}] " if label else ""
+                    print(f"{prefix}processed {total} ({dict(counts)})", file=sys.stderr, flush=True)
+        finally:
             try:
-                status = self.save(rec, dry_run=dry_run).split(":")[0]
-            except Exception as exc:
-                status = "error"
-                if not dry_run:
-                    try:
-                        self._record_download_error(rec, exc, label)
-                    except Exception:
-                        pass  # auditing must never break the crawl
-            counts[status] = counts.get(status, 0) + 1
-            total += 1
-            if progress_every and total % progress_every == 0:
-                prefix = f"[{label}] " if label else ""
-                print(f"{prefix}processed {total} ({dict(counts)})", file=sys.stderr, flush=True)
+                self.flush_duplicate_stamps(label)
+            except Exception as exc:  # never mask the batch's own outcome
+                print(f"[storage] WARNING: duplicate-content stamping failed: "
+                      f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
         summary = self.quarantine.summary_line()
         if summary:
             print(summary, file=sys.stderr, flush=True)

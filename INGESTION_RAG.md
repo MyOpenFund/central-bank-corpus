@@ -41,6 +41,7 @@ Fields useful for ingestion:
 | `mime_type` | `application/pdf` or `text/html` (the HTML is the artifact when PDF rendering failed); rarely another official format |
 | `html_path` | the kept raw HTML next to a rendered PDF, when there is one |
 | `alt_urls` | other official URLs of the same document (dedup; also valid citations) |
+| `alt_source_urls` | optional, rare: other landing pages that pointed at the same bytes (dedup only) |
 | `doc_id` | stable primary key (ideal as a document `id` in the store) |
 | `sha256` | change detection / ingestion idempotence |
 

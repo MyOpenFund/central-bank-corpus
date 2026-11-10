@@ -271,18 +271,22 @@ def reindex_native_from_disk(bank_codes: Optional[Iterable[str]] = None,
           f"for {len(codes)} bank(s) (listing pages only, no PDF downloads)…",
           file=sys.stderr, flush=True)
     disc_errors: list[dict] = []
-    for code in codes:
-        try:
-            adapter = get_adapter(code, fetcher)
-            c = _apply_reindex(adapter.discover_all(scope=scope, since=since),
-                               storage, missing, dry_run=dry_run)
-        except Exception as exc:  # noqa: BLE001 — one bad bank never aborts the run
-            print(f"  {code}: discovery failed: {type(exc).__name__}: {exc}",
-                  file=sys.stderr, flush=True)
-            continue
-        for k, v in c.items():
-            counts[k] = counts.get(k, 0) + v
-        disc_errors.extend(getattr(adapter, "errors", []))
+    try:
+        for code in codes:
+            try:
+                adapter = get_adapter(code, fetcher)
+                c = _apply_reindex(adapter.discover_all(scope=scope, since=since),
+                                   storage, missing, dry_run=dry_run)
+            except Exception as exc:  # noqa: BLE001 — one bad bank never aborts the run
+                print(f"  {code}: discovery failed: {type(exc).__name__}: {exc}",
+                      file=sys.stderr, flush=True)
+                continue
+            for k, v in c.items():
+                counts[k] = counts.get(k, 0) + v
+            disc_errors.extend(getattr(adapter, "errors", []))
+    finally:
+        # Duplicate-content files: remember their URL on the owning row (B1).
+        storage.flush_duplicate_stamps("reindex(native)")
     _record_discovery_errors(cfg, disc_errors)
     counts["unmatched"] = len(missing)
     print(f"reindex(native): matched={counts['matched']} "
@@ -362,42 +366,46 @@ def reindex_bis_from_disk(only_banks: Optional[set[str]] = None,
               file=sys.stderr, flush=True)
         sitemaps = {}
 
-    for year in sorted(missing_by_year):
-        bucket = missing_by_year[year]
-        banks = banks_by_year[year]
-        url = sitemaps.get(year)
-        if url is None:
-            continue  # year not covered by BIS sitemaps (e.g. pre-1996)
-        try:
-            metas = bis.speeches_for_year(year, url)
-        except Exception:  # noqa: BLE001 — one bad year never aborts the run
-            continue
-        for meta in metas:
-            if not bucket:
-                break
-            for bank in banks:
-                cand = hashlib.sha1(
-                    f"{bank}|C1|{meta.pdf_url}".encode("utf-8")).hexdigest()[:16]
-                hit = bucket.get(cand)
-                if hit is None or hit[0] != bank:
-                    continue
-                counts["matched"] += 1
-                title = ""
-                if fetch_titles:
-                    try:
-                        title, _ = parse_detail(fetcher.get_text(meta.detail_url))
-                    except Exception:  # noqa: BLE001
-                        title = ""
-                rec = DocRecord(
-                    bank_code=bank, doc_type=DocType.C1,
-                    title=title or meta.pdf_url, pdf_url=meta.pdf_url,
-                    source_url=meta.detail_url, date=meta.date,
-                    provenance="bis_index", mime_type="application/pdf",
-                )
-                status = storage.reindex(rec, hit[1], dry_run=dry_run).split(":")[0]
-                counts[status] = counts.get(status, 0) + 1
-                del bucket[cand]
-                break
+    try:
+        for year in sorted(missing_by_year):
+            bucket = missing_by_year[year]
+            banks = banks_by_year[year]
+            url = sitemaps.get(year)
+            if url is None:
+                continue  # year not covered by BIS sitemaps (e.g. pre-1996)
+            try:
+                metas = bis.speeches_for_year(year, url)
+            except Exception:  # noqa: BLE001 — one bad year never aborts the run
+                continue
+            for meta in metas:
+                if not bucket:
+                    break
+                for bank in banks:
+                    cand = hashlib.sha1(
+                        f"{bank}|C1|{meta.pdf_url}".encode("utf-8")).hexdigest()[:16]
+                    hit = bucket.get(cand)
+                    if hit is None or hit[0] != bank:
+                        continue
+                    counts["matched"] += 1
+                    title = ""
+                    if fetch_titles:
+                        try:
+                            title, _ = parse_detail(fetcher.get_text(meta.detail_url))
+                        except Exception:  # noqa: BLE001
+                            title = ""
+                    rec = DocRecord(
+                        bank_code=bank, doc_type=DocType.C1,
+                        title=title or meta.pdf_url, pdf_url=meta.pdf_url,
+                        source_url=meta.detail_url, date=meta.date,
+                        provenance="bis_index", mime_type="application/pdf",
+                    )
+                    status = storage.reindex(rec, hit[1], dry_run=dry_run).split(":")[0]
+                    counts[status] = counts.get(status, 0) + 1
+                    del bucket[cand]
+                    break
+    finally:
+        # Duplicate-content files: remember their URL on the owning row (B1).
+        storage.flush_duplicate_stamps("reindex(bis)")
 
     counts["unmatched"] = sum(len(b) for b in missing_by_year.values())
     print(f"reindex: matched={counts['matched']} "

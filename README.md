@@ -55,7 +55,11 @@ no machine-translated or model-generated text.
   (a legacy single `data/manifest.jsonl` is auto-split on first use); committed to git for
   replayability. Dedup on `doc_id` (stable hash of bank+type+**url** — date-independent, so
   correcting a date is a pure metadata update, no id churn), persisted `alt_urls`, and content
-  `sha256`. **No domain guard** — discovery owns URL quality.
+  `sha256`. **No domain guard** — discovery owns URL quality. A record whose bytes another
+  row already owns (`skip:duplicate-content`) is remembered on that owning row (its URL into
+  `alt_urls`, its source page into the optional `alt_source_urls`), so the next run skips it
+  before any fetch instead of re-downloading it every night; one
+  `duplicate-content: N (stamped U urls on R rows)` stderr line per batch.
 - **Reindex from disk** (`pipeline.reindex_native_from_disk` / `reindex_bis_from_disk`, CLI
   `reindex-from-disk`) → rebuild manifest rows for PDFs that are **on disk but missing from the
   manifest** (e.g. the manifest was reset/lost while downloads kept accumulating). Replays

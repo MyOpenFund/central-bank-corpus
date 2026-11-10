@@ -149,3 +149,24 @@ def test_a_year_outside_the_sitemaps_is_left_alone(tmp_path, monkeypatch,
     assert counts["missing_on_disk"] == 1
     assert counts["matched"] == 0
     assert counts["unmatched"] == 1
+
+
+def test_duplicate_content_file_url_is_stamped_on_the_owner(tmp_path, monkeypatch,
+                                                            fetcher_factory):
+    """B1: two on-disk files with the same bytes -> the second is a
+    duplicate-content skip, and its URL lands on the first row's alt_urls
+    (flushed by reindex_bis_from_disk itself, not only by save_many)."""
+    cfg = Config(data_dir=tmp_path)
+    _seed_pdf(tmp_path, "de", 2020, _doc_id("de", SPEECH_URL))
+    _seed_pdf(tmp_path, "de", 2020, _doc_id("de", OTHER_URL))
+    _wire_sitemaps(monkeypatch, fetcher_factory)
+
+    counts = pipeline.reindex_bis_from_disk(dry_run=False, config=cfg)
+
+    assert counts["reindexed"] == 1 and counts["skip"] == 1
+    rows = [json.loads(ln) for ln in
+            (tmp_path / "manifest" / "de.jsonl").read_text().splitlines() if ln.strip()]
+    assert len(rows) == 1
+    assert rows[0]["pdf_url"] == SPEECH_URL
+    assert rows[0]["alt_urls"] == [OTHER_URL]
+    assert rows[0]["alt_source_urls"] == ["https://www.bis.org/review/r200220b.htm"]
