@@ -33,7 +33,7 @@ from typing import Iterable, Iterator, Mapping, Optional
 
 from .config import Config
 from .http import Fetcher
-from .htmlpdf import render_url_to_pdf
+from .htmlpdf import render_allowed, render_url_to_pdf
 from .models import DocRecord
 from .quarantine import Quarantine
 
@@ -438,6 +438,12 @@ def _sweep_chrome_profiles(data_dir: Path, keep: Path) -> None:
 
 
 class Storage:
+    # Name resolver handed to htmlpdf.render_allowed before every render
+    # (None = socket.getaddrinfo). A class attribute so the test suite can
+    # swap in a no-DNS default for every Storage (tests/conftest.py); a test
+    # injects its own fake per instance.
+    render_resolver = None
+
     def __init__(self, config: Optional[Config] = None,
                  fetcher: Optional[Fetcher] = None):
         self.cfg = config or Config()
@@ -456,6 +462,9 @@ class Storage:
         # used to be the UTC date at each failure, which split a Paris run
         # starting before 01:00 across two nights.
         self._night = _dt.date.today().isoformat()
+        # Render guard (B8): renders refused because the URL points at a
+        # blocked network (resolver: the `render_resolver` class attribute).
+        self.render_refused = 0
         # sha256 -> doc_id of the row that owns that content, not just a
         # membership set: a same-bytes save under a different doc_id needs to
         # report WHICH existing doc_id matched (`skip:duplicate-content:<id>`)
@@ -744,7 +753,17 @@ class Storage:
             html_path.write_bytes(content)
             rec.html_path = str(html_path)
 
+            refused = None
             if self.cfg.html_to_pdf:
+                # Never point --no-sandbox Chrome at the private network
+                # (Config.render_blocked_networks): refused -> keep the HTML.
+                refused = render_allowed(rec.pdf_url, self.cfg,
+                                         resolver=self.render_resolver)
+                if refused:
+                    self.render_refused += 1
+                    print(f"[storage] render refused for {rec.pdf_url}: {refused} "
+                          f"(HTML kept as the artifact)", file=sys.stderr, flush=True)
+            if self.cfg.html_to_pdf and not refused:
                 # Try to render a PDF sibling. If Chrome fails, the HTML still
                 # remains and becomes the canonical artifact.
                 pdf_rec = DocRecord(  # transient copy for path resolution

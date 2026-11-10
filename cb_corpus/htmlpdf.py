@@ -11,11 +11,94 @@ Why Chrome and not the cached HTML file:
 """
 from __future__ import annotations
 
+import ipaddress
 import shutil
+import socket
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Callable, Optional
+from urllib.parse import urlsplit
+
+if TYPE_CHECKING:
+    from .config import Config
+
+
+def _blocked_by(addr: str, networks) -> Optional[str]:
+    """The blocked network `addr` falls in, else None. IPv4-mapped IPv6
+    (::ffff:a.b.c.d) is checked as its IPv4 address too; an unparseable
+    address counts as blocked (fail closed)."""
+    try:
+        ip = ipaddress.ip_address(addr.split("%", 1)[0])   # drop an IPv6 zone id
+    except ValueError:
+        return "unparseable address"
+    candidates = [ip]
+    mapped = getattr(ip, "ipv4_mapped", None)
+    if mapped is not None:
+        candidates.append(mapped)
+    for cand in candidates:
+        for net in networks:
+            if cand.version == net.version and cand in net:
+                return str(net)
+    return None
+
+
+def render_allowed(url: str, cfg: "Config",
+                   resolver: Optional[Callable] = None) -> Optional[str]:
+    """Whether headless Chrome may be pointed at `url`: None = allowed, else
+    the reason it is refused.
+
+    Chrome runs with --no-sandbox, so it must never be aimed at the private
+    network (loopback, RFC 1918, link-local / cloud metadata, the tailnet's
+    CGNAT range, ...): `cfg.render_blocked_networks`. Rules: the scheme must
+    be http(s); a host must be present; an IP-literal host is checked
+    directly; a name is resolved with `resolver` (default
+    `socket.getaddrinfo`, looked up at call time so tests can inject a fake)
+    and EVERY resolved address must lie outside the blocked networks; a
+    resolution failure or an empty answer is refused (fail closed).
+
+    Limits: only the top-level URL is inspected. Chrome's own sub-resource
+    requests (scripts, frames, redirects, CSS) are NOT -- that would need an
+    egress proxy. Chrome also resolves the name again itself, so a DNS answer
+    that changes between this check and the render is not covered either.
+    """
+    try:
+        parts = urlsplit(url)
+    except ValueError as exc:
+        return f"unparseable URL ({exc})"
+    scheme = (parts.scheme or "").lower()
+    if scheme not in ("http", "https"):
+        return f"scheme {scheme or '(none)'!r} not allowed (http/https only)"
+    try:
+        host = parts.hostname
+        port = parts.port
+    except ValueError as exc:
+        return f"unparseable URL ({exc})"
+    if not host:
+        return "no host in URL"
+    networks = [ipaddress.ip_network(n, strict=False) for n in cfg.render_blocked_networks]
+    try:
+        ipaddress.ip_address(host.split("%", 1)[0])
+        is_literal = True
+    except ValueError:
+        is_literal = False
+    if is_literal:
+        net = _blocked_by(host, networks)
+        return f"address {host} is in blocked network {net}" if net else None
+    resolve = resolver or socket.getaddrinfo
+    try:
+        infos = resolve(host, port or (443 if scheme == "https" else 80),
+                        type=socket.SOCK_STREAM)
+    except Exception as exc:  # noqa: BLE001 -- any resolver failure fails closed
+        return f"could not resolve {host} ({type(exc).__name__}: {exc})"
+    addrs = [info[4][0] for info in infos or [] if info and len(info) > 4 and info[4]]
+    if not addrs:
+        return f"could not resolve {host} (no address)"
+    for addr in addrs:
+        net = _blocked_by(str(addr), networks)
+        if net:
+            return f"{host} resolves to {addr}, in blocked network {net}"
+    return None
 
 
 # Try the standard macOS path first, then common Linux names.

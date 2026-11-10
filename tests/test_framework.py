@@ -1246,6 +1246,8 @@ def test_storage_html_to_pdf_invokes_renderer(tmp_path, monkeypatch):
 
     cfg = Config(data_dir=tmp_path, html_to_pdf=True)
     st = Storage(cfg)
+    # Render guard (B8): resolve the host to a public address, no real DNS.
+    st.render_resolver = lambda host, port, **kw: [(2, 1, 6, "", ("93.184.216.34", port))]
     # Stub fetcher to return HTML bytes.
     st.fetcher.get_bytes = lambda url: (b"<html><body>hi</body></html>", "text/html")
     # Stub Chrome renderer to just write a fake PDF.

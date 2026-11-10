@@ -52,7 +52,13 @@ no machine-translated or model-generated text.
 - **Wayback recovery** (`sources/wayback.py`) → official PDFs a bank has taken offline, fetched
   from archive.org's raw snapshot (`provenance="wayback"`, fully audited). Used for the Riksbank.
 - **HTML→PDF** (`htmlpdf.py`) → HTML-only documents (e.g. ECB monetary-policy accounts) are
-  rendered to PDF via headless Chrome; the **raw HTML is also kept** (`html_path`).
+  rendered to PDF via headless Chrome; the **raw HTML is also kept** (`html_path`). Chrome runs
+  with `--no-sandbox`, so a render is **refused** when the URL is not http(s) or its host is, or
+  resolves to, an address in `Config.render_blocked_networks` (default: loopback, RFC 1918,
+  link-local incl. cloud metadata, CGNAT `100.64.0.0/10` = the tailnet, multicast/reserved, and
+  the IPv6 equivalents); the HTML then stays the artifact, with a `render refused` stderr line
+  (counted in `Storage.render_refused`). Only the top-level URL is checked: Chrome's own
+  sub-resource requests are not inspected (that would need an egress proxy).
 - **Storage / dedup** (`storage.py`) → **per-bank manifests** `data/manifest/<bank>.jsonl`
   (a legacy single `data/manifest.jsonl` is auto-split on first use); committed to git for
   replayability. Dedup on `doc_id` (stable hash of bank+type+**url** — date-independent, so
@@ -240,7 +246,7 @@ cb_corpus/
   taxonomy.py        DocType A1..G3, FULL_SCOPE (A–F)
   banks.py           the 63 BIS members + BIS_ALIASES (institution matching)
   models.py          DocRecord
-  config.py          settings (UA, throttle, html_to_pdf)
+  config.py          settings (UA, throttle, html_to_pdf, render_blocked_networks)
   http.py            fetcher (per-host throttle + retry/backoff; throttle() for Chrome)
   storage.py         manifest, dedup (doc_id + sha256), HTML→PDF render, html_path
   htmlpdf.py         headless-Chrome HTML→PDF (shared profile)

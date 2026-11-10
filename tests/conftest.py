@@ -58,3 +58,18 @@ class RecordingFetcher:
 def fetcher_factory():
     """Build a `RecordingFetcher` from a {url_suffix: body_or_exception} map."""
     return RecordingFetcher
+
+
+def _no_dns_resolver(host, port, *args, **kwargs):
+    raise OSError(f"real DNS disabled in tests (resolving {host!r})")
+
+
+@pytest.fixture(autouse=True)
+def _storage_render_guard_without_dns(monkeypatch):
+    """Storage's render guard (htmlpdf.render_allowed) resolves the host before
+    every HTML->PDF render. pytest-socket already blocks socket.getaddrinfo,
+    but via a warning-raising error; this default makes every Storage in the
+    suite fail closed quietly instead (render refused, HTML kept). A test that
+    needs a render to go through sets `storage.render_resolver` to a fake."""
+    from cb_corpus.storage import Storage
+    monkeypatch.setattr(Storage, "render_resolver", staticmethod(_no_dns_resolver))
