@@ -72,10 +72,12 @@ no machine-translated or model-generated text.
   row already owns (`skip:duplicate-content`) is remembered on that owning row (its URL into
   `alt_urls`, its source page into the optional `alt_source_urls`), so the next run skips it
   before any fetch instead of re-downloading it every night. Only when the owner row is a
-  **PDF**: an HTML owner keeps the URL for the current run only (retried next night), unless
-  `Config.stamp_duplicate_html=True`. The stamp is an add-only merge done under the bank's
+  **real PDF owner (no `html_path`)**: an HTML owner — including a page rendered to PDF by
+  `html_to_pdf`, `convert-html` or `retry-html`, whose `sha256` is still the HTML's — keeps the
+  URL for the current run only (retried next night), unless `Config.stamp_duplicate_html=True`. The stamp is an add-only merge done under the bank's
   manifest lock on a fresh read of the owner row. Every duplicate is logged in
-  `data/reports/duplicate_stamps.jsonl` (`persisted` true/false), with one
+  `data/reports/duplicate_stamps.jsonl` (`persisted` = owner eligible and found; an
+  `error` field when the stamping itself failed), with one
   `duplicate-content: N (stamped U urls on R rows)` stderr line per batch when N > 0.
 - **Reindex from disk** (`pipeline.reindex_native_from_disk` / `reindex_bis_from_disk`, CLI
   `reindex-from-disk`) → rebuild manifest rows for PDFs that are **on disk but missing from the

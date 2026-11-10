@@ -413,6 +413,24 @@ def apply_row_updates(cfg: Config, updates: Mapping[str, dict]) -> int:
     return replaced
 
 
+def is_stampable_owner(row: Mapping[str, object], cfg: Config) -> bool:
+    """May a duplicate URL be persisted onto this owner row? The ONE
+    eligibility rule for duplicate-content stamping (storage's nightly
+    bookkeeping AND recover.py's self-healing).
+
+    True only for a REAL PDF owner: `mime_type` application/pdf AND no
+    `html_path`. A row rendered from HTML (Storage.save with html_to_pdf, or
+    flipped later by convert-html / retry-html) also carries mime_type
+    application/pdf, but its `sha256` is the HTML's: a page that can change
+    while serving identical bytes today (a shared error page would absorb
+    every URL serving it). `Config.stamp_duplicate_html=True` makes every
+    owner eligible."""
+    if cfg.stamp_duplicate_html:
+        return True
+    return (str(row.get("mime_type") or "").lower() == "application/pdf"
+            and not row.get("html_path"))
+
+
 def merge_rows_locked(cfg: Config, merges: Mapping[str, Mapping[str, object]]) -> int:
     """Read-merge-write of manifest rows INSIDE each bank's sidecar lock.
 
@@ -738,7 +756,8 @@ class Storage:
         (and `source_url`) are added to the in-memory indexes at once (this
         run never fetches it again), and queued for flush_duplicate_stamps(),
         which persists them on the OWNER row (`alt_urls` / `alt_source_urls`)
-        only when that row is a PDF -- see Config.stamp_duplicate_html.
+        only when that row is a real PDF (is_stampable_owner; see
+        Config.stamp_duplicate_html).
         Accepted side effect of a persisted stamp: the URL becomes a fallback
         download URL for the owner row. Never called in dry run
         (save()/reindex() return before any duplicate detection there)."""
@@ -761,14 +780,15 @@ class Storage:
         """Persist the queued duplicate-content stamps and report them.
 
         Each queued duplicate is stamped onto its owner row (add-only, one
-        locked merge per bank, see _merge_stamps) ONLY if the owner's
-        `mime_type` is `application/pdf` -- or any owner when
-        `Config.stamp_duplicate_html` is True. An HTML (or other non-PDF)
-        owner keeps the URL in this run's in-memory indexes only, so it is
-        retried next night as before (an HTML page can change while keeping
-        identical bytes today). Every duplicate is logged as one JSON line in
-        `<data_dir>/reports/duplicate_stamps.jsonl` (ts, url, source_url,
-        owner_doc_id, owner_bank, label, persisted). One stderr line
+        locked merge per bank, see _merge_stamps) ONLY if the owner is a real
+        PDF (is_stampable_owner: mime_type application/pdf and no html_path)
+        -- or any owner when `Config.stamp_duplicate_html` is True. An HTML
+        owner, including one rendered to PDF, keeps the URL in this run's
+        in-memory indexes only, so it is retried next night as before (an
+        HTML page can change while keeping identical bytes today). Every
+        duplicate is logged as one JSON line in
+        `<data_dir>/reports/duplicate_stamps.jsonl` (see stamp_duplicates;
+        also written when the merge fails, with an `error`). One stderr line
         `[label] duplicate-content: N (stamped U urls on R rows)` when N > 0.
         The queue is cleared in every case (also on failure). Returns
         (duplicates, urls_stamped, rows_modified).
@@ -790,31 +810,64 @@ class Storage:
                   f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
             return (len(dups), 0, 0)
 
-    def _flush(self, dups: list[dict], label: str) -> tuple[int, int, int]:
+    def stamp_duplicates(self, dups: list[dict], label: str
+                         ) -> tuple[int, int, set[str]]:
+        """Stamp duplicate URLs onto their owner rows and log every one.
+
+        `dups`: dicts {url, source_url, owner_doc_id}. Each URL (and source
+        page) is merged onto its owner row (add-only, under the bank's lock,
+        see _merge_stamps) only if the owner is_stampable_owner(); every dup
+        is then appended as one JSON line to
+        `<data_dir>/reports/duplicate_stamps.jsonl` (ts, url, source_url,
+        owner_doc_id, owner_bank, label, persisted). If the merge raises, the
+        lines are still written (persisted false, plus an `error` field)
+        before the exception propagates. Shared by flush_duplicate_stamps()
+        and recover.py. Returns (urls_stamped, rows_modified,
+        persisted_owner_ids)."""
         stamps: dict[str, list[str]] = {}
         sources: dict[str, list[str]] = {}
         for d in dups:
-            for bucket, url in ((stamps, d["url"]), (sources, d["source_url"])):
+            for bucket, url in ((stamps, d.get("url")), (sources, d.get("source_url"))):
                 if url:
                     lst = bucket.setdefault(d["owner_doc_id"], [])
                     if url not in lst:
                         lst.append(url)
-        allow_html = self.cfg.stamp_duplicate_html
-        eligible = None if allow_html else (
-            lambda row: (row.get("mime_type") or "").lower() == "application/pdf")
-        urls, rows, persisted = self._merge_stamps(stamps, sources, eligible)
-        banks = self._bank_of({d["owner_doc_id"] for d in dups})
+        error: Optional[str] = None
+        persisted: set[str] = set()
+        try:
+            urls, rows, persisted = self._merge_stamps(
+                stamps, sources, lambda row: is_stampable_owner(row, self.cfg))
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}".replace("\n", " ")[:500]
+            self._log_duplicates(dups, label, persisted, error)
+            raise
+        self._log_duplicates(dups, label, persisted, error)
+        return (urls, rows, persisted)
+
+    def _log_duplicates(self, dups: list[dict], label: str, persisted: set[str],
+                        error: Optional[str]) -> None:
+        try:
+            banks = self._bank_of({d["owner_doc_id"] for d in dups})
+        except Exception:     # the log must not depend on a readable manifest
+            banks = {}
         ts = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
         log = self.cfg.reports_dir / "duplicate_stamps.jsonl"
         log.parent.mkdir(parents=True, exist_ok=True)
         with log.open("a") as fh:
             for d in dups:
-                fh.write(json.dumps({
-                    "ts": ts, "url": d["url"], "source_url": d["source_url"],
+                entry = {
+                    "ts": ts, "url": d.get("url") or "",
+                    "source_url": d.get("source_url") or "",
                     "owner_doc_id": d["owner_doc_id"],
                     "owner_bank": banks.get(d["owner_doc_id"], ""),
                     "label": label, "persisted": d["owner_doc_id"] in persisted,
-                }, ensure_ascii=False) + "\n")
+                }
+                if error:
+                    entry["error"] = error
+                fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    def _flush(self, dups: list[dict], label: str) -> tuple[int, int, int]:
+        urls, rows, _ = self.stamp_duplicates(dups, label)
         prefix = f"[{label}] " if label else ""
         print(f"{prefix}duplicate-content: {len(dups)} (stamped {urls} urls on {rows} rows)",
               file=sys.stderr, flush=True)
@@ -1029,8 +1082,8 @@ class Storage:
         cumulative total across every batch run so far).
 
         Duplicate-content records seen during the batch are stamped onto the
-        rows that own their content (flush_duplicate_stamps: PDF owners only
-        by default), in a finally so a record iterator that raises mid-batch
+        rows that own their content (flush_duplicate_stamps: real PDF owners
+        only by default, see is_stampable_owner), in a finally so a record iterator that raises mid-batch
         still persists what was learnt; a stamping failure there is only a
         WARNING (never masks the batch). Never written in dry run. One
         `duplicate-content: N` line, and one `render refused: N` line, on

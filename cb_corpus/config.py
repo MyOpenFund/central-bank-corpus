@@ -66,9 +66,12 @@ class Config:
     # Duplicate-content stamping (storage.flush_duplicate_stamps): a record
     # whose bytes another row already owns has its URL (and source page)
     # remembered on that owner row so it is never re-downloaded. By default
-    # only when the owner is a PDF: an HTML page can change while serving
-    # identical bytes today, so an HTML owner's duplicates stay in-memory for
-    # the run and are retried next night. True also stamps HTML owners.
+    # only when the owner is a real PDF (mime_type application/pdf and no
+    # html_path -- storage.is_stampable_owner; a page rendered from HTML is
+    # not one): an HTML page can change while serving identical bytes today,
+    # so an HTML owner's duplicates stay in-memory for the run and are
+    # retried next night.
+    # True also stamps HTML (and rendered-HTML) owners.
     stamp_duplicate_html: bool = False
     # Networks headless Chrome (run with --no-sandbox) must never be pointed
     # at: htmlpdf.render_allowed refuses a render when the URL's host is, or

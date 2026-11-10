@@ -319,3 +319,144 @@ def test_recover_discards_storage_queue(tmp_path, monkeypatch):
                           config=Config(data_dir=tmp_path), fetcher=object(),
                           csv_path=str(tmp_path / "r.csv"))
     assert calls == [1]
+
+
+# ---- final-review fix wave: real PDF owners only, lock, log robustness --
+
+import fcntl  # noqa: E402
+
+from cb_corpus.storage import apply_row_updates, is_stampable_owner  # noqa: E402
+
+
+def _public(host, port, *args, **kwargs):
+    return [(2, 1, 6, "", ("93.184.216.34", port))]
+
+
+def _rendering_storage(tmp_path, monkeypatch, **cfg_kw) -> Storage:
+    """Default config (html_to_pdf=True) with a fake Chrome that succeeds:
+    an HTML page becomes a mime_type=application/pdf row WITH html_path."""
+    st = Storage(Config(data_dir=tmp_path, **cfg_kw))
+    st.render_resolver = _public
+    st.fetcher.get_bytes = lambda url: HTML_BODY
+
+    def fake_render(url, output, **kw):
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"%PDF-1.4 rendered")
+    monkeypatch.setattr(storage_mod, "render_url_to_pdf", fake_render)
+    return st
+
+
+def test_is_stampable_owner_predicate():
+    cfg = Config()
+    assert is_stampable_owner({"mime_type": "application/pdf"}, cfg)
+    assert is_stampable_owner({"mime_type": "Application/PDF", "html_path": None}, cfg)
+    assert not is_stampable_owner({"mime_type": "application/pdf", "html_path": "/x.html"}, cfg)
+    assert not is_stampable_owner({"mime_type": "text/html"}, cfg)
+    assert not is_stampable_owner({}, cfg)
+    relaxed = Config(stamp_duplicate_html=True)
+    assert is_stampable_owner({"mime_type": "text/html"}, relaxed)
+    assert is_stampable_owner({"mime_type": "application/pdf", "html_path": "/x.html"}, relaxed)
+
+
+def test_rendered_html_owner_not_persisted(tmp_path, monkeypatch):
+    st = _rendering_storage(tmp_path, monkeypatch)
+    owner, dup = _rec("owner"), _rec("dup", source="https://s/d")
+    st.save_many([owner, dup], label="fr")
+    row = _row(st.cfg, owner.doc_id)
+    assert row["mime_type"] == "application/pdf" and row["html_path"]   # rendered
+    assert not row.get("alt_urls") and "alt_source_urls" not in row
+    assert st.is_known_url(dup.pdf_url)                                # this run only
+    [entry] = _log(st.cfg)
+    assert entry["persisted"] is False
+    st2 = Storage(Config(data_dir=tmp_path))
+    assert not st2.is_known_url(dup.pdf_url)                           # retried next night
+    assert not st2.is_known_source_url("https://s/d")
+
+
+def test_rendered_html_owner_persisted_when_relaxed(tmp_path, monkeypatch):
+    st = _rendering_storage(tmp_path, monkeypatch, stamp_duplicate_html=True)
+    owner, dup = _rec("owner"), _rec("dup")
+    st.save_many([owner, dup], label="fr")
+    assert _row(st.cfg, owner.doc_id)["alt_urls"] == [dup.pdf_url]
+    assert _log(st.cfg)[0]["persisted"] is True
+
+
+def _flipped_owner(tmp_path, **cfg_kw):
+    """An HTML row later flipped by convert-html / retry-html: mime pdf,
+    html_path set, sha256 still the HTML's."""
+    st = Storage(Config(data_dir=tmp_path, html_to_pdf=False))
+    st.fetcher.get_bytes = lambda url: HTML_BODY
+    owner = _rec("owner")
+    st.save(owner)
+    row = _row(st.cfg, owner.doc_id)
+    html = row["local_path"]
+    row.update(mime_type="application/pdf", local_path=html[:-5] + ".pdf", html_path=html)
+    apply_row_updates(st.cfg, {owner.doc_id: row})
+    st2 = Storage(Config(data_dir=tmp_path, html_to_pdf=False, **cfg_kw))
+    st2.fetcher.get_bytes = lambda url: HTML_BODY
+    return st2, owner
+
+
+def test_converted_html_owner_not_persisted(tmp_path):
+    st, owner = _flipped_owner(tmp_path)
+    dup = _rec("dup")
+    assert st.save_many([dup], label="fr") == {"skip": 1}
+    assert not _row(st.cfg, owner.doc_id).get("alt_urls")
+    assert _log(st.cfg)[0]["persisted"] is False
+
+
+def test_converted_html_owner_persisted_when_relaxed(tmp_path):
+    st, owner = _flipped_owner(tmp_path, stamp_duplicate_html=True)
+    dup = _rec("dup")
+    st.save_many([dup], label="fr")
+    assert _row(st.cfg, owner.doc_id)["alt_urls"] == [dup.pdf_url]
+    assert _log(st.cfg)[0]["persisted"] is True
+
+
+def _lock_is_held(data_file) -> bool:
+    lock = data_file.with_name("." + data_file.name + ".lock")
+    with lock.open("a") as fh:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(fh, fcntl.LOCK_UN)
+        return False
+
+
+def test_merge_rows_locked_holds_sidecar_lock_during_read_and_replace(tmp_path, monkeypatch):
+    st = _storage(tmp_path)
+    owner = _rec("owner")
+    st.save(owner)
+    path = st.cfg.manifest_file("fr")
+    assert not _lock_is_held(path)
+    seen: list[tuple[str, bool]] = []
+    real_read, real_replace = storage_mod._read_rows_for_rewrite, storage_mod.os.replace
+
+    def spy_read(f):
+        seen.append(("read", _lock_is_held(path)))
+        return real_read(f)
+
+    def spy_replace(src, dst):
+        seen.append(("replace", _lock_is_held(path)))
+        return real_replace(src, dst)
+    monkeypatch.setattr(storage_mod, "_read_rows_for_rewrite", spy_read)
+    monkeypatch.setattr(storage_mod.os, "replace", spy_replace)
+    assert st.stamp_alt_urls({owner.doc_id: ["https://dead.example/a.pdf"]}) == (1, 1)
+    assert seen == [("read", True), ("replace", True)]
+    assert not _lock_is_held(path)
+
+
+def test_merge_failure_still_logs_then_warns(tmp_path, monkeypatch, capsys):
+    st = _storage(tmp_path)
+
+    def boom(*a, **k):
+        raise ValueError("manifest corrupt")
+    monkeypatch.setattr(Storage, "_merge_stamps", boom)
+    owner, dup = _rec("owner"), _rec("dup", source="https://s/d")
+    st.save_many([owner, dup], label="fr")
+    [e] = _log(st.cfg)
+    assert e["persisted"] is False and e["url"] == dup.pdf_url
+    assert e["source_url"] == "https://s/d" and e["label"] == "fr"
+    assert "ValueError: manifest corrupt" in e["error"]
+    assert "stamping failed" in capsys.readouterr().err
