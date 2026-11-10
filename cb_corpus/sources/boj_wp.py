@@ -42,7 +42,8 @@ def boj_code(s: str):
     """
     # Also split on ":" so a RePEc "series:pid" / handle form (what repec-check
     # passes, e.g. "bojwps:wp25e13") reads the paper id, not "bojwps:...".
-    seg = re.split(r"[/:]", (s or "").rstrip("/"))[-1].split(".")[0]
+    s = (s or "").split("?", 1)[0].split("#", 1)[0]
+    seg = re.split(r"[/:]", s.rstrip("/"))[-1].split(".")[0]
     m = _CODE_RE.fullmatch(seg) or _CODE_RE.match(seg)
     if not m:
         return None

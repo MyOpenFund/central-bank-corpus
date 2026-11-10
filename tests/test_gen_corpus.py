@@ -103,3 +103,10 @@ def test_main_writes_output_path(corpus, tmp_path):
     rc = gen_corpus.main(["--data-dir", str(corpus.data_dir), "--out", str(out)])
     assert rc == 0
     assert out.read_text().startswith("# Central bank corpus")
+
+
+def test_rows_missing_bank_or_type_do_not_crash(tmp_path):
+    cfg = Config(data_dir=tmp_path / "data")
+    _write(cfg.manifest_dir / "xx.jsonl", [{"doc_id": "a", "year": 2001}, _row("ca", "D1", 2002)])
+    md = gen_corpus.build_corpus_md(cfg)
+    assert "| Documents | **2** |" in md

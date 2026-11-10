@@ -74,7 +74,9 @@ def _rows():
         r("by_title", date_="2019-01-01", title="A Paper Listed Under Its Exact Title"),
         r("by_pagefetch", date_="2018-07-01", pdf_url="https://mirror.test/legacy/paper-c.pdf"),
         r("recent_orphan", date_=RECENT),
-        r("old_orphan", date_="2005-03-01"),
+        r("old_orphan", date_="2019-06-01"),
+        r("pre_era", date_="2005-03-01"),
+        r("month_only", date_="2019-08"),
         r("undated_orphan"),
         r("sixty_days", date_=SIXTY),
         r("d2_row", doc_type="D2", date_="2010-01-01"),
@@ -120,8 +122,10 @@ def test_every_cascade_tier_counts_as_matched(cfg, monkeypatch):
 def test_unmatched_rows_bucketed_by_grace_window(cfg, monkeypatch):
     summary, buckets, _ = _run(cfg, monkeypatch)
     assert buckets == {"recent_orphan": "pending_repec", "old_orphan": "unmatched_old",
-                       "undated_orphan": "unmatched_old", "sixty_days": "unmatched_old"}
-    assert summary["pending_repec"] == 1 and summary["unmatched_old"] == 3
+                       "undated_orphan": "unmatched_old", "sixty_days": "unmatched_old",
+                       "month_only": "unmatched_old", "pre_era": "pre_repec"}
+    assert summary["pending_repec"] == 1 and summary["unmatched_old"] == 4
+    assert summary["pre_repec"] == 1
 
 
 def test_doc_types_without_a_series_are_ignored(cfg, monkeypatch):
@@ -147,7 +151,7 @@ def test_reverse_csv_columns(cfg, monkeypatch):
     _, _, rows = _run(cfg, monkeypatch)
     assert set(rows[0]) == {"bank", "doc_id", "doc_type", "date", "title", "pdf_url", "bucket"}
     old = next(r for r in rows if r["doc_id"] == "old_orphan")
-    assert old["bank"] == "jp" and old["date"] == "2005-03-01"
+    assert old["bank"] == "jp" and old["date"] == "2019-06-01"
 
 
 def test_never_writes_the_manifest(cfg, monkeypatch):
@@ -182,3 +186,113 @@ def test_boj_code_reads_series_pid_and_handle_forms():
     assert boj_code("https://www.boj.or.jp/en/research/wps_rev/wps_2025/data/wp25e13.pdf") == (25, "e", 13)
     assert boj_code("https://ideas.repec.org/p/boj/bojwps/10-e-11.html") == (10, "e", 11)
     assert boj_code("") is None and boj_code("bojwps:") is None
+
+
+def test_pre_repec_floor_comes_from_matched_rows_only(cfg, monkeypatch):
+    """Without any matched row there is no era floor: nothing is `pre_repec`."""
+    summary, buckets, _ = _run(cfg, monkeypatch, listing_pages={1: _listing([("wp99e99", "zzz")])})
+    assert "pre_repec" not in buckets.values()
+    assert buckets["pre_era"] == "unmatched_old"
+
+
+def test_grace_boundary_is_inclusive(cfg, monkeypatch):
+    _, buckets, _ = _run(cfg, monkeypatch, grace_days=60)
+    assert buckets["sixty_days"] == "pending_repec"
+    _, buckets, _ = _run(cfg, monkeypatch, grace_days=59)
+    assert buckets["sixty_days"] == "unmatched_old"
+
+
+def test_month_precision_date_counts_as_recent(tmp_path, monkeypatch):
+    c = Config(data_dir=tmp_path / "data")
+    c.manifest_dir.mkdir(parents=True)
+    ym = TODAY.strftime("%Y-%m")
+    c.manifest_file("jp").write_text(json.dumps(
+        {"doc_id": "m", "bank_code": "jp", "doc_type": "D1", "title": "m",
+         "pdf_url": "https://x.test/m.pdf", "date": ym}) + "\n")
+    _, buckets, _ = _run(c, monkeypatch, grace_days=40)
+    assert buckets == {"m": "pending_repec"}
+
+
+def test_pagefetch_failure_is_counted(cfg, monkeypatch, capsys):
+    papers = dict(PAPERS); PAPERS.clear()          # leftover page now fails to load
+    try:
+        summary, buckets, _ = _run(cfg, monkeypatch)
+    finally:
+        PAPERS.update(papers)
+    assert summary["pagefetch_errors"] == 1
+    assert buckets["by_pagefetch"] in ("unmatched_old", "pre_repec")
+    assert "failed to load" in capsys.readouterr().err
+
+
+def test_empty_listing_skips_reverse_check(cfg, monkeypatch, capsys):
+    summary, buckets, _ = _run(cfg, monkeypatch, listing_pages={1: "<html><body></body></html>"})
+    assert buckets == {} and summary["reverse_skipped_truncated"] == 1
+    assert "returned no paper" in capsys.readouterr().err
+
+
+def test_max_pages_reached_is_a_truncation():
+    from cb_corpus.runreport import SourceStats
+
+    class Endless:
+        def get_text(self, url):
+            n = re.search(r"bojwps(\d*)\.html$", url).group(1) or "1"
+            return _listing([(f"wp{int(n):02d}e01", f"p{n}")])
+    stats = SourceStats("t")
+    out = RC.enumerate_series(Endless(), "boj:bojwps", max_pages=3, stats=stats)
+    assert len(out) == 3 and stats.truncated
+
+
+def test_se_key_tier_matches(tmp_path, monkeypatch):
+    """se_handle_number needs the `hhs:` archive prefix: the key tier used to get
+    "rbnkwp:0463" and never matched a Riksbank paper."""
+    c = Config(data_dir=tmp_path / "data")
+    c.manifest_dir.mkdir(parents=True)
+    c.manifest_file("se").write_text(json.dumps(
+        {"doc_id": "s1", "bank_code": "se", "doc_type": "D1", "date": "2019-12-01",
+         "title": "Some paper (Revised December 2019)",
+         "pdf_url": "https://www.riksbank.se/globalassets/media/rapporter/working-papers/2019/no.-463-some-paper.pdf"}) + "\n")
+
+    class SeFetcher:
+        def get_text(self, url):
+            if re.search(r"/s/hhs/rbnkwp\d*\.html$", url):
+                return ('<html><body><li><a href="/p/hhs/rbnkwp/0463.html">'
+                        'Some Paper</a></li></body></html>')
+            raise ConnectionError(url)
+    monkeypatch.setattr(RC, "Fetcher", lambda cfg: SeFetcher())
+    res = RC.run_repec_check(bank_codes=["se"], config=c,
+                             csv_path=str(tmp_path / "f.csv"), reverse_csv_path=str(tmp_path / "r.csv"))
+    assert res["se"]["covered"] == 1 and res["se"]["pagefetch_errors"] == 0
+    assert list(csv.DictReader(open(tmp_path / "r.csv"))) == []
+
+
+def test_two_series_bank_tracks_both_doc_types(tmp_path, monkeypatch):
+    """ecb has D1 (ecbwps) and D2 (ecbops): rows of both types are checked, and a
+    D2 row matched by the ops series is not reported."""
+    c = Config(data_dir=tmp_path / "data")
+    c.manifest_dir.mkdir(parents=True)
+    rows = [{"doc_id": "w", "bank_code": "ecb", "doc_type": "D1", "date": "2020-01-10", "title": "w",
+             "pdf_url": "https://x.test/w.pdf", "repec_handle": "RePEc:ecb:ecbwps:20202001"},
+            {"doc_id": "o", "bank_code": "ecb", "doc_type": "D2", "date": "2020-02-10", "title": "o",
+             "pdf_url": "https://x.test/o.pdf", "repec_handle": "RePEc:ecb:ecbops:2020240"},
+            {"doc_id": "x", "bank_code": "ecb", "doc_type": "D2", "date": "2021-02-10", "title": "x",
+             "pdf_url": "https://x.test/x.pdf"}]
+    c.manifest_file("ecb").write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+    class EcbFetcher:
+        def get_text(self, url):
+            m = re.search(r"/s/ecb/(ecbwps|ecbops)\d*\.html$", url)
+            if m:
+                pid = "20202001" if m.group(1) == "ecbwps" else "2020240"
+                return f'<html><body><li><a href="/p/ecb/{m.group(1)}/{pid}.html">t</a></li></body></html>'
+            raise ConnectionError(url)
+    monkeypatch.setattr(RC, "Fetcher", lambda cfg: EcbFetcher())
+    RC.run_repec_check(bank_codes=["ecb"], config=c,
+                       csv_path=str(tmp_path / "f.csv"), reverse_csv_path=str(tmp_path / "r.csv"))
+    rev = {r["doc_id"]: r["bucket"] for r in csv.DictReader(open(tmp_path / "r.csv"))}
+    assert rev == {"x": "unmatched_old"}
+
+
+def test_boj_code_ignores_query_and_fragment():
+    from cb_corpus.sources.boj_wp import boj_code
+    assert boj_code("https://www.boj.or.jp/x/wp25e13.pdf?v=1:2") == (25, "e", 13)
+    assert boj_code("https://www.boj.or.jp/x/wp25e13.pdf#a:b") == (25, "e", 13)

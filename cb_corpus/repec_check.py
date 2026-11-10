@@ -66,8 +66,7 @@ def enumerate_series(fetcher: Fetcher, handle: str, max_pages: int = 80,
                      ) -> list[tuple[str, str]]:
     """All (paper_id, title) for an IDEAS series, following pagination.
 
-    The walk ends cleanly when a page yields nothing new, when `max_pages` is
-    hit, or on an HTTP 404 for page k > 1 that page k-1 does not link to
+    The walk ends cleanly when a page yields nothing new, or on an HTTP 404 for page k > 1 that page k-1 does not link to
     (IDEAS answers 404 on the page after the last one; see
     `sources.repec.listing_error_truncation`). Any other listing-page fetch
     failure (404 on page 1, 404 on a page that page k-1 advertises, network
@@ -76,7 +75,8 @@ def enumerate_series(fetcher: Fetcher, handle: str, max_pages: int = 80,
     `record_fetch_error(..., truncated=True)` first, so it is never
     indistinguishable from a genuinely completed listing. `stats=None` (the
     default) preserves the prior silent-break behavior for callers not yet
-    wired to a run-report.
+    wired to a run-report. Hitting `max_pages` is also recorded as a
+    truncation: the listing may have more pages than were read.
     """
     arch, series = handle.split(":")
     base = f"{IDEAS}/s/{arch}/{series}"
@@ -98,12 +98,29 @@ def enumerate_series(fetcher: Fetcher, handle: str, max_pages: int = 80,
             break
         for pid, t in new:
             seen[pid] = t
+    else:
+        if stats is not None:
+            stats.record_fetch_error(
+                f"{handle}: stopped at max_pages={max_pages}", truncated=True)
     return list(seen.items())
 
 
+def _entry_key(key_handle, arch: str, series: str, pid: str):
+    """Bank join key for an IDEAS listing entry. Passes the full
+    ``arch:series:pid`` form: every handle extractor in ``_KEY_FROM_HANDLE``
+    reads it (``se_handle_number`` needs the ``hhs:`` archive prefix; the bare
+    ``series:pid`` form gave no key for se, and none for jp before boj_code
+    learnt to split on ":")."""
+    return key_handle(f"{arch}:{series}:{pid}") if key_handle else None
+
+
 def _row_date(row: dict) -> Optional[date]:
+    """Row date; a month-precision ``YYYY-MM`` reads as its first day."""
+    d = (row.get("date") or "").strip()
+    if len(d) == 7:
+        d += "-01"
     try:
-        return date.fromisoformat((row.get("date") or "")[:10])
+        return date.fromisoformat(d[:10])
     except ValueError:
         return None
 
@@ -116,9 +133,15 @@ def run_repec_check(bank_codes: Optional[Iterable[str]] = None,
     """Audit RePEc coverage for the requested banks (default: all wired). Never
     downloads, never writes the manifest. Returns {bank: summary}; writes a CSV of
     missing papers (RePEc -> manifest) and a CSV of manifest rows RePEc does not
-    list (reverse: `pending_repec` within `grace_days`, else `unmatched_old`).
+    list (reverse: `pending_repec` within `grace_days`, `pre_repec` when dated
+    before the bank's earliest row RePEc does list, else `unmatched_old`).
+    `grace_days` is the one grace window of the design (decision Q4): it also
+    splits the forward `missing_recent` / `missing_legacy` buckets.
     The reverse check only covers a bank's doc types that have a RePEc series, and
-    is skipped (flagged `reverse_skipped_truncated`) when a listing was truncated."""
+    is skipped (flagged `reverse_skipped_truncated`) when a listing was truncated,
+    hit `max_pages`, or came back empty. Leftover page fetches that fail are
+    counted in `pagefetch_errors` (rows they would have matched may then read as
+    unmatched)."""
     if grace_days < 0:
         raise ValueError(f"grace_days must be >= 0, got {grace_days}")
     cfg = config or Config()
@@ -182,13 +205,18 @@ def run_repec_check(bank_codes: Optional[Iterable[str]] = None,
 
         summary = {"repec_total": 0, "covered": 0, "recovered_pagefetch": 0,
                    "missing_recent": 0, "missing_legacy": 0, "manifest_total": manifest_n,
-                   "pending_repec": 0, "unmatched_old": 0, "reverse_skipped_truncated": 0}
+                   "pending_repec": 0, "pre_repec": 0, "unmatched_old": 0,
+                   "reverse_skipped_truncated": 0, "pagefetch_errors": 0}
         bank_home = get_bank(bank).homepage
         for handle, doc_type in SERIES[bank]:
             arch, series = handle.split(":")
             leftovers: list[tuple[str, str, str]] = []
             stats = SourceStats(f"repec_check:{bank}")
             entries = enumerate_series(fetcher, handle, stats=stats)
+            if not entries and not stats.truncated:
+                truncated_any = True
+                print(f"WARNING: IDEAS listing for {handle} returned no paper",
+                      file=sys.stderr)
             if stats.truncated:
                 truncated_any = True
                 sample = stats.error_samples[-1] if stats.error_samples else ""
@@ -197,7 +225,7 @@ def run_repec_check(bank_codes: Optional[Iterable[str]] = None,
             for pid, title in entries:
                 summary["repec_total"] += 1
                 full_handle = f"RePEc:{arch}:{series}:{pid}"
-                k = key_handle(f"{series}:{pid}") if key_handle else None
+                k = _entry_key(key_handle, arch, series, pid)
                 nt = normalize_title(title) if title else ""
                 matched |= by_h.get(full_handle, set())
                 if k:
@@ -231,6 +259,7 @@ def run_repec_check(bank_codes: Optional[Iterable[str]] = None,
                                  or bool(nft and nft in titles))
                 except Exception:
                     recovered = False
+                    summary["pagefetch_errors"] += 1
                 if recovered:
                     summary["covered"] += 1
                     summary["recovered_pagefetch"] += 1
@@ -240,14 +269,28 @@ def run_repec_check(bank_codes: Optional[Iterable[str]] = None,
                 summary["missing_recent" if recent else "missing_legacy"] += 1
                 missing_rows.append({"bank": bank, "handle": full_handle,
                                      "title": title, "bucket": "recent" if recent else "legacy"})
+        if summary["pagefetch_errors"]:
+            print(f"WARNING: {bank}: {summary['pagefetch_errors']} IDEAS paper page(s) "
+                  f"failed to load; rows they would match may read as unmatched",
+                  file=sys.stderr)
         if truncated_any:
             summary["reverse_skipped_truncated"] = 1
         else:
+            # RePEc era floor, from the data: the earliest dated row RePEc lists.
+            # Older unmatched rows (e.g. de 1995-2011, es 1978-1997 bank-site
+            # papers) predate the series on IDEAS: `pre_repec`, not a gap signal.
+            era = [d for d in (_row_date(rev_rows[i]) for i in matched if i in rev_rows) if d]
+            floor = min(era) if era else None
             for did, row in rev_rows.items():
                 if did in matched:
                     continue
                 d = _row_date(row)
-                bucket = "pending_repec" if (d and d >= cutoff) else "unmatched_old"
+                if d and d >= cutoff:
+                    bucket = "pending_repec"
+                elif d and floor and d < floor:
+                    bucket = "pre_repec"
+                else:
+                    bucket = "unmatched_old"
                 summary[bucket] += 1
                 reverse_rows.append({"bank": bank, "doc_id": did,
                                      "doc_type": row.get("doc_type", ""),
@@ -367,7 +410,7 @@ def _walk_entries(bank: str, fetcher: Fetcher, idx: dict, bank_home: str):
                 continue
 
             cand_by_id: dict[str, dict] = {r["doc_id"]: r for r in handle_rows}
-            key = key_handle(f"{series}:{pid}") if key_handle else None
+            key = _entry_key(key_handle, arch, series, pid)
             if key is not None:
                 for r in by_key.get(key, []):
                     cand_by_id[r["doc_id"]] = r

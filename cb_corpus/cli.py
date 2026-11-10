@@ -182,8 +182,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="CSV of manifest rows RePEc does not list "
                          "(default data/reports/repec_check_reverse.csv)")
     rc.add_argument("--grace-days", type=int, default=45,
-                    help="a manifest row RePEc does not list yet is `pending_repec` "
-                         "within this many days of its date, else `unmatched_old` (default 45)")
+                    help="grace window (decision Q4, default 45): a manifest row RePEc does "
+                         "not list yet is `pending_repec` within this many days of its date; "
+                         "also splits missing papers into missing_recent / missing_legacy")
 
     rr = sub.add_parser("repec-reconcile",
                         help="Stamp IDEAS source_urls onto uniquely-matched manifest "

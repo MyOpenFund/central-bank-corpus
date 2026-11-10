@@ -71,10 +71,15 @@ built: handle stamping is done by `wp-migrate --write` and `repec-reconcile`
 5. **Reverse check** (manifest rows with no RePEc match). *As built
    (2026-11):* only rows whose doc type has a RePEc series for that bank are
    checked; a row is matched if any tier above (or the leftover page-fetch pass)
-   ties it to a RePEc paper. The grace window is `--grace-days` (default 45);
-   an undated row counts as `unmatched_old`. If a listing was truncated, the
-   bank's reverse check is skipped and flagged (`reverse_skipped_truncated`)
-   rather than reporting every row as unmatched. Two cases:
+   ties it to a RePEc paper. The grace window is `--grace-days` (default 45; it
+   also splits `missing_recent` / `missing_legacy`); an undated row counts as
+   `unmatched_old`, a `YYYY-MM` date as its first day. Rows dated before the
+   bank's earliest row that RePEc does list are `pre_repec` (papers older than
+   the series on IDEAS, e.g. Bundesbank 1995–2011, Banco de España 1978–1997),
+   not a gap signal. If a listing was truncated, hit its page cap or came back
+   empty, the bank's reverse check is skipped and flagged
+   (`reverse_skipped_truncated`) rather than reporting every row as unmatched;
+   failed leftover page fetches are counted in `pagefetch_errors`. Two cases:
    - **`pending_repec`** (expected, not an anomaly): row's `date` is within
      the last ~45 days → the paper was fetched from the bank site before
      RePEc indexed it (RePEc lags days to ~2 weeks; 45 d gives margin).

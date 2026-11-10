@@ -37,7 +37,7 @@ def build_corpus_md(cfg: Config) -> str:
     bankyears = collections.defaultdict(list)
     ty_dec = collections.defaultdict(collections.Counter)
     for d in rows:
-        c, t = d["bank_code"], d["doc_type"]
+        c, t = d.get("bank_code") or "?", d.get("doc_type") or "?"
         bt[c][t] += 1; bytype[t] += 1
         prov[d.get("provenance", "?")] += 1; lang[d.get("language", "?")] += 1
         if d.get("year"):
@@ -64,7 +64,7 @@ def build_corpus_md(cfg: Config) -> str:
     W("| Metric | Value |")
     W("|---|---|")
     W(f"| Documents | **{total:,}** |".replace(",", " "))
-    W(f"| Central banks | **{nbanks}** (out of 63 targeted) |")
+    W(f"| Central banks | **{nbanks}** (out of {len(BIS_63)} targeted) |")
     W(f"| Period | **{period}** |")
     W(f"| Language | **{', '.join(lang) or 'n/a'}** |")
     W(f"| Size | **{size}** |")
@@ -163,7 +163,7 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
     cfg = Config(data_dir=Path(args.data_dir))
     md = build_corpus_md(cfg)
-    Path(args.out).write_text(md)
+    Path(args.out).write_text(md, encoding="utf-8")
     print(f"{args.out} regenerated: {len(md)} bytes")
     return 0
 
