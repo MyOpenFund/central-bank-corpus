@@ -134,7 +134,7 @@ python -m cb_corpus list-banks
 # Speeches (C1) — single pass over the BIS yearly sitemaps, all banks at once
 python -m cb_corpus bis-sitemap --download
 
-# Working papers (D1/D2) via RePEc (paginated, dated) — banks without a native source
+# Working papers (D1/D2) via RePEc (paginated, dated) — every wired bank, native ones included
 python -m cb_corpus repec --download                  # all wired series
 python -m cb_corpus repec --banks ecb,us --download
 

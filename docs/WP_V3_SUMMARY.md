@@ -138,7 +138,7 @@ clone replays every date with **no re-crawl**; PDFs are rebuilt from the manifes
   (June 2026 decision: D2 for every bank that has one) — pending.
 - RePEc is still walked by the nightly sync (`repec` in `deploy/run-job.sh`) for
   every bank in `SERIES`, natively-covered ones included: dual source, with
-  dedup on `doc_id` / `alt_urls`.
+  dedup on `source_url` / `doc_id` / `sha256`.
 
 ## RePEc completeness audit — results (2026-06-14)
 

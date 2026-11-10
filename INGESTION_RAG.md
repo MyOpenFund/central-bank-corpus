@@ -186,7 +186,7 @@ With every answer, return the **official source**: `title` + `bank_name` + `date
 - **Language**: 100% English. Speeches from non-English-speaking banks are the **official EN
   versions**, not the originals.
 - **HTML artifacts**: about 15 % of rows (6,040 of 39,452 in the 2026-09-03 manifest snapshot,
-  mostly `us` working papers and abstract pages) have `mime_type = "text/html"` and an `.html`
+  mostly working-paper landing pages (us, ca, ch) and ECB HTML-only documents) have `mime_type = "text/html"` and an `.html`
   `local_path`: they are indexed documents, not junk. The §2 snippet keeps PDFs only (it uses a
   PDF extractor); ingest the HTML rows with an HTML text extractor if you want them. Files in
   `data/raw/` that no manifest row points to (and `.DS_Store`) are never reached when you iterate
@@ -194,7 +194,7 @@ With every answer, return the **official source**: `title` + `bank_name` + `date
 - **Working papers (D1/D2)**: dates come from the bank site where migrated (`ecb`, `jp`, `gb`,
   `de` mostly at day precision; `us` mostly month, since the Fed published no day before ~2017),
   otherwise from RePEc/IDEAS (usually month only, `date` = `YYYY-MM-01`) unless `wp-dates`
-  recovered the day; `fr` and `se` rows are mostly not migrated yet. Read `date_precision` /
+  recovered the day; `fr` and `se` RePEc-era rows are not migrated yet. Read `date_precision` /
   `date_source` before treating the day as exact (absent = not recorded); a small number of rows
   may be undated (null `year`).
 - **Idempotence**: re-ingest based on `sha256` (unchanged = already indexed) to avoid
