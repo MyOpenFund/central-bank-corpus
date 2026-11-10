@@ -3,8 +3,8 @@ SILENT (production review: fr D1 unnoticed 213 days, ecb D3 unnoticed 83).
 Errors are logged by the sync path; silence was not — this module is the
 weekly job that closes that gap.
 
-Method: MEDIAN-GAP ONLY (spec `2026-08-24-cadence-watchdog.md` design
-decision 1). A flat "docs per fixed window" statistic was tried first and
+Method: MEDIAN-GAP ONLY (cadence-watchdog design, 2026-08-24, decision 1).
+A flat "docs per fixed window" statistic was tried first and
 false-alarmed on lumpy quarterly series (ca E1, it/es D1 in the production
 review): a series that bursts many documents on (or within a few days of)
 one release date every ~90 days, then goes quiet, looks "empty" in any

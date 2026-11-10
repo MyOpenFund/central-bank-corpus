@@ -104,8 +104,8 @@ _BY_BIS = {b.bis_institution: b for b in BIS_63}
 # Extra BIS speech-listing labels per bank: historical names, official renames,
 # native-language forms and variants the BIS has used over time. The primary
 # `bis_institution` above is one label per bank, which silently dropped whole
-# banks/eras whenever BIS wrote a different name (audit 2026-06, RC1 — see
-# DISCOVERY_AUDIT.md). Matching ANY of these labels recovers them.
+# banks/eras whenever BIS wrote a different name (discovery audit 2026-06,
+# root cause RC1). Matching ANY of these labels recovers them.
 BIS_ALIASES: dict[str, tuple[str, ...]] = {
     "lv": ("Bank of Latvia", "Bank of Lativa"),
     "lt": ("Bank of Lithuania",),

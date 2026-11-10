@@ -1,7 +1,7 @@
 """Banque de France Working Papers (D1) from publications.banque-france.fr /
 www.banque-france.fr.
 
-Two publication systems (see spec docs/superpowers/specs/2026-08-24-fr-native-wp-design.md):
+Two publication systems (fr native WP design, 2026-08-24):
 
 - **Legacy** ``publications.banque-france.fr`` — frozen archive 1994 -> Sept
   2023 (last n°924). One page per calendar year,

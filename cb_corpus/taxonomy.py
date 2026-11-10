@@ -1,6 +1,7 @@
 """Central-bank document-type taxonomy.
 
-Codes map 1:1 to section 3 of the corpus inventory.
+Codes A1..G3 follow the June 2026 planning taxonomy (monetary policy, press
+conferences, speeches, research, reports, projections, supervisory/statistical).
 Group letters A-F define the "full" scope; G (supervisory/statistical) is
 optional and excluded from FULL_SCOPE by default.
 """

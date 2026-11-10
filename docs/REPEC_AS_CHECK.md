@@ -23,11 +23,13 @@ every wired bank, natively-covered ones included, as a second source.)
 ## Command
 
 ```
-python -m cb_corpus repec-check [--banks us,ecb,...] [--csv path]
+python -m cb_corpus repec-check [--banks us,ecb,...] [--csv path] [--reverse-csv path] [--grace-days 45]
 ```
 
 **This command never downloads PDFs and never writes the manifest.** It prints a
-per-bank summary and writes a CSV (default `data/reports/repec_check.csv`).
+per-bank summary and writes two CSVs: missing papers (default
+`data/reports/repec_check.csv`) and manifest rows RePEc does not list (default
+`data/reports/repec_check_reverse.csv`, see step 5).
 Default banks: every bank wired in `SERIES` (`cb_corpus/sources/repec.py`, 13
 banks; only `ecb` has a D2 series). The `--write` mode designed below was not
 built: handle stamping is done by `wp-migrate --write` and `repec-reconcile`
@@ -66,9 +68,20 @@ built: handle stamping is done by `wp-migrate --write` and `repec-reconcile`
    - `missing_legacy` — paper is old / no longer on the bank site → ingest
      via the RePEc record itself + date recovery
      ([DATE_RECOVERY.md](DATE_RECOVERY.md)).
-5. **Reverse check** (manifest rows with no RePEc match). *Not implemented:*
-   the module docstring mentions it, but `repec-check` reports only the RePEc →
-   manifest direction. Designed as two cases:
+5. **Reverse check** (manifest rows with no RePEc match). *As built
+   (2026-11):* only rows whose doc type has a RePEc series for that bank are
+   checked; a row is matched if any tier above (or the leftover page-fetch pass)
+   ties it to a RePEc paper. The grace window is `--grace-days` (default 45; it
+   also splits `missing_recent` / `missing_legacy`); an undated row counts as
+   `unmatched_old`, a `YYYY-MM` date as its first day. Rows dated before the
+   bank's earliest row that RePEc does list are `pre_repec` (papers older than
+   the series on IDEAS, e.g. Bundesbank 1995–2011, Banco de España 1978–1997),
+   not a gap signal. The floor is per bank (not per series) and trusts row
+   dates: one wrongly early matched date lowers it. If a listing was
+   truncated, hit its page cap or came back
+   empty, the bank's reverse check is skipped and flagged
+   (`reverse_skipped_truncated`) rather than reporting every row as unmatched;
+   failed leftover page fetches are counted in `pagefetch_errors`. Two cases:
    - **`pending_repec`** (expected, not an anomaly): row's `date` is within
      the last ~45 days → the paper was fetched from the bank site before
      RePEc indexed it (RePEc lags days to ~2 weeks; 45 d gives margin).

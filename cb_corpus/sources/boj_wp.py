@@ -40,7 +40,10 @@ def boj_code(s: str):
     Reads the last path segment so a year in the URL path can't be mistaken for
     the code (e.g. .../wps_2025/data/wp25e13.pdf -> wp25e13 -> (25, 'e', 13)).
     """
-    seg = (s or "").rstrip("/").rsplit("/", 1)[-1].split(".")[0]
+    # Also split on ":" so a RePEc "series:pid" / handle form (what repec-check
+    # passes, e.g. "bojwps:wp25e13") reads the paper id, not "bojwps:...".
+    s = (s or "").split("?", 1)[0].split("#", 1)[0]
+    seg = re.split(r"[/:]", s.rstrip("/"))[-1].split(".")[0]
     m = _CODE_RE.fullmatch(seg) or _CODE_RE.match(seg)
     if not m:
         return None

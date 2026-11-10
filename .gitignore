@@ -34,7 +34,7 @@ venv/
 *.local.md
 
 # Docs — generated snapshots (regenerate via the scripts) + local working/analysis notes.
-# Committed docs: README, INGESTION_RAG, BANKS, central_bank_corpus_inventory.
+# Committed docs: README, INGESTION_RAG, BANKS, deploy/README, docs/*.md.
 CORPUS.md
 PRESENTATION.md
 PRESENTATION_EN.md
@@ -47,5 +47,5 @@ ECB_DOC_TYPES.md
 # SDD scratch (ledger, briefs) — never committed
 .superpowers/
 
-# Superpowers process artifacts (specs/plans) — live on the documentation branch
+# Superpowers process artifacts (specs/plans) — kept outside this repository
 docs/superpowers/
