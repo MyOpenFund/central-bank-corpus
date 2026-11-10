@@ -30,9 +30,13 @@ elsewhere in this suite to drive these exact parsers:
     (parse_series_listing, site 2) -- both already verified against the
     production regexes they feed.
 """
+from pathlib import Path
+
+import requests
+
 from cb_corpus.repec_check import enumerate_series
 from cb_corpus.runreport import RunReport, SourceStats
-from cb_corpus.sources.repec import IDEAS, RePEcDiscovery
+from cb_corpus.sources.repec import IDEAS, RePEcDiscovery, links_to_listing_page
 
 
 class FakeFetcher:
@@ -239,7 +243,8 @@ def test_wayback_recovery_page_failure_is_recorded_as_truncation(monkeypatch):
 
     monkeypatch.setitem(R.SERIES, "se", [("hhs:rbnkwp", DocType.D1)])
     fetcher = _ExactURLFetcher({f"{_BASE}.html": _discovery_page_html(["0001", "0002"])})
-    # page 2 (f"{_BASE}2.html") is deliberately absent -> 404 -> page-fetch failure
+    # page 2 (f"{_BASE}2.html") is deliberately absent -> the fetcher raises a
+    # bare RuntimeError with no HTTP status -> not a 404 -> truncation
     _patch_make_storage(monkeypatch, fetcher)
 
     report = RunReport("central-bank-corpus", "repec-wb")
@@ -286,13 +291,6 @@ def test_wayback_recovery_report_none_preserves_silent_behavior(monkeypatch):
 # ---------------------------------------------------------------------------
 # Issue #30: a 404 after the last IDEAS listing page is a clean end of walk
 # ---------------------------------------------------------------------------
-
-from pathlib import Path
-
-import pytest
-import requests
-
-from cb_corpus.sources.repec import links_to_listing_page
 
 _FIX = Path(__file__).parent / "fixtures" / "repec"
 
@@ -504,3 +502,129 @@ def test_run_repec_check_404_after_last_page_prints_no_warning(tmp_path, monkeyp
     RC.run_repec_check(bank_codes=["gb"], config=cfg)
     err = capsys.readouterr().err
     assert "WARNING: IDEAS listing truncated" not in err
+
+
+# -- review fixes: malformed hrefs, series name, end-to-end -----------------
+
+_BAD_HREF = '<a href="http://[bad/x.html">broken</a>'
+
+
+def test_links_to_listing_page_skips_malformed_href():
+    html = _BAD_HREF + '<a class="page-link" href="rbnkwp2.html">2</a>'
+    assert links_to_listing_page(html, "rbnkwp", 2) is True
+    assert links_to_listing_page(_BAD_HREF, "rbnkwp", 2) is False
+
+
+def test_discovery_malformed_href_then_404_is_clean_end():
+    p1 = _discovery_page_html(["0001"]).replace("</body>", _BAD_HREF + "</body>")
+    out, stats = _walk_discovery({1: p1, 2: _http_exc(404)})
+    assert len(out) == 1
+    assert stats.truncated is False and stats.fetch_errors == 0
+
+
+def test_enumerate_malformed_href_then_404_is_clean_end():
+    p1 = _page_html(["p1"]).replace("</body>", _BAD_HREF + "</body>")
+    rows, stats = _walk_enumerate({1: p1, 2: _http_exc(404)})
+    assert len(rows) == 1
+    assert stats.truncated is False and stats.fetch_errors == 0
+
+
+class _Chained404Fetcher(_ExactURLFetcher):
+    """Like _ExactURLFetcher, but the listing URLs in `http404` raise the real
+    Fetcher's chained 404 (RuntimeError from HTTPError)."""
+    def __init__(self, pages, http404):
+        super().__init__(pages)
+        self.http404 = set(http404)
+
+    def get_text(self, url):
+        if url in self.http404:
+            self.fetched.append(url)
+            raise _http_exc(404, url)
+        return super().get_text(url)
+
+
+def test_discovery_series_name_matches_fetched_url():
+    """The link check uses the same series name as the fetched page URLs: a
+    page 1 linking to `rbnkwp2.html` makes a page-2 404 a truncation."""
+    p1 = _with_next_link(_discovery_page_html(["0001"]), "rbnkwp", 2)
+    fetcher = _Chained404Fetcher({f"{_BASE}.html": p1}, http404=[f"{_BASE}2.html"])
+    d = _mk_discovery(fetcher)
+    stats = SourceStats("se")
+    list(d._series_paper_pages("hhs:rbnkwp", stats=stats))
+    assert fetcher.fetched == [f"{_BASE}.html", f"{_BASE}2.html"]
+    assert stats.truncated is True
+    assert "page 2: HTTP 404 although page 1 links to it" in stats.error_samples[-1]
+
+
+def test_wayback_recovery_404_after_last_page_is_clean_end(monkeypatch):
+    import cb_corpus.pipeline as P
+    from cb_corpus.sources import repec as R
+    from cb_corpus.taxonomy import DocType
+
+    monkeypatch.setitem(R.SERIES, "se", [("hhs:rbnkwp", DocType.D1)])
+    fetcher = _Chained404Fetcher({f"{_BASE}.html": _discovery_page_html(["0001", "0002"])},
+                                 http404=[f"{_BASE}2.html"])
+    _patch_make_storage(monkeypatch, fetcher)
+
+    report = RunReport("central-bank-corpus", "repec-wb")
+    P.run_repec_wayback_recovery("se", dry_run=True, report=report)
+
+    assert f"{_BASE}2.html" in fetcher.fetched
+    stats = report.source("repec-wb:se")
+    assert stats.truncated is False and stats.fetch_errors == 0
+
+
+class _FakeSession:
+    """Stands in for requests.Session under a REAL cb_corpus.http.Fetcher:
+    url -> (status, body)."""
+    def __init__(self, routes):
+        self.routes = routes
+        self.headers = {}
+        self.calls = []
+
+    def get(self, url, timeout=None, stream=False, allow_redirects=True):
+        self.calls.append(url)
+        status, body = self.routes[url]
+        r = requests.Response()
+        r.status_code = status
+        r.url = url
+        r.reason = "OK" if status == 200 else "Error"
+        r.headers["content-type"] = "text/html; charset=utf-8"
+        r._content = body.encode("utf-8")
+        r._content_consumed = True
+        return r
+
+
+def _real_fetcher(monkeypatch, page3_status):
+    import cb_corpus.http as H
+    from cb_corpus.config import Config
+
+    monkeypatch.setattr(H.time, "sleep", lambda s: None)
+    base = f"{IDEAS}/s/hhs/rbnkwp"
+    session = _FakeSession({
+        f"{base}.html": (200, _fixture("rbnkwp.html")),
+        f"{base}2.html": (200, _fixture("rbnkwp2.html")),
+        f"{base}3.html": (page3_status, "<html>error</html>"),
+    })
+    f = H.Fetcher(Config())
+    f.session = session
+    return f, session
+
+
+def test_enumerate_real_fetcher_404_after_last_page_is_clean_end(monkeypatch):
+    f, session = _real_fetcher(monkeypatch, 404)
+    stats = SourceStats("se")
+    rows = enumerate_series(f, "hhs:rbnkwp", stats=stats)
+    assert len(rows) == 397
+    assert session.calls.count(f"{IDEAS}/s/hhs/rbnkwp3.html") == 1  # 404 not retried
+    assert stats.truncated is False and stats.fetch_errors == 0
+
+
+def test_enumerate_real_fetcher_503_on_page3_is_truncation(monkeypatch):
+    f, session = _real_fetcher(monkeypatch, 503)
+    stats = SourceStats("se")
+    rows = enumerate_series(f, "hhs:rbnkwp", stats=stats)
+    assert len(rows) == 397
+    assert session.calls.count(f"{IDEAS}/s/hhs/rbnkwp3.html") == f.cfg.max_retries
+    assert stats.truncated is True and stats.fetch_errors == 1
+    assert stats.error_samples[-1].startswith("page 3: ")

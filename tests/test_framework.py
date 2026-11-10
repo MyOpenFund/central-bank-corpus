@@ -264,7 +264,8 @@ def test_repec_extract_pdf_regex_fallback_on_bare_url():
 
 def test_repec_pagination_walks_pages_until_no_new():
     """Series listings cap at ~200/page; discovery must follow numbered pages
-    and stop when a page yields nothing new (last page repeats / 404s)."""
+    and stop when a page yields nothing new (here: page 3 repeats page 2).
+    The 404-after-the-last-page end is covered in test_repec_truncation.py."""
     from cb_corpus.sources.repec import RePEcDiscovery, IDEAS
     pages = {
         f"{IDEAS}/s/ecb/ecbwps.html":

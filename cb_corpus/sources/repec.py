@@ -62,16 +62,21 @@ def parse_series_page(html: str, base_url: str = IDEAS) -> list[str]:
 def links_to_listing_page(html: str, series: str, page: int) -> bool:
     """True if a listing page links to `<series><page>.html` (IDEAS pagination bar).
 
-    Matches the LAST PATH SEGMENT of each `<a href>` exactly, after dropping the
-    query and fragment, so relative (`rbnkwp2.html`) and absolute hrefs count
-    while share-button URLs that merely mention the file in their query
-    (`https://bsky.app/intent/compose?text=...rbnkwp2.html`) and longer names
-    (`rbnkwp23.html`) do not. A page without any pagination bar -> False.
+    Looks at any `<a href>` on the page, in any directory: the last path
+    segment is matched exactly and case-sensitively (IDEAS emits lowercase),
+    after dropping the query and fragment. So relative (`rbnkwp2.html`) and
+    absolute hrefs count, while share-button URLs that merely mention the file
+    in their query (`https://bsky.app/intent/compose?text=...rbnkwp2.html`) and
+    longer names (`rbnkwp23.html`) do not. Malformed hrefs that `urlsplit`
+    rejects are skipped. A page without any pagination bar -> False.
     """
     target = f"{series}{page}.html"
     soup = BeautifulSoup(html, "lxml")
     for a in soup.find_all("a", href=True):
-        path = urlsplit(a["href"].strip()).path
+        try:
+            path = urlsplit(a["href"].strip()).path
+        except ValueError:  # e.g. "http://[bad/x.html" (invalid IPv6 netloc)
+            continue
         if path.rsplit("/", 1)[-1] == target:
             return True
     return False
@@ -189,7 +194,7 @@ class RePEcDiscovery:
         run-report; it is a truncated listing, not a completed one.
         """
         base = f"{IDEAS}/s/{handle.replace(':', '/')}"
-        series = handle.split(":")[1]
+        series = base.rsplit("/", 1)[-1]  # same name as the fetched URLs
         seen: set[str] = set()
         prev_html: Optional[str] = None
         for page in range(1, self.max_pages + 1):
