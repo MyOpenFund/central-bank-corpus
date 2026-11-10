@@ -220,7 +220,8 @@ def test_pagefetch_failure_is_counted(cfg, monkeypatch, capsys):
     finally:
         PAPERS.update(papers)
     assert summary["pagefetch_errors"] == 1
-    assert buckets["by_pagefetch"] in ("unmatched_old", "pre_repec")
+    # dated 2018, before the earliest matched row (2019): pre_repec, not a gap
+    assert buckets["by_pagefetch"] == "pre_repec"
     assert "failed to load" in capsys.readouterr().err
 
 

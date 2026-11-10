@@ -889,3 +889,44 @@ def test_cli_csv_symlink_alias_of_apply_csv_is_an_argparse_error(tmp_path, capsy
     # case-insensitive-filesystem aliases agrees on the same two paths too.
     if hasattr(os.path, "samefile"):
         assert os.path.samefile(str(link_path), str(real_path))
+
+
+# -- key tier through _entry_key (arch:series:pid): jp, whose key the old
+#    "series:pid" form never produced --------------------------------------
+
+def _jp_row(doc_id, title, pdf_url, source_url=""):
+    r = _row(doc_id, title, pdf_url, source_url=source_url)
+    r["bank_code"] = "jp"
+    return r
+
+
+def _jp_listing(pairs):
+    links = "".join(f'<li><a href="/p/boj/bojwps/{pid}.html">{t}</a></li>' for pid, t in pairs)
+    return f"<html><body><ul>{links}</ul></body></html>"
+
+
+def test_key_only_match_stamps_once(tmp_path):
+    cfg = _cfg(tmp_path)
+    row = _jp_row("k1", "Native title that IDEAS spells differently",
+                  "https://www.boj.or.jp/en/research/wps_rev/wps_2021/data/wp21e02.pdf")
+    _write_manifest(cfg, "jp", [row])
+    fetcher = FakeFetcher({f"{IDEAS}/s/boj/bojwps.html": _jp_listing([("wp21e02", "Other Title")])})
+    res = run_repec_reconcile(bank_codes=["jp"], write=True, csv_path=str(tmp_path / "o.csv"),
+                              config=cfg, fetcher=fetcher)
+    assert res["jp"] == {"stamped": 1, "ambiguous": 0, "already": 0, "unmatched": 0}
+    assert _read_rows(cfg, "jp")[0]["source_url"] == f"{IDEAS}/p/boj/bojwps/wp21e02.html"
+    # no second-pass page fetch was needed: the key tier matched on the listing
+    assert fetcher.fetched == [f"{IDEAS}/s/boj/bojwps.html", f"{IDEAS}/s/boj/bojwps2.html"]
+
+
+def test_two_rows_sharing_a_key_are_ambiguous_and_never_written(tmp_path):
+    cfg = _cfg(tmp_path)
+    rows = [_jp_row("a", "Paper A", "https://www.boj.or.jp/en/research/wps_rev/wps_2021/data/wp21e02.pdf"),
+            _jp_row("b", "Paper A appendix", "https://www.boj.or.jp/en/research/wps_rev/wps_2021/data/wp21e02a.pdf")]
+    path = _write_manifest(cfg, "jp", rows)
+    before = path.read_bytes()
+    fetcher = FakeFetcher({f"{IDEAS}/s/boj/bojwps.html": _jp_listing([("wp21e02", "Other Title")])})
+    res = run_repec_reconcile(bank_codes=["jp"], write=True, csv_path=str(tmp_path / "o.csv"),
+                              config=cfg, fetcher=fetcher)
+    assert res["jp"]["ambiguous"] == 1 and res["jp"]["stamped"] == 0
+    assert path.read_bytes() == before

@@ -76,7 +76,8 @@ built: handle stamping is done by `wp-migrate --write` and `repec-reconcile`
    `unmatched_old`, a `YYYY-MM` date as its first day. Rows dated before the
    bank's earliest row that RePEc does list are `pre_repec` (papers older than
    the series on IDEAS, e.g. Bundesbank 1995–2011, Banco de España 1978–1997),
-   not a gap signal. If a listing was truncated, hit its page cap or came back
+   not a gap signal. The floor is per bank (not per series) and trusts row
+   dates: one wrongly early matched date lowers it. If a listing was truncated, hit its page cap or came back
    empty, the bank's reverse check is skipped and flagged
    (`reverse_skipped_truncated`) rather than reporting every row as unmatched;
    failed leftover page fetches are counted in `pagefetch_errors`. Two cases:

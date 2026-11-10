@@ -66,7 +66,8 @@ def enumerate_series(fetcher: Fetcher, handle: str, max_pages: int = 80,
                      ) -> list[tuple[str, str]]:
     """All (paper_id, title) for an IDEAS series, following pagination.
 
-    The walk ends cleanly when a page yields nothing new, or on an HTTP 404 for page k > 1 that page k-1 does not link to
+    The walk ends cleanly when a page yields nothing new, or on an HTTP 404
+    for page k > 1 that page k-1 does not link to
     (IDEAS answers 404 on the page after the last one; see
     `sources.repec.listing_error_truncation`). Any other listing-page fetch
     failure (404 on page 1, 404 on a page that page k-1 advertises, network
