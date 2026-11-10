@@ -10,7 +10,7 @@ from .adapters.base import get_adapter
 from .banks import BIS_63
 from .config import Config
 from .http import Fetcher
-from .models import DocRecord
+from .models import DocRecord, compute_doc_id
 from .runreport import RunReport
 from .sources.bis_speeches import BISSpeechIndex, parse_detail
 from .sources.recovery import Source
@@ -316,8 +316,6 @@ def reindex_bis_from_disk(only_banks: Optional[set[str]] = None,
     a human title (one HTTP request per matched file — slower; off by default).
     ``dry_run`` reports matches without writing to the manifest.
     """
-    import hashlib
-
     cfg, fetcher, storage = _make_storage(config, html_to_pdf=False)
     raw = cfg.raw_dir
 
@@ -381,8 +379,7 @@ def reindex_bis_from_disk(only_banks: Optional[set[str]] = None,
                 if not bucket:
                     break
                 for bank in banks:
-                    cand = hashlib.sha1(
-                        f"{bank}|C1|{meta.pdf_url}".encode("utf-8")).hexdigest()[:16]
+                    cand = compute_doc_id(bank, DocType.C1, meta.pdf_url)
                     hit = bucket.get(cand)
                     if hit is None or hit[0] != bank:
                         continue

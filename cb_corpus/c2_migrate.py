@@ -61,12 +61,15 @@ _KNOWN_REHASH = {
 }
 
 
-def normalize_url(u: str) -> str:
-    """Canonicalise a foedb/manifest C2 pdf_url for equality matching: drop
-    scheme and collapse doubled slashes (legacy rows carry ``europa.eu//press/...``).
-    Local to this module -- deliberately not shared with wp_migrate.normalize_url
-    (a parallel, independent branch; C2 URLs carry no ``~hash`` the way WP/OP
-    URLs do, so there is nothing else to strip)."""
+def match_key_url(u: str) -> str:
+    """FUZZY match key for joining a foedb record to a manifest C2 row: drop
+    scheme, case, and collapse doubled slashes (legacy rows carry
+    ``europa.eu//press/...``). Local to this module -- deliberately not shared
+    with ``wp_migrate.match_key_url`` (C2 URLs carry no ``~hash`` the way
+    WP/OP URLs do, so there is nothing else to strip).
+
+    Not an identity: never use it for the known-URL indexes or dedup -- that
+    is ``storage.normalize_url``, which answers a different question."""
     u = (u or "").strip().lower()
     u = re.sub(r"^https?://", "", u)
     u = re.sub(r"/{2,}", "/", u)
@@ -93,17 +96,17 @@ def _norm_cmp(s: str) -> str:
 
 def _match_native(url: str, native_by_url: dict) -> tuple[Optional[object], str]:
     """(native record or None, match_type) for a manifest C2 row's pdf_url."""
-    native = native_by_url.get(normalize_url(url))
+    native = native_by_url.get(match_key_url(url))
     if native is not None:
         return native, "url"
     if _CORRUPTED_MARKER in url:
-        native = native_by_url.get(normalize_url(_clean_corrupted_url(url)))
+        native = native_by_url.get(match_key_url(_clean_corrupted_url(url)))
         if native is not None:
             return native, "url-corrupted"
     for old_suffix, new_suffix in _KNOWN_REHASH.items():
         if url.endswith(old_suffix):
             target = url[:-len(old_suffix)] + new_suffix
-            native = native_by_url.get(normalize_url(target))
+            native = native_by_url.get(match_key_url(target))
             if native is not None:
                 return native, "url-rehash"
     return None, ""
@@ -118,7 +121,7 @@ def build_report(fetcher: Fetcher, manifest_rows: Iterable[dict]) -> tuple[dict,
     """
     native_by_url: dict[str, object] = {}
     for rec in discover_ecb_interviews(fetcher):
-        native_by_url.setdefault(normalize_url(rec.pdf_url), rec)
+        native_by_url.setdefault(match_key_url(rec.pdf_url), rec)
 
     summary = {"native_total": len(native_by_url), "manifest_total": 0,
               "matched": 0, "no_match": 0, "enriched": 0,

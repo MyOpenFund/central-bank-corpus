@@ -35,8 +35,8 @@ from .sources.repec import (IDEAS, SERIES, _paper_meta, cap_truncation,
                             extract_pdf_candidates, listing_error_truncation,
                             resolve_max_pages)
 from .storage import Storage
-from .wp_migrate import (_KEY_FROM_HANDLE, _KEY_FROM_PDF, normalize_title,
-                         normalize_url, repec_handle_from_source_url)
+from .wp_migrate import (_KEY_FROM_HANDLE, _KEY_FROM_PDF, match_key_url,
+                         normalize_title, repec_handle_from_source_url)
 
 _GRACE_DAYS = 45
 _APPROVE_TOKENS = {"x", "yes", "1", "oui"}
@@ -205,9 +205,9 @@ def run_repec_check(bank_codes: Optional[Iterable[str]] = None,
                     by_t.setdefault(t, set()).add(did)
             for u in [row.get("pdf_url"), *(row.get("alt_urls") or [])]:
                 if u:
-                    urls.add(normalize_url(u))
+                    urls.add(match_key_url(u))
                     if track:
-                        by_u.setdefault(normalize_url(u), set()).add(did)
+                        by_u.setdefault(match_key_url(u), set()).add(did)
 
         summary = {"repec_total": 0, "covered": 0, "recovered_pagefetch": 0,
                    "missing_recent": 0, "missing_legacy": 0, "manifest_total": manifest_n,
@@ -258,10 +258,10 @@ def run_repec_check(bank_codes: Optional[Iterable[str]] = None,
                     cands = extract_pdf_candidates(html, bank_home)
                     nft = normalize_title(ftitle) if ftitle else ""
                     for c in cands:
-                        matched |= by_u.get(normalize_url(c), set())
+                        matched |= by_u.get(match_key_url(c), set())
                     if nft:
                         matched |= by_t.get(nft, set())
-                    recovered = (any(normalize_url(c) in urls for c in cands)
+                    recovered = (any(match_key_url(c) in urls for c in cands)
                                  or bool(nft and nft in titles))
                 except Exception:
                     recovered = False
@@ -359,7 +359,7 @@ def _build_indexes(storage: Storage, bank: str) -> dict:
             by_title.setdefault(t, []).append(row)
         for u in [row.get("pdf_url"), *(row.get("alt_urls") or [])]:
             if u:
-                by_url.setdefault(normalize_url(u), []).append(row)
+                by_url.setdefault(match_key_url(u), []).append(row)
         src = row.get("source_url")
         if src:
             known_sources.add(src)
@@ -435,7 +435,7 @@ def _walk_entries(bank: str, fetcher: Fetcher, idx: dict, bank_home: str):
                 except Exception:
                     fetched_title, cands = "", []
                 for c in cands:
-                    for r in by_url.get(normalize_url(c), []):
+                    for r in by_url.get(match_key_url(c), []):
                         cand_by_id[r["doc_id"]] = r
                 if fetched_title:
                     for r in by_title.get(normalize_title(fetched_title), []):

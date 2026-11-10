@@ -4,9 +4,21 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field, asdict
 from datetime import date
-from typing import Optional
+from typing import Optional, Union
 
 from .taxonomy import DocType
+
+
+def compute_doc_id(bank_code: str, doc_type: Union[DocType, str], url: str) -> str:
+    """THE doc_id formula: sha1("<bank>|<doc_type code>|<url>")[:16].
+
+    Single source of truth for DocRecord.doc_id and for every caller that has
+    to recompute an id without building a record (e.g.
+    pipeline.reindex_bis_from_disk matching on-disk files). Never change it:
+    every file name and manifest key on disk derives from it. `doc_type` may
+    be a DocType or its code ("C1")."""
+    code = doc_type.code if isinstance(doc_type, DocType) else doc_type
+    return hashlib.sha1(f"{bank_code}|{code}|{url}".encode("utf-8")).hexdigest()[:16]
 
 
 @dataclass
@@ -62,8 +74,7 @@ class DocRecord:
         duplicate + a file rename. With the date out, enriching a date is a pure
         metadata update (no id churn). The url already uniquely identifies a doc.
         """
-        basis = f"{self.bank_code}|{self.doc_type.code}|{self.pdf_url}"
-        return hashlib.sha1(basis.encode("utf-8")).hexdigest()[:16]
+        return compute_doc_id(self.bank_code, self.doc_type, self.pdf_url)
 
     def to_row(self) -> dict:
         d = asdict(self)

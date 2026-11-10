@@ -81,7 +81,11 @@ def normalize_url(url: str) -> str:
     http vs https, `www.`, query order and case can all change what a
     server returns, so they stay significant (spec
     2026-08-25-url-normalization-index-design). Pure and total: returns
-    its input shape for empty/scheme-less strings, never raises."""
+    its input shape for empty/scheme-less strings, never raises.
+
+    Not to be confused with the migrations' fuzzy matchers
+    (`wp_migrate.match_key_url`, `c2_migrate.match_key_url`), which drop
+    scheme/case/`~hash` to JOIN records -- a different question."""
     if not url:
         return url
     scheme, sep, rest = url.partition("://")
