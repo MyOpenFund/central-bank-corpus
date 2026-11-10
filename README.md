@@ -99,7 +99,8 @@ pages per series (default 200): a loop guard, not a data limit (the largest
 series had 17 pages in November 2026). Reaching it is a clean end when the last
 page read advertises no next page, and a truncation when it does. Each source
 in the run-report also carries `skipped` (reason → count, e.g.
-`paper_fetch_failed`, `paper_no_pdf` for RePEc paper pages passed over) and
+`paper_gone` (HTTP 404/410), `paper_fetch_failed` (5xx, timeout, network),
+`paper_no_pdf` for RePEc paper pages passed over) and
 `skip_samples` (reason → up to 5 samples): counted for visibility, they never
 affect the exit code. The NAS
 wrapper pushes an ntfy notification on non-zero exits when `NTFY_URL` is set

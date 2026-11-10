@@ -188,7 +188,7 @@ def cap_truncation(html: Optional[str], series: str,
     """The truncation sample when a walk read page `max_pages` (the cap) and
     that page still links to page `max_pages + 1`; None for a clean end."""
     if html is not None and links_to_listing_page(html, series, max_pages + 1):
-        return (f"page {max_pages}: max_pages ({max_pages}) reached, "
+        return (f"{series} page {max_pages}: max_pages ({max_pages}) reached, "
                 f"page {max_pages + 1} advertised")
     return None
 
@@ -276,12 +276,13 @@ class RePEcDiscovery:
         series so a listing-page fetch failure is recorded as truncation
         (see that method's docstring) rather than silently ending the walk.
         It also counts the unknown papers this walk passes over, via
-        `stats.record_skip` (samples kept per reason): `paper_fetch_failed`
-        (the paper page fetch raised; sample `"<paper_url>: <exc>"`) and
-        `paper_no_pdf` (the page has no PDF candidate; sample = the paper
-        URL). Skips are visibility
-        only -- they never change the run's exit code. Without `stats`, such
-        papers are dropped silently, as before.
+        `stats.record_skip` (samples kept per reason): `paper_gone` (the paper
+        page answered HTTP 404/410; sample `"<paper_url>: <exc>"`),
+        `paper_fetch_failed` (any other fetch failure: 5xx, timeout, network;
+        same sample shape) and `paper_no_pdf` (the page has no PDF candidate;
+        sample = the paper URL). Skips are visibility only -- they never change
+        the run's exit code. Without `stats`, such papers are dropped silently,
+        as before.
 
         `skip_url(paper_page_url)` short-circuits BEFORE the per-paper fetch
         (mirror of the BIS hook). With `stop_on_known`, a listing page whose
@@ -326,8 +327,10 @@ class RePEcDiscovery:
                             paper_html = self.fetcher.get_text(paper_url)
                         except Exception as exc:
                             if stats is not None:
-                                stats.record_skip("paper_fetch_failed",
-                                                  f"{paper_url}: {exc}")
+                                reason = ("paper_gone"
+                                          if http_status(exc) in (404, 410)
+                                          else "paper_fetch_failed")
+                                stats.record_skip(reason, f"{paper_url}: {exc}")
                             continue
                         cands = extract_pdf_candidates(paper_html, bank.homepage)
                         if not cands:

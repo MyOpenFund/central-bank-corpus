@@ -19,6 +19,7 @@ from tests.test_repec_truncation import (
     _ExactURLFetcher,
     _discovery_page_html,
     _fixture,
+    _http_exc,
     _mk_discovery,
     _page_html,
     _patch_make_storage,
@@ -218,8 +219,9 @@ def test_run_repec_counts_skips_and_exits_0(monkeypatch, tmp_path, with_good):
     rc = report.finish()
     src = report.to_dict()["sources"][0]
     assert src["source_code"] == "se"
-    assert src["skipped"] == {"paper_fetch_failed": 1, "paper_no_pdf": 1}
-    (failed,) = src["skip_samples"]["paper_fetch_failed"]
+    # A real HTTP 404 on the paper page is "gone", not a transient failure.
+    assert src["skipped"] == {"paper_gone": 1, "paper_no_pdf": 1}
+    (failed,) = src["skip_samples"]["paper_gone"]
     assert failed.startswith(f"{gone}: ") and "HTTP 404" in failed
     assert src["skip_samples"]["paper_no_pdf"] == [nopdf]
     assert src["fetch_errors"] == 0 and src["truncated"] is False
@@ -231,7 +233,7 @@ def test_run_repec_counts_skips_and_exits_0(monkeypatch, tmp_path, with_good):
 # truncation, reaching it on the real last page is a clean end. Both walkers.
 # ---------------------------------------------------------------------------
 
-_CAP_MSG = "page 2: max_pages (2) reached, page 3 advertised"
+_CAP_MSG = "rbnkwp page 2: max_pages (2) reached, page 3 advertised"
 
 
 def _disc(pages, max_pages=2):
@@ -370,7 +372,7 @@ def test_enumerate_cap_reached_with_next_page_advertised_is_truncation():
     rows = enumerate_series(f, "arch:series", max_pages=2, stats=stats)
     assert len(rows) == 2 and f.calls == 2
     assert stats.truncated is True and stats.fetch_errors == 1
-    assert stats.error_samples == [_CAP_MSG]
+    assert stats.error_samples == ["series page 2: max_pages (2) reached, page 3 advertised"]
 
 
 def test_enumerate_cap_reached_on_last_page_is_clean():
@@ -441,8 +443,8 @@ def test_run_repec_check_warns_when_config_cap_truncates(tmp_path, monkeypatch, 
     RC.run_repec_check(bank_codes=["se"], config=cfg)
     assert f"{_BASE}2.html" not in session.calls
     err = capsys.readouterr().err
-    assert ("WARNING: IDEAS listing truncated for hhs:rbnkwp: page 1: max_pages (1) "
-            "reached, page 2 advertised") in err
+    assert ("WARNING: IDEAS listing truncated for hhs:rbnkwp: rbnkwp page 1: "
+            "max_pages (1) reached, page 2 advertised") in err
 
 
 # ---------------------------------------------------------------------------
@@ -536,3 +538,30 @@ def test_wayback_recovery_records_skips_on_its_source(monkeypatch):
     assert src["skip_samples"]["paper_no_pdf"] == [f"{_P}/0003.html"]
     assert src["skip_samples"]["paper_fetch_failed"][0].startswith(f"{_P}/0002.html: ")
     assert src["fetch_errors"] == 0 and src["truncated"] is False
+
+
+@pytest.mark.parametrize("status, reason", [(404, "paper_gone"), (410, "paper_gone"),
+                                            (503, "paper_fetch_failed"),
+                                            (None, "paper_fetch_failed")])
+def test_paper_fetch_reason_split_by_http_status(monkeypatch, status, reason):
+    """404/410 on a paper page = permanently gone; anything else (5xx, timeout,
+    no HTTP status at all) = a fetch failure that may heal. Both are skips."""
+    _se_series(monkeypatch)
+
+    class F(_ExactURLFetcher):
+        def get_text(self, url):
+            if url == f"{_P}/0002.html":
+                self.fetched.append(url)
+                if status is None:
+                    raise TimeoutError("read timed out")
+                raise _http_exc(status)
+            return super().get_text(url)
+
+    f = F({f"{_BASE}.html": _discovery_page_html(["0002"]),
+           f"{_BASE}2.html": _discovery_page_html(["0002"])})
+    d = _mk_discovery(f)
+    stats = SourceStats("se")
+    assert list(d.discover_bank("se", stats=stats)) == []
+    assert stats.skipped == {reason: 1}
+    assert stats.skip_samples[reason][0].startswith(f"{_P}/0002.html: ")
+    assert stats.fetch_errors == 0 and stats.truncated is False

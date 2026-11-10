@@ -244,7 +244,7 @@ def test_max_pages_reached_is_a_truncation():
     stats = SourceStats("t")
     out = RC.enumerate_series(Endless(), "boj:bojwps", max_pages=3, stats=stats)
     assert len(out) == 3 and stats.truncated
-    assert stats.error_samples == ["page 3: max_pages (3) reached, page 4 advertised"]
+    assert stats.error_samples == ["bojwps page 3: max_pages (3) reached, page 4 advertised"]
 
 
 def test_se_key_tier_matches(tmp_path, monkeypatch):
