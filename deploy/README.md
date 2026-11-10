@@ -111,7 +111,10 @@ seeded state never reaches the running container. A `duplicate` verdict from
 in the corpus) now self-heals: the dead URL is stamped onto the matching
 row's `alt_urls` and its quarantine entry is released, so it stops
 reappearing as a fresh failure on every future nightly/recover pass instead
-of being rediscovered as `duplicate` forever.
+of being rediscovered as `duplicate` forever — but only when that row is a
+real PDF (no `html_path`; `Config.stamp_duplicate_html` relaxes this). With an
+HTML owner (including a page rendered to PDF) the dead URL is neither stamped
+nor released: it stays quarantined and the next recover pass re-evaluates it.
 
 **Migration:** stacks created before 2026-07-15 used the refresh/discover job
 pair — the crontab and job names changed; recreate the stack after re-pulling

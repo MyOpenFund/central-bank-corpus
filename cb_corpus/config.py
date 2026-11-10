@@ -70,7 +70,8 @@ class Config:
     # html_path -- storage.is_stampable_owner; a page rendered from HTML is
     # not one): an HTML page can change while serving identical bytes today,
     # so an HTML owner's duplicates stay in-memory for the run and are
-    # retried next night.
+    # retried next night. recover-downloads' self-healing follows the same
+    # rule (and keeps the dead URL quarantined when it may not stamp).
     # True also stamps HTML (and rendered-HTML) owners.
     stamp_duplicate_html: bool = False
     # Networks headless Chrome (run with --no-sandbox) must never be pointed

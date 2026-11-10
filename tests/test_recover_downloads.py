@@ -477,9 +477,10 @@ def test_download_skip_already_indexed_status_is_reported_as_duplicate(tmp_path,
     this is exercised directly against the exact-status branch, same as the
     unknown-status test below.
 
-    Because the stubbed doc_id was never really indexed, stamping it back
-    onto "its own" row is inherently a no-op (the dead URL IS that row's
-    pdf_url) -- what's actually observable here is the quarantine release
+    Because the stubbed doc_id was never really indexed, there is no owner
+    row to stamp onto: the stamp is logged `persisted: false` and the
+    quarantine is NOT released (a release follows a persisted stamp only --
+    final-review fix wave, grit 2026-11). What's observable here is that,
     and the canonical_doc_id audit trail in the CSV."""
     from cb_corpus.recover import run_recover_downloads
     from cb_corpus.models import DocRecord
@@ -506,7 +507,10 @@ def test_download_skip_already_indexed_status_is_reported_as_duplicate(tmp_path,
     assert csv_rows[0]["canonical_doc_id"] == expected_doc_id
 
     q_lines = (cfg.data_dir / "download_quarantine.jsonl").read_text().splitlines()
-    assert json.loads(q_lines[-1]) == {"url": pdf_url, "released": True}
+    assert {"url": pdf_url, "released": True} not in [json.loads(ln) for ln in q_lines]
+    log = (cfg.reports_dir / "duplicate_stamps.jsonl").read_text().splitlines()
+    [entry] = [json.loads(ln) for ln in log]
+    assert entry["persisted"] is False and entry["owner_doc_id"] == expected_doc_id
 
 
 def test_download_legacy_bare_duplicate_status_never_crashes_and_does_not_stamp(tmp_path, monkeypatch):

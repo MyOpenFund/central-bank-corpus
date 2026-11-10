@@ -810,8 +810,8 @@ class Storage:
                   f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
             return (len(dups), 0, 0)
 
-    def stamp_duplicates(self, dups: list[dict], label: str
-                         ) -> tuple[int, int, set[str]]:
+    def stamp_duplicates(self, dups: list[dict], label: str, *,
+                         stamp_sources: bool = True) -> tuple[int, int, set[str]]:
         """Stamp duplicate URLs onto their owner rows and log every one.
 
         `dups`: dicts {url, source_url, owner_doc_id}. Each URL (and source
@@ -822,12 +822,15 @@ class Storage:
         owner_doc_id, owner_bank, label, persisted). If the merge raises, the
         lines are still written (persisted false, plus an `error` field)
         before the exception propagates. Shared by flush_duplicate_stamps()
-        and recover.py. Returns (urls_stamped, rows_modified,
+        and recover.py. `stamp_sources=False` logs `source_url` but does not
+        stamp it into `alt_source_urls` (recover.py: its self-healing has
+        always stamped `alt_urls` only). Returns (urls_stamped, rows_modified,
         persisted_owner_ids)."""
         stamps: dict[str, list[str]] = {}
         sources: dict[str, list[str]] = {}
         for d in dups:
-            for bucket, url in ((stamps, d.get("url")), (sources, d.get("source_url"))):
+            src = d.get("source_url") if stamp_sources else ""
+            for bucket, url in ((stamps, d.get("url")), (sources, src)):
                 if url:
                     lst = bucket.setdefault(d["owner_doc_id"], [])
                     if url not in lst:

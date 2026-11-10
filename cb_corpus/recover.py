@@ -28,11 +28,20 @@ so it is never relabelled ``recoverable`` (which would just re-download the
 same duplicate PDF every run). A ``duplicate`` verdict also SELF-HEALS: the
 dead URL (and, in ``--candidates`` mode, the candidate's own verified
 ``final_url``) is stamped onto the matched row's ``alt_urls`` and its
-quarantine is released (one ``Storage.stamp_alt_urls`` call in a ``finally``
--- applied even if the pass dies mid-loop, never during a dry-run), so the
-same dead URL is
-recognised as already known on every future pass instead of being
-rediscovered as ``duplicate`` forever. The matched row's doc_id is recorded
+quarantine is released (one ``Storage.stamp_duplicates`` call in a
+``finally`` -- applied even if the pass dies mid-loop, never during a
+dry-run), so the same dead URL is recognised as already known on every
+future pass instead of being rediscovered as ``duplicate`` forever. Same
+rule as storage's nightly duplicate-content bookkeeping: the stamp is
+persisted only onto a real PDF owner (``storage.is_stampable_owner``: no
+``html_path``; ``Config.stamp_duplicate_html`` relaxes it) and every
+attempt is logged to ``reports/duplicate_stamps.jsonl`` (label
+``recover``). A dead URL whose owner is an HTML page (or a page rendered to
+PDF) is neither stamped nor released: it stays quarantined and is NOT
+converged for the next pass, which re-evaluates it. (Within one pass,
+Storage's in-memory index already knows it, so a repeated candidate line
+for it reports ``converged`` -- in-memory only, like storage's own
+HTML-owner duplicates.) The matched row's doc_id is recorded
 per-entry in the CSV's ``canonical_doc_id`` column (empty for every other
 action) -- an audit trail so an operator can spot a wrong pairing.
 
@@ -123,7 +132,10 @@ def _read_inventory(cfg: Config,
 def _is_converged(storage: Storage, entry: dict) -> bool:
     """True if the corpus already has this document (by pdf_url, any of the
     audit entry's alt_urls, or its source_url) -- the nightly retry already
-    got it since the failure was logged; no network needed to know that."""
+    got it since the failure was logged, or a previous pass stamped it onto
+    a real PDF owner; no network needed to know that. A duplicate held back
+    because its owner is not a real PDF (see _apply_stamps) is never
+    persisted, so a fresh Storage does not know it: it is NOT converged."""
     if storage.is_known_url(entry.get("pdf_url") or ""):
         return True
     for alt in entry.get("alt_urls") or []:
@@ -288,29 +300,53 @@ def _duplicate_doc_id(status: str) -> Optional[str]:
     return None
 
 
-def _add_stamp(stamps: dict[str, list[str]], doc_id: str, *urls: str) -> None:
-    """Ordered, deduped stamp collection: dead URL first (provenance
+def _add_stamp(stamps: list[dict], doc_id: str, *urls: str,
+               source_url: str = "", release: str = "") -> None:
+    """Queue a duplicate self-heal: each URL is to be stamped onto the
+    `doc_id` owner row, and `release` (the dead URL) to have its quarantine
+    released once -- and only if -- that stamp is persisted (see
+    _apply_stamps). Ordered and deduped: dead URL first (provenance
     history), then any live alternative. Order is part of the contract --
     a set here made alt_urls append order vary across runs (hash
     randomization), churning autocommitted manifest diffs for nothing."""
-    bucket = stamps.setdefault(doc_id, [])
     for url in urls:
-        if url and url not in bucket:
-            bucket.append(url)
+        if url and not any(s["owner_doc_id"] == doc_id and s["url"] == url
+                           for s in stamps):
+            stamps.append({"url": url, "source_url": source_url or "",
+                           "owner_doc_id": doc_id, "release": release})
 
 
-def _apply_stamps(storage: Storage, stamps: dict[str, list[str]]) -> None:
-    """Apply the alt_url stamps collected during a pass (see
+def _apply_stamps(storage: Storage, stamps: list[dict]) -> None:
+    """Apply the stamps collected during a pass (see
     `run_recover_downloads`/`_run_candidates_pass`) in ONE
-    `Storage.stamp_alt_urls` call, and print the honest (urls, rows)
-    accounting. A no-op (no print, no rewrite) when nothing was collected --
-    callers only build `stamps` at all when `download` is True, so this
-    never runs during a dry-run."""
+    `Storage.stamp_duplicates` call -- the storage duplicate-content rule:
+    persisted only onto a real PDF owner (`storage.is_stampable_owner`,
+    relaxed by `Config.stamp_duplicate_html`), every URL logged to
+    `reports/duplicate_stamps.jsonl` with label "recover" -- then release
+    the quarantine of each dead URL whose owner row was persisted, and
+    print the honest (urls, rows) accounting.
+
+    A dead URL whose owner is NOT eligible (an HTML page, or a page rendered
+    to PDF) is neither stamped nor released: it stays quarantined for the
+    nightly sync and is not `_is_converged` on the next pass, which
+    re-evaluates it (and logs it again). Invariant: released <=> stamped
+    <=> converged for a fresh Storage. A no-op (no print, no rewrite) when
+    nothing was collected -- callers only collect stamps when `download` is
+    True, so this never runs during a dry-run."""
     if not stamps:
         return
-    urls_stamped, rows_modified = storage.stamp_alt_urls(stamps)
+    urls_stamped, rows_modified, persisted = storage.stamp_duplicates(
+        stamps, "recover", stamp_sources=False)
+    for s in stamps:
+        if s["release"] and s["owner_doc_id"] in persisted:
+            storage.quarantine.record_success(s["release"])
+    held = sorted({s["release"] or s["url"] for s in stamps
+                   if s["owner_doc_id"] not in persisted})
     print(f"[recover] stamped {urls_stamped} alt_url(s) on {rows_modified} row(s)",
           file=sys.stderr, flush=True)
+    if held:
+        print(f"[recover] {len(held)} duplicate url(s) not stamped (owner not a real "
+              f"PDF or not found): quarantine kept", file=sys.stderr, flush=True)
 
 
 def _run_candidates_pass(cfg: Config, storage: Storage, fetcher: Fetcher,
@@ -331,10 +367,10 @@ def _run_candidates_pass(cfg: Config, storage: Storage, fetcher: Fetcher,
 
     results: dict[str, dict] = {}
     csv_rows: list[dict] = []
-    # doc_id -> ordered URLs to stamp onto its alt_urls, applied ONCE at the
-    # end (never during dry-run -- only ever populated inside `if download:`
+    # Ordered duplicate self-heals (see _add_stamp), applied ONCE at the end
+    # (never during dry-run -- only ever populated inside `if download:`
     # branches below).
-    stamps: dict[str, list[str]] = {}
+    stamps: list[dict] = []
 
     def _bump(bank: str, action: str) -> dict:
         summary = results.setdefault(bank, {a: 0 for a in _ACTIONS})
@@ -488,10 +524,11 @@ def _run_candidates_pass(cfg: Config, storage: Storage, fetcher: Fetcher,
                 # no-op for alt_urls there -- but for bank_site rec.pdf_url is
                 # the NEW final_url, so dead_url is genuinely different and DOES
                 # land in alt_urls (the flagship self-heal case this PR exists
-                # for). Either way the quarantine release still matters.
+                # for). Either way the quarantine release still matters --
+                # done by _apply_stamps once the stamp is persisted.
                 if download:
-                    _add_stamp(stamps, rec.doc_id, dead_url)
-                    storage.quarantine.record_success(dead_url)
+                    _add_stamp(stamps, rec.doc_id, dead_url,
+                               source_url=rec.source_url, release=dead_url)
             elif download:
                 dest = storage.target_path(rec)
                 status = "error"
@@ -534,10 +571,11 @@ def _run_candidates_pass(cfg: Config, storage: Storage, fetcher: Fetcher,
                         # Both the dead URL AND this candidate's own final_url
                         # (its verified snapshot/mirror/live copy) are stamped
                         # onto the matched row -- final_url was never dead, so
-                        # only dead_url's quarantine is released.
+                        # only dead_url's quarantine is released (by
+                        # _apply_stamps, if the owner is a real PDF).
                         canonical_doc_id = matched_id
-                        _add_stamp(stamps, matched_id, dead_url, final_url)
-                        storage.quarantine.record_success(dead_url)
+                        _add_stamp(stamps, matched_id, dead_url, final_url,
+                                   source_url=rec.source_url, release=dead_url)
                 elif status.startswith("skip:"):
                     # Any other non-"reindexed" status (e.g. skip:missing-file,
                     # or skip:already-indexed from a same-run race with an
@@ -554,11 +592,12 @@ def _run_candidates_pass(cfg: Config, storage: Storage, fetcher: Fetcher,
                              "canonical_doc_id": canonical_doc_id})
 
     finally:
-        # Quarantine releases are durable per-entry inside the loop, while
-        # stamps applied only after it -- a mid-pass crash (SIGKILL aside)
-        # would leave released-but-unstamped dead URLs that the nightly
-        # sync resumes hammering. finally shrinks that window to the
-        # entry being processed (PR #13 final review, Minor 1).
+        # Stamps (and the quarantine releases that follow a persisted stamp,
+        # see _apply_stamps) are applied here, in a finally, so a mid-pass
+        # crash still persists what was learnt for the entries processed
+        # before it (PR #13 final review, Minor 1); releasing only after the
+        # stamp means a crash can never leave a released-but-unstamped dead
+        # URL for the nightly sync to hammer.
         # storage.save()/reindex() also queue their own duplicate-content
         # stamps (save_many's bookkeeping); this pass stamps duplicates itself
         # (below), so drop that queue rather than let it leak into a later
@@ -590,7 +629,8 @@ def run_recover_downloads(bank_codes: Optional[Iterable[str]] = None,
     quarantine gate (fed by the same ``download_errors.jsonl`` inventory)
     cannot silently block them. Every ``duplicate`` verdict self-heals (see
     the module docstring): its dead URL is stamped onto the matched row's
-    ``alt_urls`` and its quarantine released, in ONE ``Storage.stamp_alt_urls``
+    ``alt_urls`` and its quarantine released -- both only when that row is a
+    real PDF owner -- in ONE ``Storage.stamp_duplicates``
     call collected across the pass and applied from a ``finally`` block --
     at the end of the pass on the normal path, but also on a mid-pass crash
     (PR #13 final review, Minor 1), so a crash never loses stamps already
@@ -636,11 +676,11 @@ def run_recover_downloads(bank_codes: Optional[Iterable[str]] = None,
     entries = _read_inventory(cfg, bank_codes)
     results: dict[str, dict] = {}
     csv_rows: list[dict] = []
-    # doc_id -> ordered URLs to stamp onto its alt_urls, applied ONCE at the
-    # end (never during dry-run -- this whole CDX-walk pass only ever
+    # Ordered duplicate self-heals (see _add_stamp), applied ONCE at the end
+    # (never during dry-run -- this whole CDX-walk pass only ever
     # attempts a save, and so can only classify a duplicate, inside
     # `if download:`).
-    stamps: dict[str, list[str]] = {}
+    stamps: list[dict] = []
 
     try:
         for entry in entries:
@@ -722,8 +762,8 @@ def run_recover_downloads(bank_codes: Optional[Iterable[str]] = None,
                         summary["duplicate"] += 1
                         action = "duplicate"
                         canonical_doc_id = rec.doc_id
-                        _add_stamp(stamps, rec.doc_id, pdf_url)
-                        storage.quarantine.record_success(pdf_url)
+                        _add_stamp(stamps, rec.doc_id, pdf_url,
+                                   source_url=rec.source_url, release=pdf_url)
                     elif status.startswith("skip:duplicate-content"):
                         # Bytes hash-matched a DIFFERENT existing doc_id, carried
                         # as the status suffix (a bare legacy status with no
@@ -739,8 +779,8 @@ def run_recover_downloads(bank_codes: Optional[Iterable[str]] = None,
                         matched_id = _duplicate_doc_id(status)
                         if matched_id:
                             canonical_doc_id = matched_id
-                            _add_stamp(stamps, matched_id, pdf_url)
-                            storage.quarantine.record_success(pdf_url)
+                            _add_stamp(stamps, matched_id, pdf_url,
+                                       source_url=rec.source_url, release=pdf_url)
                     elif status.startswith("skip:"):
                         # Any OTHER skip:* (e.g. a future status we don't special-
                         # case here) is reported VERBATIM, never mislabeled as
@@ -754,11 +794,12 @@ def run_recover_downloads(bank_codes: Optional[Iterable[str]] = None,
                              "canonical_doc_id": canonical_doc_id})
 
     finally:
-        # Quarantine releases are durable per-entry inside the loop, while
-        # stamps applied only after it -- a mid-pass crash (SIGKILL aside)
-        # would leave released-but-unstamped dead URLs that the nightly
-        # sync resumes hammering. finally shrinks that window to the
-        # entry being processed (PR #13 final review, Minor 1).
+        # Stamps (and the quarantine releases that follow a persisted stamp,
+        # see _apply_stamps) are applied here, in a finally, so a mid-pass
+        # crash still persists what was learnt for the entries processed
+        # before it (PR #13 final review, Minor 1); releasing only after the
+        # stamp means a crash can never leave a released-but-unstamped dead
+        # URL for the nightly sync to hammer.
         # storage.save()/reindex() also queue their own duplicate-content
         # stamps (save_many's bookkeeping); this pass stamps duplicates itself
         # (below), so drop that queue rather than let it leak into a later

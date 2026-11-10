@@ -74,7 +74,10 @@ no machine-translated or model-generated text.
   before any fetch instead of re-downloading it every night. Only when the owner row is a
   **real PDF owner (no `html_path`)**: an HTML owner — including a page rendered to PDF by
   `html_to_pdf`, `convert-html` or `retry-html`, whose `sha256` is still the HTML's — keeps the
-  URL for the current run only (retried next night), unless `Config.stamp_duplicate_html=True`. The stamp is an add-only merge done under the bank's
+  URL for the current run only (retried next night), unless `Config.stamp_duplicate_html=True`.
+  `recover-downloads` applies the same rule to its duplicate self-healing (log label `recover`):
+  a dead URL whose owner is not a real PDF is neither stamped nor released from quarantine, and
+  is re-evaluated by the next recover pass. The stamp is an add-only merge done under the bank's
   manifest lock on a fresh read of the owner row. Every duplicate is logged in
   `data/reports/duplicate_stamps.jsonl` (`persisted` = owner eligible and found; an
   `error` field when the stamping itself failed), with one
