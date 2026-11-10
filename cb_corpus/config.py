@@ -12,6 +12,20 @@ from pathlib import Path
 # URL webmasters can actually reach them at).
 _DEFAULT_CONTACT = "https://github.com/MyOpenFund/central-bank-corpus"
 
+# Default of Config.repec_max_pages -- the single source of truth, also used by
+# RePEc walkers handed a fetcher without a Config.
+REPEC_MAX_PAGES_DEFAULT = 200
+
+
+def check_max_pages(value: object, name: str = "repec_max_pages") -> int:
+    """Validate a RePEc listing-page cap: an int (not a bool) >= 1.
+
+    Raises ValueError naming `name` otherwise (0 or a negative cap would
+    silently walk nothing; a float/str/None is a configuration mistake)."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"{name} must be an int >= 1, got {value!r}")
+    return value
+
 
 def _user_agent() -> str:
     contact = os.environ.get("CRAWLER_CONTACT", "").strip() or _DEFAULT_CONTACT
@@ -47,7 +61,7 @@ class Config:
     # A loop guard, NOT a data limit: the largest IDEAS series had 17 pages on
     # 2026-11-10. Reaching it while the last page still links to the next one
     # is recorded as a truncation (run-report / WARNING), never a clean end.
-    repec_max_pages: int = 200
+    repec_max_pages: int = REPEC_MAX_PAGES_DEFAULT
 
     def __post_init__(self) -> None:
         # Normalize retry_http_4xx (a list from a caller is fine) and reject
@@ -69,6 +83,7 @@ class Config:
                 f"Config.retry_http_4xx must contain only 4xx codes (400-499), "
                 f"got {outside!r} in {raw!r}")
         self.retry_http_4xx = codes
+        check_max_pages(self.repec_max_pages, "Config.repec_max_pages")
 
     @property
     def raw_dir(self) -> Path:

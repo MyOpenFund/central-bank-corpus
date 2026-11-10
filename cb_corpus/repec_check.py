@@ -32,8 +32,8 @@ from .config import Config
 from .http import Fetcher
 from .runreport import SourceStats
 from .sources.repec import (IDEAS, SERIES, _paper_meta, cap_truncation,
-                            default_max_pages, extract_pdf_candidates,
-                            listing_error_truncation)
+                            extract_pdf_candidates, listing_error_truncation,
+                            resolve_max_pages)
 from .storage import Storage
 from .wp_migrate import (_KEY_FROM_HANDLE, _KEY_FROM_PDF, normalize_title,
                          normalize_url, repec_handle_from_source_url)
@@ -82,8 +82,7 @@ def enumerate_series(fetcher: Fetcher, handle: str,
     `cfg.repec_max_pages` (200 without a cfg); reaching it is a truncation only
     when the last page read still links to the next one, else a clean end.
     """
-    if max_pages is None:
-        max_pages = default_max_pages(fetcher)
+    max_pages = resolve_max_pages(fetcher, max_pages)
     arch, series = handle.split(":")
     base = f"{IDEAS}/s/{arch}/{series}"
     seen: dict[str, str] = {}
@@ -144,8 +143,9 @@ def run_repec_check(bank_codes: Optional[Iterable[str]] = None,
     `grace_days` is the one grace window of the design (decision Q4): it also
     splits the forward `missing_recent` / `missing_legacy` buckets.
     The reverse check only covers a bank's doc types that have a RePEc series, and
-    is skipped (flagged `reverse_skipped_truncated`) when a listing was truncated,
-    hit `max_pages`, or came back empty. Leftover page fetches that fail are
+    is skipped (flagged `reverse_skipped_truncated`) when a listing was truncated
+    (including reaching `max_pages` on a page that still advertises a next
+    page), or came back empty. Leftover page fetches that fail are
     counted in `pagefetch_errors` (rows they would have matched may then read as
     unmatched)."""
     if grace_days < 0:

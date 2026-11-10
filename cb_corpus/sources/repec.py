@@ -22,6 +22,7 @@ from urllib.parse import urljoin, urlsplit
 from bs4 import BeautifulSoup
 
 from ..banks import get_bank
+from ..config import REPEC_MAX_PAGES_DEFAULT, check_max_pages
 from ..http import Fetcher, host_matches, http_status
 from ..models import DocRecord
 from ..runreport import SourceStats
@@ -168,14 +169,18 @@ def extract_official_pdf(paper_html: str, bank_homepage: str,
     return None
 
 
-DEFAULT_MAX_PAGES = 200  # mirrors Config.repec_max_pages, for cfg-less fetchers
-
-
 def default_max_pages(fetcher: object) -> int:
     """The IDEAS listing-page cap for `fetcher`: its `cfg.repec_max_pages` when
-    it carries a Config (the real Fetcher does), else DEFAULT_MAX_PAGES."""
+    it carries a Config (the real Fetcher does), else the Config default."""
     cfg = getattr(fetcher, "cfg", None)
-    return getattr(cfg, "repec_max_pages", DEFAULT_MAX_PAGES)
+    return getattr(cfg, "repec_max_pages", REPEC_MAX_PAGES_DEFAULT)
+
+
+def resolve_max_pages(fetcher: object, max_pages: Optional[int]) -> int:
+    """An explicit `max_pages` (validated), else `default_max_pages(fetcher)`."""
+    if max_pages is None:
+        return check_max_pages(default_max_pages(fetcher), "repec_max_pages")
+    return check_max_pages(max_pages, "max_pages")
 
 
 def cap_truncation(html: Optional[str], series: str,
@@ -195,8 +200,7 @@ class RePEcDiscovery:
         self.fetcher = fetcher or Fetcher()
         self.max_items = max_items_per_series
         # None -> Config.repec_max_pages via the fetcher (loop guard, see config.py)
-        self.max_pages = (default_max_pages(self.fetcher)
-                          if max_pages is None else max_pages)
+        self.max_pages = resolve_max_pages(self.fetcher, max_pages)
 
     def _series_paper_pages(self, handle: str,
                             stats: Optional[SourceStats] = None) -> Iterator[list[str]]:
@@ -205,8 +209,9 @@ class RePEcDiscovery:
         IDEAS caps a series listing at ~200 items per page; older papers live
         on numbered pages (`<handle>2.html`, ...). Pages are yielded newest
         first; the walk ends cleanly when a page yields nothing new, when the
-        cap is hit, or on an HTTP 404 for page k > 1 that page k-1 does not
-        link to (IDEAS answers 404 on the page after the last one; see
+        cap (`max_pages`) is reached on a page that advertises no next page,
+        or on an HTTP 404 for page k > 1 that page k-1 does not link to
+        (IDEAS answers 404 on the page after the last one; see
         `listing_error_truncation`).
 
         Any other page-FETCH FAILURE (404 on page 1, 404 on a page that page
@@ -271,9 +276,10 @@ class RePEcDiscovery:
         series so a listing-page fetch failure is recorded as truncation
         (see that method's docstring) rather than silently ending the walk.
         It also counts the unknown papers this walk passes over, via
-        `stats.record_skip`: `paper_fetch_failed` (the paper page fetch
-        raised; sample `"<paper_url>: <exc>"`) and `paper_no_pdf` (the page
-        has no PDF candidate; sample = the paper URL). Skips are visibility
+        `stats.record_skip` (samples kept per reason): `paper_fetch_failed`
+        (the paper page fetch raised; sample `"<paper_url>: <exc>"`) and
+        `paper_no_pdf` (the page has no PDF candidate; sample = the paper
+        URL). Skips are visibility
         only -- they never change the run's exit code. Without `stats`, such
         papers are dropped silently, as before.
 

@@ -6,16 +6,24 @@ night and visible nowhere. They are now COUNTED in the run-report
 (`SourceStats.skipped` / `skip_samples`) but never alert: `finish()` ignores
 skips, so the exit-code doctrine is unchanged.
 """
+import gc
+
 import pytest
 
+from cb_corpus.config import Config
+from cb_corpus.repec_check import enumerate_series
 from cb_corpus.runreport import _SAMPLE_CAP, RunReport, SourceStats
-from cb_corpus.sources.repec import IDEAS
+from cb_corpus.sources.repec import IDEAS, RePEcDiscovery
 from tests.test_repec_truncation import (
+    FakeFetcher,
     _ExactURLFetcher,
     _discovery_page_html,
     _fixture,
     _mk_discovery,
+    _page_html,
+    _patch_make_storage,
     _real_fetcher,
+    _with_next_link,
 )
 
 
@@ -29,38 +37,44 @@ def test_record_skip_tallies_per_reason_and_keeps_samples():
     s.record_skip("paper_no_pdf", "u2")
     s.record_skip("paper_fetch_failed", "u3: boom")
     assert s.skipped == {"paper_fetch_failed": 2, "paper_no_pdf": 1}
-    assert s.skip_samples == ["u1: boom", "u2", "u3: boom"]
+    assert s.skip_samples == {"paper_fetch_failed": ["u1: boom", "u3: boom"],
+                              "paper_no_pdf": ["u2"]}
     # skips are not errors
     assert s.fetch_errors == 0 and s.error_samples == [] and s.truncated is False
 
 
-def test_skip_samples_are_capped_and_truncated_but_tally_is_not():
+def test_skip_samples_are_capped_per_reason_and_truncated_but_tally_is_not():
     s = SourceStats("se")
     for i in range(_SAMPLE_CAP + 3):
         s.record_skip("paper_no_pdf", f"u{i}" + "x" * 400)
-    assert s.skipped == {"paper_no_pdf": _SAMPLE_CAP + 3}
-    assert len(s.skip_samples) == _SAMPLE_CAP
-    assert all(len(x) == 300 for x in s.skip_samples)
-    assert s.skip_samples[0].startswith("u0x")
+    # a flood of one reason does not crowd out another reason's samples
+    s.record_skip("paper_fetch_failed", "v: 404")
+    assert s.skipped == {"paper_no_pdf": _SAMPLE_CAP + 3, "paper_fetch_failed": 1}
+    assert len(s.skip_samples["paper_no_pdf"]) == _SAMPLE_CAP
+    assert all(len(x) == 300 for x in s.skip_samples["paper_no_pdf"])
+    assert s.skip_samples["paper_no_pdf"][0].startswith("u0x")
+    assert s.skip_samples["paper_fetch_failed"] == ["v: 404"]
 
 
 def test_to_dict_carries_skips_and_defaults_are_empty():
     s = SourceStats("se")
     d = s.to_dict()
-    assert d["skipped"] == {} and d["skip_samples"] == []
+    assert d["skipped"] == {} and d["skip_samples"] == {}
     s.record_skip("paper_no_pdf", "u")
     d = s.to_dict()
-    assert d["skipped"] == {"paper_no_pdf": 1} and d["skip_samples"] == ["u"]
-    # copies, not live references
+    assert d["skipped"] == {"paper_no_pdf": 1}
+    assert d["skip_samples"] == {"paper_no_pdf": ["u"]}
+    # copies, not live references (outer dicts and inner lists)
     d["skipped"]["paper_no_pdf"] = 99
-    d["skip_samples"].append("x")
-    assert s.skipped == {"paper_no_pdf": 1} and s.skip_samples == ["u"]
+    d["skip_samples"]["paper_no_pdf"].append("x")
+    d["skip_samples"]["other"] = ["y"]
+    assert s.skipped == {"paper_no_pdf": 1} and s.skip_samples == {"paper_no_pdf": ["u"]}
 
 
 def test_two_stats_do_not_share_skip_containers():
     a, b = SourceStats("a"), SourceStats("b")
     a.record_skip("paper_no_pdf", "u")
-    assert b.skipped == {} and b.skip_samples == []
+    assert b.skipped == {} and b.skip_samples == {}
 
 
 def test_skips_never_change_finish_with_a_new_doc():
@@ -95,7 +109,8 @@ def test_run_report_to_dict_has_skip_keys_per_source():
     r.source("se").record_skip("paper_no_pdf", "u")
     r.finish()
     src = r.to_dict()["sources"][0]
-    assert src["skipped"] == {"paper_no_pdf": 1} and src["skip_samples"] == ["u"]
+    assert src["skipped"] == {"paper_no_pdf": 1}
+    assert src["skip_samples"] == {"paper_no_pdf": ["u"]}
 
 
 # ---------------------------------------------------------------------------
@@ -132,9 +147,10 @@ def test_discover_bank_records_fetch_failed_and_no_pdf(monkeypatch):
     recs = list(d.discover_bank("se", stats=stats))
     assert [r.source_url for r in recs] == [f"{_P}/0001.html"]
     assert stats.skipped == {"paper_fetch_failed": 1, "paper_no_pdf": 1}
-    assert stats.skip_samples[0].startswith(f"{_P}/0002.html: ")
-    assert "404" in stats.skip_samples[0]          # the exception text is kept
-    assert stats.skip_samples[1] == f"{_P}/0003.html"
+    failed = stats.skip_samples["paper_fetch_failed"]
+    assert len(failed) == 1 and failed[0].startswith(f"{_P}/0002.html: ")
+    assert "404" in failed[0]                       # the exception text is kept
+    assert stats.skip_samples["paper_no_pdf"] == [f"{_P}/0003.html"]
     assert stats.fetch_errors == 0 and stats.truncated is False
 
 
@@ -144,7 +160,7 @@ def test_discover_bank_known_papers_are_not_counted_as_skips(monkeypatch):
     d = _mk_discovery(_three_paper_fetcher())
     stats = SourceStats("se")
     list(d.discover_bank("se", skip_url=lambda u: True, stats=stats))
-    assert stats.skipped == {} and stats.skip_samples == []
+    assert stats.skipped == {} and stats.skip_samples == {}
 
 
 def test_discover_bank_without_stats_is_unchanged(monkeypatch):
@@ -203,9 +219,9 @@ def test_run_repec_counts_skips_and_exits_0(monkeypatch, tmp_path, with_good):
     src = report.to_dict()["sources"][0]
     assert src["source_code"] == "se"
     assert src["skipped"] == {"paper_fetch_failed": 1, "paper_no_pdf": 1}
-    assert src["skip_samples"][0].startswith(f"{gone}: ")
-    assert "HTTP 404" in src["skip_samples"][0]
-    assert src["skip_samples"][1] == nopdf
+    (failed,) = src["skip_samples"]["paper_fetch_failed"]
+    assert failed.startswith(f"{gone}: ") and "HTTP 404" in failed
+    assert src["skip_samples"]["paper_no_pdf"] == [nopdf]
     assert src["fetch_errors"] == 0 and src["truncated"] is False
     assert rc == 0
 
@@ -214,15 +230,6 @@ def test_run_repec_counts_skips_and_exits_0(monkeypatch, tmp_path, with_good):
 # A2 -- configurable page cap; reaching it with a next page advertised is a
 # truncation, reaching it on the real last page is a clean end. Both walkers.
 # ---------------------------------------------------------------------------
-
-from cb_corpus.config import Config  # noqa: E402
-from cb_corpus.repec_check import enumerate_series  # noqa: E402
-from cb_corpus.sources.repec import RePEcDiscovery  # noqa: E402
-from tests.test_repec_truncation import (  # noqa: E402
-    FakeFetcher,
-    _page_html,
-    _with_next_link,
-)
 
 _CAP_MSG = "page 2: max_pages (2) reached, page 3 advertised"
 
@@ -307,7 +314,6 @@ def test_discovery_cap_consumer_stops_after_last_yield_no_truncation():
     for i, _page in enumerate(d._series_paper_pages("hhs:rbnkwp", stats=stats)):
         if i == 1:
             break
-    import gc
     gc.collect()
     assert stats.truncated is False and stats.fetch_errors == 0
 
@@ -437,3 +443,96 @@ def test_run_repec_check_warns_when_config_cap_truncates(tmp_path, monkeypatch, 
     err = capsys.readouterr().err
     assert ("WARNING: IDEAS listing truncated for hhs:rbnkwp: page 1: max_pages (1) "
             "reached, page 2 advertised") in err
+
+
+# ---------------------------------------------------------------------------
+# Review fixes
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("page1", [
+    ["0001", "0002", "0003"],   # known + 404 + no-PDF
+    ["0001", "0002"],           # known + 404 only
+    ["0001", "0003"],           # known + no-PDF only
+])
+def test_stop_on_known_counts_failed_and_no_pdf_papers_as_unknown(monkeypatch, page1):
+    """stop_on_known ends a series only on a page whose papers are ALL known.
+    A paper that 404s or has no PDF is still unknown: page 2 must be fetched,
+    and the skips tallied. (Pins `unknown_on_page += 1` BEFORE the fetch.)"""
+    _se_series(monkeypatch)
+    f = _ExactURLFetcher({
+        f"{_BASE}.html": _discovery_page_html(page1),
+        f"{_BASE}2.html": _discovery_page_html(page1),   # nothing new -> clean end
+        f"{_P}/0003.html": _NOPDF_HTML,
+    })
+    d = _mk_discovery(f)
+    stats = SourceStats("se")
+    known = {f"{_P}/0001.html"}
+    recs = list(d.discover_bank("se", skip_url=known.__contains__,
+                                stop_on_known=True, stats=stats))
+    assert recs == []
+    assert f"{_BASE}2.html" in f.fetched
+    expected = {}
+    if "0002" in page1:
+        expected["paper_fetch_failed"] = 1
+    if "0003" in page1:
+        expected["paper_no_pdf"] = 1
+    assert stats.skipped == expected
+    assert stats.fetch_errors == 0 and stats.truncated is False
+
+
+@pytest.mark.parametrize("bad", [0, -1, True, False, "3", None, 2.5])
+def test_config_rejects_invalid_repec_max_pages(bad):
+    with pytest.raises(ValueError, match="repec_max_pages"):
+        Config(repec_max_pages=bad)
+
+
+def test_config_accepts_valid_repec_max_pages():
+    assert Config(repec_max_pages=1).repec_max_pages == 1
+    assert Config(repec_max_pages=2).repec_max_pages == 2
+
+
+@pytest.mark.parametrize("bad", [0, -1, True, "3", 2.5])
+def test_discovery_rejects_invalid_explicit_max_pages(bad):
+    with pytest.raises(ValueError, match="max_pages"):
+        RePEcDiscovery(FakeFetcher({}), max_pages=bad)
+
+
+@pytest.mark.parametrize("bad", [0, -1, True, "3", 2.5])
+def test_enumerate_rejects_invalid_explicit_max_pages(bad):
+    f = FakeFetcher({1: _page_html(["p1"])})
+    with pytest.raises(ValueError, match="max_pages"):
+        enumerate_series(f, "arch:series", max_pages=bad)
+    assert f.calls == 0
+
+
+def test_explicit_valid_max_pages_accepted_by_both_walkers():
+    assert RePEcDiscovery(FakeFetcher({}), max_pages=2).max_pages == 2
+    f = FakeFetcher({1: _page_html(["p1"]), 2: _page_html(["p2"])})
+    assert len(enumerate_series(f, "arch:series", max_pages=2)) == 2
+
+
+def test_cfg_default_is_the_single_source_of_truth():
+    from cb_corpus import config as C
+    from cb_corpus.sources import repec as R
+    assert Config.__dataclass_fields__["repec_max_pages"].default == C.REPEC_MAX_PAGES_DEFAULT
+    assert not hasattr(R, "DEFAULT_MAX_PAGES")
+    assert RePEcDiscovery(FakeFetcher({})).max_pages == C.REPEC_MAX_PAGES_DEFAULT
+
+
+def test_wayback_recovery_records_skips_on_its_source(monkeypatch):
+    import cb_corpus.pipeline as P
+
+    _se_series(monkeypatch)
+    f = _ExactURLFetcher({
+        f"{_BASE}.html": _discovery_page_html(["0002", "0003"]),
+        f"{_BASE}2.html": _discovery_page_html(["0002"]),   # nothing new -> clean end
+        f"{_P}/0003.html": _NOPDF_HTML,
+    })
+    _patch_make_storage(monkeypatch, f)
+    report = RunReport("central-bank-corpus", "repec-wb")
+    P.run_repec_wayback_recovery("se", dry_run=True, report=report)
+    src = report.source("repec-wb:se").to_dict()
+    assert src["skipped"] == {"paper_fetch_failed": 1, "paper_no_pdf": 1}
+    assert src["skip_samples"]["paper_no_pdf"] == [f"{_P}/0003.html"]
+    assert src["skip_samples"]["paper_fetch_failed"][0].startswith(f"{_P}/0002.html: ")
+    assert src["fetch_errors"] == 0 and src["truncated"] is False
