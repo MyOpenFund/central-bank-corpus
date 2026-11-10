@@ -87,8 +87,9 @@ run-report line to `data/runs.jsonl` (run id, per-source counters, fetch
 errors, an explicit `truncated` flag) and exits honestly: `0` clean, `1`
 fatal, `3` degraded — a run that did no useful work never exits 0. An HTTP 404
 on an IDEAS listing page after the last one (not linked from the previous page)
-ends the RePEc walk cleanly; a 404 on page 1, or on a page the previous one links
-to, stays a truncation (`3`). The NAS
+ends the RePEc walk cleanly (no truncation; the run can still be degraded for
+other reasons); a 404 on page 1, or on a page the previous one links to, stays a
+truncation (`3`). The NAS
 wrapper pushes an ntfy notification on non-zero exits when `NTFY_URL` is set
 (absent = no-op).
 

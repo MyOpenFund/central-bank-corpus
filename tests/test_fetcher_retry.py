@@ -245,7 +245,7 @@ def test_config_retry_set_rejects_non_int_iterables(bad):
 
 @pytest.mark.parametrize("bad", [(503,), (99,), (404, 500), (399,)])
 def test_config_retry_set_rejects_codes_outside_4xx(bad):
-    with pytest.raises(ValueError, match="400"):
+    with pytest.raises(ValueError, match=r"4xx codes \(400-499\)"):
         Config(retry_http_4xx=bad)
 
 
