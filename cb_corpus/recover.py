@@ -147,11 +147,12 @@ def _refresh_metadata(fetcher: Fetcher, entry: dict) -> tuple[str, object, Optio
     When ``source_url`` is an IDEAS page, fetch it once and take title/date/
     candidates via the existing ``_paper_meta``/``extract_pdf_candidates``
     (month precision, ``date_source="repec"`` -- same honesty as RePEc
-    discovery). On any fetch failure, OR when ``source_url`` isn't IDEAS, fall
-    back to the audit entry's own title; date stays unknown (``None``), and
-    ``date_precision``/``date_source`` are left as ``None`` here so the caller
-    leaves the ``DocRecord`` defaults untouched -- mirroring how
-    ``WaybackSource`` already handles a paper with no recoverable date.
+    discovery -- but only when the page actually carries a date). On any
+    fetch failure, when ``source_url`` isn't IDEAS, or when the IDEAS page
+    has no date, the date is ``None`` and so are ``date_precision`` and
+    ``date_source``: the caller then records an undated row as precision
+    ``None`` and attributes its (absent) date to the wayback hunt when the
+    provenance is ``wayback`` (never the ``"bank_site"`` default).
     """
     title = entry.get("title") or ""
     source_url = entry.get("source_url") or ""
@@ -160,6 +161,8 @@ def _refresh_metadata(fetcher: Fetcher, entry: dict) -> tuple[str, object, Optio
             html = fetcher.get_text(source_url)
             fresh_title, fresh_date = _paper_meta(html)
             cands = extract_pdf_candidates(html, _bank_homepage(entry.get("bank_code") or ""))
+            if fresh_date is None:
+                return (fresh_title or title, None, None, None, cands)
             return (fresh_title or title, fresh_date, "month", "repec", cands)
         except Exception:
             pass

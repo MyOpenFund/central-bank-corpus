@@ -178,10 +178,11 @@ def build_report(bank: str, fetcher: Fetcher,
             "old_date": row.get("date"),
             "new_date": new_date,
             # the native source's own precision (e.g. Fed papers without a confirmed
-            # day, or revisions outside the listing month, stay "month"); an
-            # undated native record keeps the row's date, so its precision too
-            "date_precision": (native.date_precision if native.date
-                               else row.get("date_precision")),
+            # day, or revisions outside the listing month, stay "month")
+            "date_precision": native.date_precision,
+            # False when the native record has no date: apply_change then leaves
+            # date / date_precision / date_source untouched (alt URL + handle only)
+            "date_from_native": native.date is not None,
             "match_type": match_type,
             "old_url": row.get("pdf_url"),
             "native_url": native_url,
@@ -199,13 +200,19 @@ def apply_change(row: dict, change: dict) -> None:
     Metadata only: date + precision/source, repec_handle, and the native URL
     registered in alt_urls (so dedup recognises it). doc_id / sha256 / local_path
     / pdf_url are deliberately left untouched — the file on disk is the same.
+
+    A change whose native record carried no date (``date_from_native`` False)
+    touches NONE of date / year / date_precision / date_source: the row's own
+    (e.g. RePEc) date is kept with its own labels, never relabelled as a
+    bank-site day.
     """
-    row["date"] = change["new_date"]
-    # keep the derived `year` field consistent with the (possibly year-shifted) date
-    if change.get("new_date"):
-        row["year"] = int(change["new_date"][:4])
-    row["date_precision"] = change.get("date_precision") or "day"
-    row["date_source"] = "bank_site"
+    if change.get("date_from_native", True):
+        row["date"] = change["new_date"]
+        # keep the derived `year` field consistent with the (possibly year-shifted) date
+        if change.get("new_date"):
+            row["year"] = int(change["new_date"][:4])
+        row["date_precision"] = change.get("date_precision") or "day"
+        row["date_source"] = "bank_site"
     if change.get("repec_handle"):
         row["repec_handle"] = change["repec_handle"]
     alt = change.get("alt_url_added")

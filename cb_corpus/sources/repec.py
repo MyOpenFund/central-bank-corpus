@@ -350,9 +350,10 @@ class RePEcDiscovery:
                             mime_type="application/pdf",
                             # RePEc's Creation-Date is month-only (YYYY-MM, padded to day 1
                             # by _iso_date) — record that honestly so the date-recovery
-                            # waterfall and repec-check can target these rows.
-                            date_precision="month",
-                            date_source="repec",
+                            # waterfall and repec-check can target these rows. No date on
+                            # the IDEAS page -> no precision and no date source (None).
+                            date_precision="month" if pub_date else None,
+                            date_source="repec" if pub_date else None,
                         )
                     if stop_on_known and unknown_on_page == 0:
                         break

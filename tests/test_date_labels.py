@@ -177,20 +177,102 @@ def test_fed_wp_none_date_has_no_precision(monkeypatch, fetcher_factory):
     assert rec.date is None and rec.date_precision is None
 
 
-def test_wp_migrate_undated_native_keeps_the_rows_own_precision(monkeypatch):
-    """B2 knock-on: an undated native record now carries date_precision=None;
-    the WP migration keeps the row's date then, so it must keep the row's own
-    precision too -- never fall back to a fake "day"."""
+@pytest.mark.parametrize("extra", [
+    {"date_precision": "month", "date_source": "repec"},
+    {},                      # the review's repro: a row with no date labels at all
+])
+def test_wp_migrate_undated_native_touches_no_date_field(monkeypatch, extra):
+    """An undated native record (date_precision=None since B2) must leave the
+    row's date, date_precision and date_source exactly as they were -- only
+    the alt URL and the RePEc handle are applied. It used to turn a row
+    without labels into day/bank_site."""
     from cb_corpus import wp_migrate
     native = [DocRecord(bank_code="fr", doc_type=DocType.D1, title="P",
                         pdf_url="https://www.banque-france.fr/system/files/2006-03/WP155.pdf",
                         date=None, date_precision=None)]
     monkeypatch.setitem(wp_migrate._NATIVE, "fr", lambda fetcher: iter(native))
     row = {"doc_id": "fr155", "bank_code": "fr", "doc_type": "D1", "date": "2006-03-01",
-           "date_precision": "month", "date_source": "repec",
-           "pdf_url": "https://www.banque-france.fr/system/files/2006-03/WP155.pdf"}
+           "year": 2006,
+           "pdf_url": "https://publications.banque-france.fr/wp_155_2006.pdf",
+           "source_url": "https://ideas.repec.org/p/bfr/banfra/155.html", **extra}
+    before = dict(row)
     _summary, [c] = wp_migrate.build_report("fr", fetcher=None, manifest_rows=[row])
-    assert c["new_date"] == "2006-03-01"
-    assert c["date_precision"] == "month"
+    assert c["date_from_native"] is False
     wp_migrate.apply_change(row, c)
-    assert row["date_precision"] == "month"
+    for k in ("date", "year", "date_precision", "date_source"):
+        assert row.get(k) == before.get(k), k
+    assert native[0].pdf_url in row["alt_urls"]
+    assert row["repec_handle"] == "RePEc:bfr:banfra:155"
+
+
+# ---- fix wave: undated RePEc / recover, ECB CDX fallback --------------
+
+def test_repec_discovery_undated_paper_has_no_precision_nor_source(monkeypatch):
+    from tests.test_repec_incremental import (BASE, SERIES_HANDLE, _mk, _paper_html,
+                                              _paper_url, _series_html)
+    from cb_corpus.sources import repec as R
+    monkeypatch.setitem(R.SERIES, "se", [(SERIES_HANDLE, DocType.D1)])
+    dated = _paper_html("0002").replace(
+        "<head>", '<head><meta name="citation_publication_date" content="2019/04">')
+    d = _mk({f"{BASE}.html": _series_html(["0001", "0002"]),
+             _paper_url("0001"): _paper_html("0001"), _paper_url("0002"): dated})
+    recs = {r.source_url: r for r in d.discover_bank("se")}
+    undated, with_date = recs[_paper_url("0001")], recs[_paper_url("0002")]
+    assert undated.date is None
+    assert (undated.date_precision, undated.date_source) == (None, None)
+    assert with_date.date == date(2019, 4, 1)
+    assert (with_date.date_precision, with_date.date_source) == ("month", "repec")
+
+
+def test_refresh_metadata_ideas_page_without_date():
+    from cb_corpus.recover import _refresh_metadata
+
+    class F:
+        def get_text(self, url):
+            return "<html><head><title>T</title></head><body><h1>T</h1></body></html>"
+    title, d, prec, src, _ = _refresh_metadata(
+        F(), {"title": "audit", "bank_code": "fr",
+              "source_url": "https://ideas.repec.org/p/bfr/banfra/1.html"})
+    assert (d, prec, src) == (None, None, None)
+
+
+def test_candidates_pass_undated_record_has_no_precision(tmp_path, monkeypatch):
+    """recover.py candidates pass, `elif rec_date is None` branch."""
+    from tests.test_recover_candidates import (_NullFetcher, _entry, _make_local_pdf,
+                                               _stub_refresh_metadata, _write_candidates,
+                                               _write_inventory)
+    from cb_corpus.recover import run_recover_downloads
+    from cb_corpus.storage import iter_manifest_rows
+
+    cfg = Config(data_dir=tmp_path)
+    dead = "https://www.banque-france.fr/old/dt987.pdf"
+    final = "https://www.banque-france.fr/new/dt987.pdf"
+    _write_inventory(cfg, [_entry(bank="fr", pdf_url=dead)])
+    cand = _write_candidates(tmp_path, [{
+        "dead_pdf_url": dead, "file_path": str(_make_local_pdf(tmp_path)),
+        "recovered_from": "bank_site", "final_url": final}])
+    _stub_refresh_metadata(monkeypatch, title="WP 987")       # no date
+    run_recover_downloads(config=cfg, fetcher=_NullFetcher(), candidates=str(cand),
+                          download=True, csv_path=str(tmp_path / "r.csv"))
+    [row] = list(iter_manifest_rows(cfg, "fr"))
+    assert row["date"] is None and row["date_precision"] is None
+
+
+@pytest.mark.parametrize("fmt,fn,prec", [
+    ("yyyymm", "ecb.fsr200612.en.pdf", "month"),
+    ("yymmdd", "ecb.in200612.en.pdf", "day"),
+    ("auto", "ecb.ar2019.en.pdf", "year"),
+])
+def test_ecb_pub_recovery_cdx_fallback_precision(tmp_path, monkeypatch, captured,
+                                                 fmt, fn, prec):
+    import cb_corpus.sources.ecb_pub as ecb_pub
+    import cb_corpus.sources.wayback as wayback
+    orig = f"https://www.ecb.europa.eu/pub/fsr/{fn}"
+    monkeypatch.setattr(ecb_pub, "section_include_docs", lambda *a, **k: None)
+    monkeypatch.setattr(wayback, "cdx_pdfs", lambda f, prefix, mimetype=None: [(orig, "2017")])
+    pipeline.run_ecb_pub_recovery("fsr", DocType.E2, date_fmt=fmt,
+                                  cdx_fallback_prefix="ecb.europa.eu/pub/fsr/",
+                                  dry_run=True, config=Config(data_dir=tmp_path))
+    [rec] = captured
+    assert (rec.date_precision, rec.date_source) == (prec, "bank_site")
+    assert rec.alt_urls == [wayback.raw_url(orig, "2017")]

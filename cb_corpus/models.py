@@ -40,7 +40,9 @@ class DocRecord:
     # case — a native bank-site listing with an exact day. Producers that yield a
     # coarser/different date MUST set these explicitly (e.g. RePEc → month/repec,
     # a year-only listing → year). This makes date quality auditable per row.
-    # `date_precision` is None when there is no date at all (`date` is None).
+    # `date_precision` is None when there is no date at all (`date` is None);
+    # a producer with no date may also leave `date_source` None (e.g. an
+    # IDEAS page without a date) rather than claim a source for nothing.
     # `sitemap_lastmod` = a sitemap <lastmod> (last modification day, not a
     # publication date) used for lack of anything better.
     date_precision: Optional[str] = "day"  # day | month | year | None (undated)
