@@ -98,11 +98,11 @@ truncation (`3`). IDEAS listings are walked up to `Config.repec_max_pages`
 pages per series (default 200): a loop guard, not a data limit (the largest
 series had 17 pages in November 2026). Reaching it is a clean end when the last
 page read advertises no next page, and a truncation when it does. Each source
-in the run-report also carries `skipped` (reason → count, e.g.
-`paper_gone` (HTTP 404/410), `paper_fetch_failed` (5xx, timeout, network),
-`paper_no_pdf` for RePEc paper pages passed over) and
-`skip_samples` (reason → up to 5 samples): counted for visibility, they never
-affect the exit code. The NAS
+in the run-report also carries `skipped` (reason → count) and `skip_samples`
+(reason → up to 5 samples) for the RePEc paper pages a walk passes over:
+`paper_gone` (HTTP 404/410), `paper_fetch_failed` (any other fetch failure) and
+`paper_no_pdf` (no PDF link on the page). They are counted for visibility and
+never affect the exit code. The NAS
 wrapper pushes an ntfy notification on non-zero exits when `NTFY_URL` is set
 (absent = no-op).
 

@@ -278,7 +278,7 @@ class RePEcDiscovery:
         It also counts the unknown papers this walk passes over, via
         `stats.record_skip` (samples kept per reason): `paper_gone` (the paper
         page answered HTTP 404/410; sample `"<paper_url>: <exc>"`),
-        `paper_fetch_failed` (any other fetch failure: 5xx, timeout, network;
+        `paper_fetch_failed` (any other fetch failure: other 4xx, 5xx, timeout, network;
         same sample shape) and `paper_no_pdf` (the page has no PDF candidate;
         sample = the paper URL). Skips are visibility only -- they never change
         the run's exit code. Without `stats`, such papers are dropped silently,

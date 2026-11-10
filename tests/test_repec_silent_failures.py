@@ -542,6 +542,8 @@ def test_wayback_recovery_records_skips_on_its_source(monkeypatch):
 
 @pytest.mark.parametrize("status, reason", [(404, "paper_gone"), (410, "paper_gone"),
                                             (503, "paper_fetch_failed"),
+                                            (403, "paper_fetch_failed"),
+                                            (429, "paper_fetch_failed"),
                                             (None, "paper_fetch_failed")])
 def test_paper_fetch_reason_split_by_http_status(monkeypatch, status, reason):
     """404/410 on a paper page = permanently gone; anything else (5xx, timeout,
