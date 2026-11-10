@@ -260,7 +260,7 @@ cb_corpus/
   cli.py             command line (`python -m cb_corpus --help` lists every subcommand)
   runreport.py       run reports (data/runs.jsonl) + honest exit codes
   cadence.py         median-gap silence watchdog (cadence-watch)
-  quarantine.py      per-URL download quarantine (dead-letter state; one local night per run)
+  quarantine.py      per-URL download quarantine (dead-letter state; one local night per Storage instance = per process run of a command)
   recover.py         recover-downloads (inventory-driven Wayback recovery)
   orphans.py         sweep-orphans (quarantine on-disk duplicates)
   convert.py / retry_html.py   HTML -> PDF migration and retries

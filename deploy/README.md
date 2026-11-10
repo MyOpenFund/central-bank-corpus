@@ -98,8 +98,8 @@ never committed — alongside `download_errors.jsonl`). Quarantined URLs are ret
 during the Sunday full sweep (via `QUARANTINE_RETRY=1`, set automatically by the
 `sync full` job). Tune the quarantine threshold with `QUARANTINE_AFTER_NIGHTS`
 (default: 5 nights of failure before quarantine). A "night" is the **local** date
-(the container's `TZ`, Europe/Paris) taken once when the run starts, so a run that
-crosses midnight counts as one night. Monday–Saturday bounded syncs
+(the container's `TZ`, Europe/Paris), taken once per `Storage` instance, i.e. once per
+process run of a command, so a run that crosses midnight counts as one night. Monday–Saturday bounded syncs
 do not bypass quarantine, keeping them nimble. For docs confirmed unrecoverable
 after a manual `recover-downloads --candidates` hunt, `recover-downloads
 --seed-quarantine <file>` is a one-time operator action that seeds them as

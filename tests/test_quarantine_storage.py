@@ -326,14 +326,27 @@ def test_night_is_fixed_at_construction_across_a_fake_midnight(tmp_path, monkeyp
 
 def test_night_uses_local_date_not_utc(tmp_path, monkeypatch):
     """Local date at construction (TZ=Europe/Paris in the stack): at 00:30
-    Paris time the UTC date is still yesterday -- the night must be today."""
+    Paris time on 11 Nov the UTC clock still reads 10 Nov 23:30 -- both clocks
+    are faked to disagree, and the recorded night must be the LOCAL one."""
     import cb_corpus.storage as storage_mod
 
     class _FakeDate(_dt.date):
         @classmethod
         def today(cls):
-            return _dt.date(2026, 11, 11)              # local
+            return _dt.date(2026, 11, 11)              # local (Paris) date
+
+    class _FakeDatetime(_dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            utc = _dt.datetime(2026, 11, 10, 23, 30, tzinfo=_dt.timezone.utc)
+            return utc if tz is not None else utc.replace(tzinfo=None)
 
     monkeypatch.setattr(storage_mod._dt, "date", _FakeDate)
+    monkeypatch.setattr(storage_mod._dt, "datetime", _FakeDatetime)
     st = _mk_storage(tmp_path, _BoomFetcher())
-    assert st._night == "2026-11-11"
+    st.save_many([_rec(pdf_url="https://x.test/b.pdf")])
+    rows = [json.loads(ln) for ln in
+            (tmp_path / "download_quarantine.jsonl").read_text().splitlines()]
+    assert rows[-1]["nights"] == ["2026-11-11"]
+    audit = json.loads((tmp_path / "download_errors.jsonl").read_text().splitlines()[-1])
+    assert audit["ts"].startswith("2026-11-10T23:30")   # the audit ts stays UTC
