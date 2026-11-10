@@ -175,6 +175,7 @@ def test_default_resolver_failure_fails_closed():
 # ---- fix wave: parser confusion, embedded-IPv4 ranges, choke point -----
 
 import json  # noqa: E402
+from pathlib import Path  # noqa: E402
 import subprocess  # noqa: E402
 
 from cb_corpus import htmlpdf  # noqa: E402
@@ -334,3 +335,45 @@ def test_save_many_prints_render_refused_summary(tmp_path, monkeypatch, capsys):
     assert "[ecb] render refused: 2" in capsys.readouterr().err
     st.save_many([], label="ecb")
     assert "render refused" not in capsys.readouterr().err   # per batch, only when > 0
+
+
+# ---- final-review fix wave: resolver pass-through, summary wording ------
+
+def test_retry_html_passes_resolver_to_the_chrome_choke_point(tmp_path, monkeypatch, capsys):
+    """The resolver given to retry_failed must reach chrome_print_to_pdf's
+    own guard too (not just the pre-check): with the suite's no-DNS default
+    there, the render would be refused at launch time."""
+    from cb_corpus import retry_html as retry_mod
+    mf = _html_manifest(tmp_path, "https://pub.example/x.en.html")
+    monkeypatch.setattr(retry_mod, "find_chrome", lambda: "/fake/chrome")
+
+    def fake_run(cmd, **k):
+        out = next(a for a in cmd if a.startswith("--print-to-pdf="))
+        Path(out.split("=", 1)[1]).write_bytes(b"%PDF-1.4 x")
+    monkeypatch.setattr(htmlpdf.subprocess, "run", fake_run)
+    counts = retry_mod.retry_failed(Config(data_dir=tmp_path), parallelism=1,
+                                    resolver=_resolver({"pub.example": [PUBLIC_V4]}))
+    assert counts == {"refused": 0, "recovered": 1}
+    assert json.loads(mf.read_text())["mime_type"] == "application/pdf"
+
+
+def test_render_refused_summaries_name_unresolvable_hosts(tmp_path, monkeypatch, capsys):
+    from cb_corpus import convert as convert_mod
+    from cb_corpus import retry_html as retry_mod
+    _no_launch(monkeypatch)
+    _html_manifest(tmp_path, "http://nowhere.example/x.en.html")   # unresolvable
+    monkeypatch.setattr(convert_mod, "find_chrome", lambda: "/fake/chrome")
+    monkeypatch.setattr(retry_mod, "find_chrome", lambda: "/fake/chrome")
+    convert_mod.convert_existing(Config(data_dir=tmp_path), resolver=_resolver({}))
+    retry_mod.retry_failed(Config(data_dir=tmp_path), resolver=_resolver({}))
+    err = capsys.readouterr().err
+    assert "[convert-html] render refused: 1 (private network, unresolvable host or " \
+           "non-http URL(s); rows left as HTML)" in err
+    assert "[retry-html] render refused: 1 (private network, unresolvable host or " \
+           "non-http URL(s); rows left as HTML)" in err
+    st, _ = _html_storage(tmp_path / "s", monkeypatch, _resolver({}))
+    st.fetcher.get_bytes = lambda url: (b"<html>x</html>", "text/html")
+    st.save_many([DocRecord(bank_code="ecb", doc_type=DocType.A3, title="n",
+                            pdf_url="https://nowhere.example/n.html")], label="ecb")
+    assert "[ecb] render refused: 1 (private network or unresolvable host; HTML kept)" \
+        in capsys.readouterr().err

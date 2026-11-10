@@ -83,9 +83,10 @@ class Config:
     # counterparts (loopback, ULA fc00::/7, link-local, unspecified,
     # multicast, deprecated site-local fec0::/10) plus the IPv6 forms that
     # embed an IPv4 address (NAT64 64:ff9b::/96, 6to4 2002::/16,
-    # IPv4-compatible ::/96) -- these could smuggle a private IPv4 target. Blocks the private network rather than allowlisting
-    # domains, which would not scale to crawlers of many sites. CIDR strings;
-    # an invalid entry is rejected with a ValueError.
+    # IPv4-compatible ::/96) -- these could smuggle a private IPv4 target.
+    # Blocks the private network rather than allowlisting domains, which
+    # would not scale to crawlers of many sites. CIDR strings; an invalid
+    # entry is rejected with a ValueError.
     render_blocked_networks: tuple[str, ...] = (
         "127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
         "169.254.0.0/16", "100.64.0.0/10", "0.0.0.0/8", "224.0.0.0/4",

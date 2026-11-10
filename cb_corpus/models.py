@@ -46,7 +46,8 @@ class DocRecord:
     # `sitemap_lastmod` = a sitemap <lastmod> (last modification day, not a
     # publication date) used for lack of anything better.
     date_precision: Optional[str] = "day"  # day | month | year | None (undated)
-    date_source: str = "bank_site"     # bank_site | repec | wayback | pdf_meta | nep_bound | llm_crawl | sitemap_lastmod
+    # None for undated records, e.g. RePEc/IDEAS pages without a date.
+    date_source: Optional[str] = "bank_site"  # bank_site | repec | wayback | pdf_meta | nep_bound | llm_crawl | sitemap_lastmod
     # RePEc handle (e.g. "RePEc:ecb:ecbwps:20253117"), stamped by repec-check /
     # the v2 migration when a manifest row is matched to its IDEAS record. Empty
     # when unknown. Optional metadata only — never part of doc_id.

@@ -67,8 +67,9 @@ def convert_existing(config: Optional[Config] = None,
         # long) render loop above survive — see storage.apply_row_updates.
         apply_row_updates(cfg, updates)
     if counts["refused"]:
-        print(f"[convert-html] render refused: {counts['refused']} (private-network or "
-              f"non-http URL(s); rows left as HTML)", file=sys.stderr, flush=True)
+        print(f"[convert-html] render refused: {counts['refused']} (private network, "
+              f"unresolvable host or non-http URL(s); rows left as HTML)",
+              file=sys.stderr, flush=True)
     return counts
 
 

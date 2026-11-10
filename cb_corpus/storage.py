@@ -1086,8 +1086,8 @@ class Storage:
 
         Duplicate-content records seen during the batch are stamped onto the
         rows that own their content (flush_duplicate_stamps: real PDF owners
-        only by default, see is_stampable_owner), in a finally so a record iterator that raises mid-batch
-        still persists what was learnt; a stamping failure there is only a
+        only by default, see is_stampable_owner), in a finally so a record
+        iterator that raises mid-batch still persists what was learnt; a stamping failure there is only a
         WARNING (never masks the batch). Never written in dry run. One
         `duplicate-content: N` line, and one `render refused: N` line, on
         stderr when N > 0 for this batch."""
@@ -1117,7 +1117,8 @@ class Storage:
         refused = self.render_refused - refused_before
         if refused:
             prefix = f"[{label}] " if label else ""
-            print(f"{prefix}render refused: {refused} (private-network URL(s), HTML kept)",
+            print(f"{prefix}render refused: {refused} (private network or unresolvable host; "
+                  f"HTML kept)",
                   file=sys.stderr, flush=True)
         summary = self.quarantine.summary_line()
         if summary:

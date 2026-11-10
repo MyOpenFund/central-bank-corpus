@@ -192,6 +192,15 @@ transparency) but never alerted.
 - A `PARTIAL` status is not an emergency: failed banks are retried the next
   night. Investigate a bank only when it fails several nights in a row
   (its log under `reports/discover/<date>/<code>.log` has the traceback).
+- `data/reports/duplicate_stamps.jsonl`: one JSON line per record whose bytes
+  another row already owns (`skip:duplicate-content`), from the nightly sync and
+  from `recover-downloads` (`label`), with `persisted` = whether the URL was
+  stamped onto the owner row (`owner_doc_id`, `owner_bank`), plus an `error`
+  field when the stamping itself failed. Only a real PDF owner (no `html_path`)
+  is stamped by default, so a duplicate of an HTML page — or of a page rendered
+  to PDF — is fetched and re-logged (`persisted: false`) every night: expect the
+  file to grow by those lines nightly. It is append-only, never read back by the
+  crawler, and safe to rotate or truncate (e.g. keep the last N months).
 - A `cb-campaign` run that had to queue behind an in-progress sync logs
   `[campaign] WAITING (lock busy)` in `nas_runs.log` before it blocks — if a
   campaign looks stuck, check for that line plus whichever job is currently

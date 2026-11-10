@@ -30,37 +30,39 @@ def _try_strategy(chrome: str, url: str, output: Path,
                   *, timeout: float,
                   virtual_time_budget_ms: Optional[int],
                   user_data_dir: str,
-                  cfg: Optional[Config] = None) -> bool:
+                  cfg: Optional[Config] = None, resolver=None) -> bool:
     """One Chrome attempt through the shared guarded launcher
     (htmlpdf.chrome_print_to_pdf): a private-network URL raises
-    RenderRefused, Chrome is never started."""
+    RenderRefused, Chrome is never started. `resolver`: the same name
+    resolver as retry_failed's pre-check (None = getaddrinfo)."""
     extra = ((f"--virtual-time-budget={virtual_time_budget_ms}",)
              if virtual_time_budget_ms is not None else ())
     try:
         chrome_print_to_pdf(chrome, url, output, user_data_dir, timeout,
-                            extra_args=extra, cfg=cfg)
+                            extra_args=extra, cfg=cfg, resolver=resolver)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return False
     return output.exists() and output.stat().st_size > 0
 
 
 def _try_all_strategies(chrome: str, url: str, pdf_path: Path,
-                        user_data_dir: str, cfg: Optional[Config] = None) -> bool:
+                        user_data_dir: str, cfg: Optional[Config] = None,
+                        resolver=None) -> bool:
     """Run the 3 escalating strategies. Returns True on first success.
     RenderRefused (render guard) propagates: no strategy may launch Chrome."""
     if _try_strategy(chrome, url, pdf_path,
                      timeout=120, virtual_time_budget_ms=None,
-                     user_data_dir=user_data_dir, cfg=cfg):
+                     user_data_dir=user_data_dir, cfg=cfg, resolver=resolver):
         return True
     if _try_strategy(chrome, url, pdf_path,
                      timeout=120, virtual_time_budget_ms=15000,
-                     user_data_dir=user_data_dir, cfg=cfg):
+                     user_data_dir=user_data_dir, cfg=cfg, resolver=resolver):
         return True
     # Strategy 3: fresh profile.
     with tempfile.TemporaryDirectory(prefix="cbc_retry_fresh_") as fresh:
         return _try_strategy(chrome, url, pdf_path,
                              timeout=180, virtual_time_budget_ms=15000,
-                             user_data_dir=fresh, cfg=cfg)
+                             user_data_dir=fresh, cfg=cfg, resolver=resolver)
 
 
 def retry_failed(config: Optional[Config] = None,
@@ -155,7 +157,8 @@ def retry_failed(config: Optional[Config] = None,
         row, html_path, pdf_path = args
         udd = get_udd()
         try:
-            ok = _try_all_strategies(chrome, row["pdf_url"], pdf_path, udd, cfg)
+            ok = _try_all_strategies(chrome, row["pdf_url"], pdf_path, udd, cfg,
+                                     resolver=resolver)
         except RenderRefused as exc:     # DNS changed since the pre-check
             with counts_lock:
                 counts["refused"] += 1
@@ -211,6 +214,7 @@ def retry_failed(config: Optional[Config] = None,
               file=sys.stderr, flush=True)
 
     if counts["refused"]:
-        print(f"[retry-html] render refused: {counts['refused']} (private-network or "
-              f"non-http URL(s); rows left as HTML)", file=sys.stderr, flush=True)
+        print(f"[retry-html] render refused: {counts['refused']} (private network, "
+              f"unresolvable host or non-http URL(s); rows left as HTML)",
+              file=sys.stderr, flush=True)
     return counts
