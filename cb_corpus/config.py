@@ -28,6 +28,11 @@ class Config:
     download_timeout: float = 90.0  # TOTAL deadline for a body download (defeats
                                     # slow-trickle hosts that never trip `timeout`)
     max_retries: int = 3
+    # HTTP 4xx statuses Fetcher.get/get_bytes still RETRY (with backoff). Any other
+    # 4xx fails at once: a 404/410 will not heal in 7 s, and retrying it only burns
+    # backoff (issue #30). 403 stays retried (anti-bot blocks can be transient),
+    # 408/429 are transient by definition. () = never retry a 4xx.
+    retry_http_4xx: tuple[int, ...] = (403, 408, 429)
     # No robots.txt enforcement. No domain guard. We scrape whatever the
     # discovery layer hands us.
     prefer_pdf: bool = True

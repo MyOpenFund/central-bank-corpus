@@ -27,12 +27,29 @@ def host_matches(url: str, domain: str) -> bool:
     return h == d or h.endswith("." + d)
 
 
+def http_status(exc: BaseException | None) -> int | None:
+    """HTTP status carried by `exc` or its __cause__/__context__ chain, else None."""
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        code = getattr(getattr(exc, "response", None), "status_code", None)
+        if isinstance(code, int):
+            return code
+        exc = exc.__cause__ or exc.__context__
+    return None
+
+
 class Fetcher:
     def __init__(self, config: Optional[Config] = None):
         self.cfg = config or Config()
         self.session = requests.Session()
         self.session.headers["User-Agent"] = self.cfg.user_agent
         self._last_hit: dict[str, float] = {}
+
+    def _fails_fast(self, code: object) -> bool:
+        """A 4xx outside `cfg.retry_http_4xx` will not heal on retry (issue #30)."""
+        return (isinstance(code, int) and 400 <= code < 500
+                and code not in self.cfg.retry_http_4xx)
 
     def _throttle(self, host: str) -> None:
         last = self._last_hit.get(host)
@@ -69,6 +86,9 @@ class Fetcher:
                 if code in (429, 403, 503):
                     print(f"!! HTTP {code} on {host} (attempt {attempt + 1}): {url}",
                           file=sys.stderr, flush=True)
+                if self._fails_fast(code):
+                    raise RuntimeError(
+                        f"GET failed (HTTP {code}, not retried): {url}") from exc
                 last_exc = exc
                 time.sleep(2 ** attempt)
             except Exception as exc:  # noqa: BLE001 - retried below
@@ -111,6 +131,9 @@ class Fetcher:
                 if code in (429, 403, 503):
                     print(f"!! HTTP {code} on {host} (attempt {attempt + 1}): {url}",
                           file=sys.stderr, flush=True)
+                if self._fails_fast(code):
+                    raise RuntimeError(
+                        f"GET bytes failed (HTTP {code}, not retried): {url}") from exc
                 last_exc = exc
                 time.sleep(2 ** attempt)
             except Exception as exc:  # noqa: BLE001 - retried below
