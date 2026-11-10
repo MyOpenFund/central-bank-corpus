@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import atexit
 import contextlib
+import datetime as _dt
 import fcntl
 import hashlib
 import json
@@ -449,6 +450,12 @@ class Storage:
         # writes must only ever happen from THIS serialized loop (never
         # parallel workers) — see quarantine.py's _append docstring.
         self.quarantine = Quarantine(self.cfg)
+        # The quarantine "night" of this run (B7, grit wave 2026-11): the
+        # LOCAL date (TZ=Europe/Paris in the stack), computed ONCE here so a
+        # run that crosses midnight never counts as two failing nights. It
+        # used to be the UTC date at each failure, which split a Paris run
+        # starting before 01:00 across two nights.
+        self._night = _dt.date.today().isoformat()
         # sha256 -> doc_id of the row that owns that content, not just a
         # membership set: a same-bytes save under a different doc_id needs to
         # report WHICH existing doc_id matched (`skip:duplicate-content:<id>`)
@@ -824,8 +831,9 @@ class Storage:
     def _record_download_error(self, rec: DocRecord, exc: Exception, label: str) -> None:
         """Append one line to data/download_errors.jsonl (durable audit of every
         failed download — stdout scrolls away, this file doesn't). Append-only,
-        O_APPEND line writes; never read by the crawler itself."""
-        import datetime as _dt
+        O_APPEND line writes; never read by the crawler itself. Feeds the
+        quarantine with this run's night (`self._night`, fixed at
+        construction)."""
         entry = {
             "ts": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
             "label": label,
@@ -840,8 +848,7 @@ class Storage:
         path = self.cfg.data_dir / "download_errors.jsonl"
         with path.open("a") as fh:
             fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        night = _dt.datetime.now(_dt.timezone.utc).date().isoformat()
-        self.quarantine.record_failure(rec.pdf_url, night=night)
+        self.quarantine.record_failure(rec.pdf_url, night=self._night)
 
     def save_many(self, recs: Iterable[DocRecord], *, dry_run: bool = False,
                   progress_every: int = 100, label: str = "") -> dict[str, int]:
