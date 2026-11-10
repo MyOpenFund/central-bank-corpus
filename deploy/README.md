@@ -1,7 +1,7 @@
 # NAS Deployment (Dockge) — runbook
 
-Spec: `docs/superpowers/specs/2026-07-12-nas-docker-deploy-design.md`
-on the `documentation` branch (process artifacts don't live on master).
+Design history (specs and plans) is kept outside this repository; this
+runbook is the operational reference.
 Absolute rule: **no real infra value** (IP, hostname, real /mnt paths,
 UID) must ever be committed — values live in Dockge and in untracked
 local notes (`*.local.md`).
@@ -237,7 +237,7 @@ manifest is refused, a *valid-but-stale* one is not detected as such.
 
 ## 7. Code updates
 
-Push to master → CI rebuilds `ghcr.io/.../cb_corpus:latest` → in Dockge:
+Push to master → CI rebuilds `ghcr.io/myopenfund/central-bank-corpus:latest` → in Dockge:
 re-pull the image and redeploy the stacks.
 
 After a long gap since the last rebuild, review `deploy/Dockerfile`'s base

@@ -1,161 +1,44 @@
-# Implementation plan & complexity assessment — WP v3
+# WP v3 — phase 3: migrate before switching a bank to native download
 
-Where the code goes, what it reuses, what's new, and how hard each piece is.
-Companion to [WP_ARCHITECTURE_V3.md](WP_ARCHITECTURE_V3.md),
-[WP_NATIVE_SOURCES.md](WP_NATIVE_SOURCES.md),
-[REPEC_AS_CHECK.md](REPEC_AS_CHECK.md), [DATE_RECOVERY.md](DATE_RECOVERY.md).
+The working-paper v3 plan (June 2026) is done: bank-native discovery for
+`ecb`, `us`, `jp`, `gb`, `de`, `fr` and `se`, RePEc kept as an audit
+(`repec-check`) and a date-recovery source (`wp-dates`). What shipped is in
+[WP_V3_SUMMARY.md](WP_V3_SUMMARY.md). This page keeps the one rule from that
+plan that still governs the code: the **phase 3 ordering constraint**, cited
+from `cb_corpus/wp_migrate.py`, `cb_corpus/adapters/base.py` and
+`cb_corpus/adapters/ecb.py`.
 
-## What the existing framework already gives us (good news)
+## The rule
 
-- **`DocRecord.doc_id` is date-independent** (`models.py`: hash of
-  bank|type|pdf_url only, with an explicit comment that dates are mutable
-  metadata). Date enrichment = pure metadata rewrite, no file renames,
-  no dedup churn. This was clearly anticipated.
-- **Adapter plumbing**: `_discover_native(doc_type, since)` is the single
-  hook to add a native WP source; pipeline/storage/dedup/retry are untouched.
-- **Existing parsers to reuse**: ECB lazy-load year includes
-  (`adapters/ecb.py: parse_year_includes`), BoE WP sitemap
-  (`sources/boe_wp.py` — nearly the whole gb scraper exists), BoJ year-listing
-  iteration (`adapters/listing_crawler.py`), Wayback client
-  (`sources/wayback.py`), manifest IO (`storage.py: iter_manifest`).
-- **Match keys**: RePEc handles are already in every v2 row's `source_url`
-  (`.../p/ecb/ecbwps/20253117.html`) — the join key is parseable from the
-  existing manifest, no re-crawl needed for migration.
+Run the date migration for a bank (`python -m cb_corpus wp-migrate --banks <code> --write`)
+**before** adding `DocType.D1` / `DocType.D2` to that bank's adapter
+`native_types`, that is before its native scraper runs with `discover --download`.
 
-## Work breakdown
+## Why
 
-### Phase 0 — schema (XS)
+- `doc_id` is `sha1(bank|type|pdf_url)` (`models.py`), not a function of the
+  date. A native scraper often finds a paper already in the corpus under a
+  **different URL** than its RePEc-era row (Bundesbank blob instead of
+  EconStor copy, ECB redirects, Fed revision infixes).
+- A different URL gives a different `doc_id`, so `Storage.save()` (which dedups
+  by `doc_id` / `sha256`) would download the paper again and store a duplicate.
+- The migration joins native records to existing rows (key, then URL, then exact
+  normalized title; never fuzzy), rewrites only the date metadata
+  (`date`, `date_precision`, `date_source`), stamps `repec_handle`, and
+  registers the native URL in the row's `alt_urls`. It never changes `doc_id`,
+  `pdf_url`, `sha256` or `local_path`.
+- After that, the pipeline injects `Storage.is_known_url` into the adapter as
+  `_skip_known_url`; `BankAdapter.discover` drops every native record whose URL
+  is already known (including through `alt_urls`) before any download. Only
+  genuinely new papers enter, keyed on their native URL.
 
-| What | Where |
-|---|---|
-| Add `date_precision: str = "day"`, `date_source: str = "bank_site"` and optional `repec_handle: str = ""` to `DocRecord`, serialize in `to_row`; **persist `alt_urls`** (currently runtime-only) | [cb_corpus/models.py](../cb_corpus/models.py) |
-| Backward compat: `iter_manifest` rows missing the fields default to `month/repec` for D1-D2, `day/bank_site` otherwise; `_load_existing` must also index `alt_urls` for dedup | [cb_corpus/storage.py](../cb_corpus/storage.py) |
+`wp-migrate` without `--write` is a dry run (stdout + CSV, no writes); a native
+discovery without `--download` is always safe.
 
-Risk: none. Manifest is JSONL, additive fields are free.
+## Adding a bank
 
-### Phase 1 — native WP scrapers, one module per bank (M each)
-
-New package `cb_corpus/sources/wp_native/` (or extend each bank's adapter —
-see "design choice" below):
-
-| Bank | New code | Reuses | Complexity |
-|---|---|---|---|
-| ecb | `wp_ecb.py`: pubbydate year pages → (wp number, date, pdf_url, title) | `parse_year_includes` mechanism | **M** — lazy-load includes + D1/D2 regexes; date printed next to item |
-| us | `wp_fed.py`: FEDS/IFDP year pages + per-paper landing page for the day (**always**, incl. backfill — Q2 decision) | `Fetcher` only | **M** — 2 series, landing-page fetch per paper; legacy URL variants pre-2015 |
-| jp | `wp_boj.py`: year-listing table rows carry code+date+pdf in one page | listing iteration pattern | **S** — single table parse, day already on listing |
-| gb | promote `boe_wp.py` to primary D1 source | ~90% exists | **S** — wire `sitemap_pages`/`paper_pdf` into `_discover_native` |
-| de | `wp_buba.py`: paginated DP listing → paper page → blob PDF | `Fetcher` | **M** — pagination + opaque blob URLs (must read page, never derive); least-known site of the five |
-
-Each scraper: ~80–150 lines + pure-helper tests with HTML fixtures (the
-repo's established test style, cf. `tests/test_framework.py`).
-
-Wiring: bank's adapter overrides `discover(D1/D2)` to call the native module
-first; RePEc fallback stays for banks outside the five.
-
-### Phase 2 — `repec-check` command (M)
-
-New `cb_corpus/completeness_repec.py` + CLI subcommand in
-[cb_corpus/cli.py](../cb_corpus/cli.py):
-
-- **Prerequisite (Q3 decision — D2 for all banks)**: research pass to wire
-  the D2/occasional-paper RePEc series handle for each bank into `SERIES`
-  in [cb_corpus/sources/repec.py](../cb_corpus/sources/repec.py) (today
-  only `ecbops` exists). One-off, ~an hour of IDEAS browsing.
-- Enumerate IDEAS series listings — reuses `RePEcDiscovery` crawl, **minus**
-  per-paper page fetches for matched papers (listing alone gives handle+title).
-- Match cascade key→URL→title (normalizer is a 10-line pure function,
-  heavily unit-testable).
-- Report: stdout + CSV in `data/reports/`. No downloads by construction.
-
-Complexity driver: URL normalization edge cases (doubled slashes `//pub/`,
-`~hash` suffixes, http/https). All pure functions → cheap to test.
-
-### Phase 3 — v2 date migration, one-off (S)
-
-Script-level: dry-run native discovery (phase 1) × `iter_manifest` join ×
-in-place rewrite of `date`/`date_precision`/`date_source`. Needs a
-`Storage.rewrite_manifest(rows)` helper (atomic: write temp file, rename).
-Zero downloads, zero id churn (guaranteed by doc_id design).
-
-> ⚠️ **Ordering constraint — migrate BEFORE switching native scrapers to
-> download mode.** `doc_id = sha1(bank|type|pdf_url)` and dedup is
-> URL-based (`storage.is_known_url`). The native scraper will often find
-> the *same paper under a different URL* than the RePEc-era row
-> (Bundesbank blob URLs, ECB redirects…). If `discover --download` runs
-> natively on the back-catalogue before migration, every URL mismatch is
-> seen as a new document → mass re-download + duplicates under new ids.
-> The migration prevents this: the join (key → URL → exact title) maps
-> native records onto existing rows, keeps the original `doc_id`/`pdf_url`/
-> file, rewrites metadata only, and registers the native URL in `alt_urls`
-> so dedup recognises it forever after. Once migrated, flipping D1/D2 to
-> native-first causes **zero re-downloads** — only genuinely new papers
-> enter with native URLs as their key.
-
-### Phase 4 — `wp-dates` recovery waterfall (M-L)
-
-New `cb_corpus/sources/wp_dates.py` + CLI subcommand:
-
-| Rung | Effort | Note |
-|---|---|---|
-| Index lookup (`data/wp_dates_index.jsonl`) | XS | read/append JSONL |
-| 1. Wayback CDX first-capture | S | extend existing `wayback.py`; rate-limit 1 r/s |
-| 2. PDF `/CreationDate` | S | pypdf on `local_path`; **new dependency** (or reuse if already in requirements) |
-| 3. Cover-page regex | M | text extraction quality varies; en+de month names; jp later |
-| 4. NEP bound | S | parse `nep-xxx/YYYY-MM-DD` links from IDEAS paper page |
-| LLM-assisted tail | — | manual/agentic process, outside the codebase; only its *output* (index entries with `evidence_url`) is consumed |
-
-Month-constraint validator shared by all rungs (pure function).
-
-### Phase 5 — CLI & docs glue (S)
-
-`discover` keeps working unchanged (native scrapers slot in behind the same
-command); new subcommands `repec-check`, `wp-dates`; README note.
-
-### Phase 6 — `fetch-from-manifest` command (S, independent)
-
-Rebuild `data/raw/` from a committed manifest: iterate `iter_manifest`,
-download each `pdf_url` (fall back to `alt_urls`), verify `sha256`, write to
-`local_path`. Motivation: `is_known_url` skips every manifested URL, so a
-fresh clone with manifest-but-no-PDFs downloads *nothing* via `discover` —
-this command is the supported rebuild path (~12–15 h for 60k docs at current
-throttle vs 2–3 days of full re-discovery). Independent of all other phases.
-
-## Design choice to settle before coding
-
-**Where do native WP scrapers live?** Two options:
-
-1. **`_discover_native` on each adapter** (consistent with A/B/E/F today).
-   Pro: zero new architecture. Con: `discover(D1)` currently hard-routes to
-   RePEc in `base.py` — needs a "native-first, repec-fallback" override.
-2. **Separate `sources/wp_native/` package** registered like `boe_wp.py`.
-   Pro: keeps WP logic out of adapters; mirrors how C1/BIS is centralized.
-   Con: one more registry.
-
-Recommendation: **option 1** — change `BankAdapter.discover` so D1/D2 check
-`self.native_types` first; a bank that declares `DocType.D1` in
-`native_types` uses its own listing, everyone else falls through to RePEc.
-That's a ~5-line change in [base.py](../cb_corpus/adapters/base.py) and the
-five scrapers become ordinary `_discover_native` branches.
-
-## Overall assessment
-
-| Phase | Size | Risk |
-|---|---|---|
-| 0 schema | XS | none |
-| 1 scrapers ×5 | 2×S + 3×M | site-structure drift (mitigated: fixture tests, errors recorded by `_fetch_text`) |
-| 2 repec-check | M | matching edge cases — pure functions, testable |
-| 3 migration | S | must be atomic; dry-run first |
-| 4 wp-dates | M-L | Wayback availability, PDF text quality — but failure mode is "stay at month precision", never corruption |
-| 5 glue | S | none |
-| 6 fetch-from-manifest | S | dead URLs over time (mitigated: `alt_urls` fallback, report failures) |
-
-Total: a **medium project, no architectural rewrite** — the v2 framework
-(date-free doc_id, `_discover_native` hook, recovery-source pattern) was
-built for exactly this kind of extension. Phases are independently shippable
-in order 0 → 1(ecb) → 3 → 1(rest) → 2 → 4; ECB-first delivers the biggest
-date-quality win immediately (largest D1 corpus, easiest precise-date source).
-The only hard sequencing rule: **phase 3 (migration) must complete for a
-bank before its native scraper goes live in download mode** (see the
-warning under phase 3) — dry-run discovery is always safe.
-
-Suggested first PR: phase 0 + ECB scraper + migration dry-run report.
+1. Write its native scraper and the two key extractors (`_KEY_FROM_PDF`,
+   `_KEY_FROM_HANDLE`) and register it in `_NATIVE` (`cb_corpus/wp_migrate.py`).
+2. `wp-migrate --banks <code>` (dry run), review the CSV, then `--write`.
+3. Only then add D1/D2 to the adapter's `native_types`; check that a recent
+   `discover --since <year>` yields only new papers.

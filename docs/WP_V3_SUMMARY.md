@@ -1,8 +1,14 @@
 # Working Papers v3 — implementation summary (2026-06-14)
 
-What shipped against the v3 design ([WP_ARCHITECTURE_V3.md](WP_ARCHITECTURE_V3.md)):
-bank-native working-paper discovery for the 5 big banks, with RePEc demoted to an
-audit/recovery role and true publication dates everywhere they exist.
+What shipped against the v3 design (June 2026): bank-native working-paper
+discovery for the 5 big banks, with RePEc demoted to an audit/recovery role and
+true publication dates everywhere they exist. Two more banks got a native D1
+source on 2026-08-24: `fr` (Banque de France, #10) and `se` (Riksbank, #11).
+
+> The June design, plan, per-bank scouting and migration post-mortems were
+> retired from the repo in November 2026; the rule that still governs the code
+> is in [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) (migrate before native
+> download). Figures below are the June 2026 run unless dated otherwise.
 
 ## Results — all 5 big banks migrated to bank-site dates
 
@@ -29,19 +35,25 @@ elsewhere) — discoverable via `discover --download`.
 - **us**: day comes from each paper's landing `citation_publication_date`
   (MM-DD-YYYY), with a **month-constraint** so a revised paper's later date can't
   overwrite the original month. Only ~2017+ papers have a real day (see below).
-  See [FED_MIGRATION_NOTES.md](FED_MIGRATION_NOTES.md).
+  IFDP PDFs are `ifdp{seq}.pdf` (not `…pap.pdf`) and revisions carry an `r<N>`
+  infix; both are handled by the key extractors in `wp_migrate.py`.
 - **jp**: the wps_rev year tables print the exact day inline (3/4/5-column layouts
   across eras) — no per-paper fetch.
 - **gb**: BoE WP numbers aren't in URLs, so the join is by **slug** + an
   exact-title tier (recovered 197 slug-drift rows).
 - **de**: JS-only listing cracked via chrome-devtools (`bbksearch` endpoint);
-  old papers = direct blob, recent = slug page. See
-  [DE_MIGRATION_NOTES.md](DE_MIGRATION_NOTES.md).
+  old papers = direct blob, recent = slug page. The manifest rows were EconStor
+  copies, so the join uses the DP number from the RePEc handle, then the exact
+  title; the Bundesbank blob goes into `alt_urls`.
+- **fr / se** (August 2026): `sources/bdf_wp.py` (both site generations) and
+  `sources/riksbank_wp.py`, wired into `wp_migrate._NATIVE`. In the committed
+  manifests (2026-09-03 snapshot) most of their D1 rows still carry RePEc-era
+  dates: their back-catalogue migration is only partly applied.
 
 ## Architecture
 
-- Hand-written adapter per bank (`adapters/{ecb,fed,boj,boe,buba}.py`); jp/gb/de
-  moved out of `banks_sources.toml`. `base.discover` routes D1/D2 native-first
+- Hand-written adapter per bank (`adapters/{ecb,fed,boj,boe,buba,bdf,se}.py`);
+  jp/gb/de/fr moved out of `banks_sources.toml`. `base.discover` routes D1/D2 native-first
   only when the type is in `native_types`, with a `_skip_known_url` hook
   (injected by the pipeline) so a flipped bank never re-downloads its migrated
   back-catalogue.
@@ -76,7 +88,7 @@ python -m cb_corpus discover   --banks de --types D1 --download    # fetch newly
 
 `data/manifest/<bank>.jsonl` + `data/wp_dates_index.jsonl` are committed. A fresh
 clone replays every date with **no re-crawl**; PDFs are rebuilt from the manifest
-(`fetch-from-manifest`, planned). The expensive Wayback/foedb work runs once.
+(`fetch-from-manifest`, planned in June, **never built**). The expensive Wayback/foedb work runs once.
 
 ## Day recovery — results (phase 4, corpus-wide)
 
@@ -93,30 +105,60 @@ clone replays every date with **no re-crawl**; PDFs are rebuilt from the manifes
   the committed index, no network).
 - **Honest ceiling:** many legacy WPs (esp. pre-2000 and Fed pre-2017) have **no
   publication day published anywhere** — they stay month precision by design, not
-  by tooling failure (see FED_MIGRATION_NOTES.md).
+  by tooling failure.
 
 ## Future work (documented, not done)
 
 - **Wayback tail** — run `wp-dates` on a cron (the docs' model) to keep extending
   the committed index; `--apply-only` to materialise.
-- **es/gb match-key tightening** — repec-check shows `manifest > RePEc total` for
-  es (100) and gb (34): handle/number-format match misses, not real gaps. Normalise
-  the IDEAS id ↔ stored handle, re-run repec-check, ingest any true leftovers.
+- **es/gb leftovers** — see the repec-check results below: language-variant
+  duplicates (ignore) plus a real legacy tail (ingest via RePEc + `wp-dates`).
 - **D2 for the non-five banks (Q3)** — wire each bank's occasional/discussion-paper
   RePEc series handle into `SERIES` (one-off IDEAS research per bank).
 - **Missing papers** — the ~462 Bundesbank DPs (and small tails elsewhere) the
   corpus lacks: `discover --download` to fetch.
 - **`fetch-from-manifest` (phase 6)** — rebuild `data/raw/` PDFs from a committed
-  manifest (fast clone path).
+  manifest (fast clone path). Not built.
 - **A–F native coverage for all 63 banks** — currently only the hand-coded majors
   have A/B/E/F native listings; extending to every bank is a large per-bank
-  investigation project (each like the 5 WP banks), not an automated sweep.
-  See [SCALING_TO_ALL_BANKS.md](SCALING_TO_ALL_BANKS.md) for the effort estimate
-  and the parallel-agent plan (auto-registration refactor first).
+  investigation project (each like the 5 WP banks), not an automated sweep. The
+  shared registries in `wp_migrate.py` (`_NATIVE`, `_KEY_FROM_PDF`,
+  `_KEY_FROM_HANDLE`) and `adapters/__init__.py` would need an auto-registration
+  refactor first so per-bank work does not collide.
 
 ## Status of the v3 phases
 
-- Phase 0 (schema) ✅ · Phase 1 (5 native scrapers) ✅ · Phase 3 (migration) ✅ ·
-  Phase 4 (wp-dates) ✅ · Phase 5 (CLI/docs) ✅
-- Phase 2 (repec-check completeness audit) — pending · Phase 6 (fetch-from-manifest)
-  — pending · D2 handles for non-five banks (Q3) — pending.
+- Phase 0 (schema) ✅ · Phase 1 (5 native scrapers, then fr and se) ✅ ·
+  Phase 2 (`repec-check`) ✅ · Phase 3 (migration) ✅ for the 5 · Phase 4
+  (`wp-dates`) ✅ · Phase 5 (CLI/docs) ✅
+- Phase 6 (`fetch-from-manifest`) — not built · D2 handles for non-five banks
+  (decision Q3) — pending.
+
+## RePEc completeness audit — results (2026-06-14)
+
+`repec-check` across the wired WP banks (12 with results below; read-only, never downloads; full list
+in `data/reports/repec_check.csv`, gitignored). Coverage ≥ 91 % everywhere,
+**0 `missing_recent`** for every bank (native discovery keeps up); au, ch and nl
+at 100 %.
+
+| Bank | RePEc total | Covered | Missing (legacy) |
+|---|---|---|---|
+| us | 4203 | 4189 | 14 |
+| ca | 1360 | 1355 | 5 |
+| it | 1211 | 1205 | 6 |
+| gb | 1128 | 1094 | 34 |
+| es | 1091 | 991 | 100 |
+| fr | 1007 | 992 | 15 |
+| de | 691 | 689 | 2 |
+| au | 536 | 536 | 0 |
+| jp | 405 | 402 | 3 |
+| se | 391 | 366 | 25 |
+| ch | 318 | 318 | 0 |
+| nl | 200 | 200 | 0 |
+
+A paper-page second pass on the es/gb leftovers recovered only +2 each (es 98,
+gb 32): the rest are not a matching bug but **language-variant duplicates** (IDEAS
+lists e.g. `bde:wpaper:2618` and `2618e` as two papers; cosmetic) and **genuinely
+old papers** the corpus lacks (e.g. es 1999 papers, old BoE WPs under dead
+pre-2014 URLs). A future refinement could fold `{id}e` / `{id}r` variants onto
+their base id.

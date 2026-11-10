@@ -9,7 +9,17 @@ exist anywhere in RePEc** (IDEAS meta tags, EconPapers, API — all carry
 `YYYY-MM` only, because that is what the banks put in their ReDIF
 `Creation-Date`). So the day must be recovered from *outside* RePEc.
 
-## The waterfall
+> **Status (2026-11):** shipped as `wp-dates` (`cb_corpus/wp_dates.py`, June 2026).
+> **As built**, the waterfall is shorter and in a different order than designed
+> below: (0) the committed index, (1) PDF `/CreationDate` from the file on disk,
+> (2) Wayback first capture (skipped for papers before 1997) of the PDF URL, then its abstract/landing variant and
+> `alt_urls`. Rungs 3 (cover-page text) and 4 (NEP bound) and the LLM-assisted
+> tail were **not built**. A recovered day must also not be the 1st of the month.
+> The committed `data/wp_dates_index.jsonl` held 1,444 entries in the 2026-09-03
+> manifest snapshot (1,309 `pdf_meta`, 135 `wayback`). Results by bank:
+> [WP_V3_SUMMARY.md](WP_V3_SUMMARY.md).
+
+## The waterfall (June 2026 design)
 
 For each legacy paper, try in order; stop at the first hit. Every recovered
 date must satisfy the **month constraint**: RePEc's `YYYY-MM` is authoritative
@@ -97,8 +107,10 @@ Only *expensive or non-reproducible* resolutions go in the index
 listings (`bank_site`) are **never** indexed — they are cheaply
 re-derivable by the native scrapers and would bloat the file.
 
-- **`key`** = the RePEc handle (stable, universal join key). `title_norm`
-  is the secondary key for records that never had a handle.
+- **`key`** = the RePEc handle (stable, universal join key). For records that
+  never had a handle, the key is the normalized title prefixed `t:` (as built,
+  `wp_dates.row_key`); `title_norm` is stored alongside. `evidence_url` is a
+  `file://` path to the on-disk PDF for `pdf_meta` hits.
 - **`evidence_url`** records *where* the date was found, so any entry can be
   re-audited by a human.
 - `wp-dates` consults the index **first**: a keyed entry short-circuits the
@@ -125,19 +137,24 @@ archives or press releases for the exact publication date.
   the manual/agentic effort is capitalized into the repo instead of being
   re-paid at every rebuild.
 
-## Proposed command
+## Command
 
 ```
-python -m cb_corpus wp-dates [--banks ...] [--write] [--csv path]
+python -m cb_corpus wp-dates [--banks ...] [--csv path] [--write] [--no-wayback] [--apply-only]
 ```
 
-- Default dry-run: prints/CSVs `doc_id, old_date, new_date, source, confidence`
-  for human review.
+- Default banks: `ecb,us,jp,gb,de`; pass `--banks` for the others (the June run
+  covered all 13 wired WP banks).
+- Default dry-run: prints a summary and writes a CSV (`doc_id, new_date,
+  date_source`; default `data/reports/wp_dates.csv`) for human review.
 - `--write`: rewrites manifest rows in place (only `date`, `date_precision`,
   `date_source`; never touches `doc_id`/`sha256`/`local_path`) and appends
   new resolutions to `data/wp_dates_index.jsonl`.
 - Idempotent: rows already at `date_precision="day"` are skipped; index
   entries short-circuit the waterfall.
+- `--no-wayback`: PDF `/CreationDate` only (skips the slow archive.org rung).
+- `--apply-only`: replay the committed index onto the manifest, no recovery and
+  no network; what a fresh clone runs to materialise dates.
 
 ## Expected yield (honest estimate)
 
