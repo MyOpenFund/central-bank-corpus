@@ -21,7 +21,7 @@ from cb_corpus.sources.ecb_foedb import (
 )
 from cb_corpus import wp_migrate
 from cb_corpus.wp_migrate import (
-    build_report, normalize_url, repec_handle_from_source_url,
+    build_report, match_key_url, repec_handle_from_source_url,
 )
 from cb_corpus.adapters.ecb import ECBAdapter
 from cb_corpus.banks import get_bank
@@ -324,10 +324,10 @@ def test_discover_ecb_interviews_since_early_stop():
 
 
 # ---- migration helpers + join ---------------------------------------
-def test_normalize_url_collapses_slash_and_hash():
+def test_match_key_url_collapses_slash_and_hash():
     a = "https://www.ecb.europa.eu//pub/pdf/scpwps/ecb.wp3244~0e92afef7d.en.pdf"
     b = "https://www.ecb.europa.eu/pub/pdf/scpwps/ecb.wp3244~deadbeef.en.pdf"
-    assert normalize_url(a) == normalize_url(b)
+    assert match_key_url(a) == match_key_url(b)
 
 
 def test_repec_handle_from_source_url():

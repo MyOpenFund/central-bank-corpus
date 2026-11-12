@@ -10,7 +10,7 @@ from .adapters.base import get_adapter
 from .banks import BIS_63
 from .config import Config
 from .http import Fetcher
-from .models import DocRecord
+from .models import DocRecord, compute_doc_id
 from .runreport import RunReport
 from .sources.bis_speeches import BISSpeechIndex, parse_detail
 from .sources.recovery import Source
@@ -271,18 +271,22 @@ def reindex_native_from_disk(bank_codes: Optional[Iterable[str]] = None,
           f"for {len(codes)} bank(s) (listing pages only, no PDF downloads)…",
           file=sys.stderr, flush=True)
     disc_errors: list[dict] = []
-    for code in codes:
-        try:
-            adapter = get_adapter(code, fetcher)
-            c = _apply_reindex(adapter.discover_all(scope=scope, since=since),
-                               storage, missing, dry_run=dry_run)
-        except Exception as exc:  # noqa: BLE001 — one bad bank never aborts the run
-            print(f"  {code}: discovery failed: {type(exc).__name__}: {exc}",
-                  file=sys.stderr, flush=True)
-            continue
-        for k, v in c.items():
-            counts[k] = counts.get(k, 0) + v
-        disc_errors.extend(getattr(adapter, "errors", []))
+    try:
+        for code in codes:
+            try:
+                adapter = get_adapter(code, fetcher)
+                c = _apply_reindex(adapter.discover_all(scope=scope, since=since),
+                                   storage, missing, dry_run=dry_run)
+            except Exception as exc:  # noqa: BLE001 — one bad bank never aborts the run
+                print(f"  {code}: discovery failed: {type(exc).__name__}: {exc}",
+                      file=sys.stderr, flush=True)
+                continue
+            for k, v in c.items():
+                counts[k] = counts.get(k, 0) + v
+            disc_errors.extend(getattr(adapter, "errors", []))
+    finally:
+        # Duplicate-content files: remember their URL on the owning row (B1).
+        storage.flush_duplicate_stamps("reindex(native)", dry_run=dry_run, safe=True)
     _record_discovery_errors(cfg, disc_errors)
     counts["unmatched"] = len(missing)
     print(f"reindex(native): matched={counts['matched']} "
@@ -312,8 +316,6 @@ def reindex_bis_from_disk(only_banks: Optional[set[str]] = None,
     a human title (one HTTP request per matched file — slower; off by default).
     ``dry_run`` reports matches without writing to the manifest.
     """
-    import hashlib
-
     cfg, fetcher, storage = _make_storage(config, html_to_pdf=False)
     raw = cfg.raw_dir
 
@@ -362,42 +364,45 @@ def reindex_bis_from_disk(only_banks: Optional[set[str]] = None,
               file=sys.stderr, flush=True)
         sitemaps = {}
 
-    for year in sorted(missing_by_year):
-        bucket = missing_by_year[year]
-        banks = banks_by_year[year]
-        url = sitemaps.get(year)
-        if url is None:
-            continue  # year not covered by BIS sitemaps (e.g. pre-1996)
-        try:
-            metas = bis.speeches_for_year(year, url)
-        except Exception:  # noqa: BLE001 — one bad year never aborts the run
-            continue
-        for meta in metas:
-            if not bucket:
-                break
-            for bank in banks:
-                cand = hashlib.sha1(
-                    f"{bank}|C1|{meta.pdf_url}".encode("utf-8")).hexdigest()[:16]
-                hit = bucket.get(cand)
-                if hit is None or hit[0] != bank:
-                    continue
-                counts["matched"] += 1
-                title = ""
-                if fetch_titles:
-                    try:
-                        title, _ = parse_detail(fetcher.get_text(meta.detail_url))
-                    except Exception:  # noqa: BLE001
-                        title = ""
-                rec = DocRecord(
-                    bank_code=bank, doc_type=DocType.C1,
-                    title=title or meta.pdf_url, pdf_url=meta.pdf_url,
-                    source_url=meta.detail_url, date=meta.date,
-                    provenance="bis_index", mime_type="application/pdf",
-                )
-                status = storage.reindex(rec, hit[1], dry_run=dry_run).split(":")[0]
-                counts[status] = counts.get(status, 0) + 1
-                del bucket[cand]
-                break
+    try:
+        for year in sorted(missing_by_year):
+            bucket = missing_by_year[year]
+            banks = banks_by_year[year]
+            url = sitemaps.get(year)
+            if url is None:
+                continue  # year not covered by BIS sitemaps (e.g. pre-1996)
+            try:
+                metas = bis.speeches_for_year(year, url)
+            except Exception:  # noqa: BLE001 — one bad year never aborts the run
+                continue
+            for meta in metas:
+                if not bucket:
+                    break
+                for bank in banks:
+                    cand = compute_doc_id(bank, DocType.C1, meta.pdf_url)
+                    hit = bucket.get(cand)
+                    if hit is None or hit[0] != bank:
+                        continue
+                    counts["matched"] += 1
+                    title = ""
+                    if fetch_titles:
+                        try:
+                            title, _ = parse_detail(fetcher.get_text(meta.detail_url))
+                        except Exception:  # noqa: BLE001
+                            title = ""
+                    rec = DocRecord(
+                        bank_code=bank, doc_type=DocType.C1,
+                        title=title or meta.pdf_url, pdf_url=meta.pdf_url,
+                        source_url=meta.detail_url, date=meta.date,
+                        provenance="bis_index", mime_type="application/pdf",
+                    )
+                    status = storage.reindex(rec, hit[1], dry_run=dry_run).split(":")[0]
+                    counts[status] = counts.get(status, 0) + 1
+                    del bucket[cand]
+                    break
+    finally:
+        # Duplicate-content files: remember their URL on the owning row (B1).
+        storage.flush_duplicate_stamps("reindex(bis)", dry_run=dry_run, safe=True)
 
     counts["unmatched"] = sum(len(b) for b in missing_by_year.values())
     print(f"reindex: matched={counts['matched']} "
@@ -542,6 +547,8 @@ def run_boe_wp_recovery(years=None, dry_run: bool = True,
                 bank_code="gb", doc_type=DocType.D1, title=title,
                 pdf_url=pdf, date=d, provenance="bank_site",
                 mime_type="application/pdf",
+                # sitemap_pages only knows the year (date(y, 1, 1)).
+                date_precision="year", date_source="bank_site",
             )
 
     return storage.save_many(_recs(), dry_run=dry_run, label="boe-wp")
@@ -570,6 +577,8 @@ def run_boe_recovery(sitemap_path: str, doc_type: DocType, href_filter: str,
                 bank_code="gb", doc_type=doc_type, title=title,
                 pdf_url=url, source_url=page, date=d, provenance="bank_site",
                 mime_type="application/pdf" if pdf else "",
+                # doc_pages only knows the year (date(y, 1, 1)).
+                date_precision="year", date_source="bank_site",
             )
 
     return storage.save_many(_recs(), dry_run=dry_run, label=f"boe:{doc_type.code}")
@@ -634,17 +643,20 @@ def run_ecb_pub_recovery(section: str, doc_type: DocType, mime: str = "applicati
     `mime=""` saves HTML as-is (no Chrome render), e.g. for interviews.
     """
     import re
-    from .sources.ecb_pub import section_include_docs, date_from_url, ECB
+    from .sources.ecb_pub import section_include_docs, date_and_precision_from_url
     from .sources.wayback import cdx_pdfs, raw_url
     cfg, fetcher, storage = _make_storage(config, html_to_pdf=(False if not mime else None))
     cur = date.today().year
     exts = (".en.pdf",) if mime else (".en.html", ".en.pdf")
 
-    def _emit(url, d, alt=None):
+    def _emit(url, d, prec, alt=None):
+        # `prec` follows the filename format the date was read from
+        # (YYYYMM -> month, bare YYYY -> year), never a blanket "day".
         return DocRecord(bank_code="ecb", doc_type=doc_type,
                          title=f"ECB {doc_type.name} {d.isoformat()}",
                          pdf_url=url, alt_urls=alt or [], date=d,
-                         provenance="bank_site", mime_type=mime)
+                         provenance="bank_site", mime_type=mime,
+                         date_precision=prec, date_source="bank_site")
 
     def _recs() -> Iterator[DocRecord]:
         seen: set[str] = set()
@@ -659,9 +671,9 @@ def run_ecb_pub_recovery(section: str, doc_type: DocType, mime: str = "applicati
                     if u in seen or storage.is_known_url(u):
                         continue
                     seen.add(u)
-                    d = date_from_url(u, date_fmt)
+                    d, prec = date_and_precision_from_url(u, date_fmt)
                     if d:
-                        yield _emit(u, d)
+                        yield _emit(u, d, prec)
         elif cdx_fallback_prefix:                             # FALLBACK: legacy CDX method
             nf = re.compile(name_filter, re.I) if name_filter else None
             cdx_mime = "application/pdf" if mime else "text/html"
@@ -676,8 +688,8 @@ def run_ecb_pub_recovery(section: str, doc_type: DocType, mime: str = "applicati
                 if o in seen or storage.is_known_url(o):
                     continue
                 seen.add(o)
-                d = date_from_url(o, date_fmt)
+                d, prec = date_and_precision_from_url(o, date_fmt)
                 if d:
-                    yield _emit(o, d, alt=[raw_url(o, t)])
+                    yield _emit(o, d, prec, alt=[raw_url(o, t)])
 
     return storage.save_many(_recs(), dry_run=dry_run, label=f"ecb:{doc_type.code}")

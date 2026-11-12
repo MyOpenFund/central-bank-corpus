@@ -1246,6 +1246,8 @@ def test_storage_html_to_pdf_invokes_renderer(tmp_path, monkeypatch):
 
     cfg = Config(data_dir=tmp_path, html_to_pdf=True)
     st = Storage(cfg)
+    # Render guard (B8): resolve the host to a public address, no real DNS.
+    st.render_resolver = lambda host, port, **kw: [(2, 1, 6, "", ("93.184.216.34", port))]
     # Stub fetcher to return HTML bytes.
     st.fetcher.get_bytes = lambda url: (b"<html><body>hi</body></html>", "text/html")
     # Stub Chrome renderer to just write a fake PDF.
@@ -1324,7 +1326,8 @@ def test_retry_html_recovers_and_records_failures(tmp_path, monkeypatch):
     monkeypatch.setattr(retry_mod, "find_chrome", lambda: "/fake/chrome")
 
     # First URL recovers on attempt; second URL fails every attempt.
-    def fake_try(chrome, url, output, *, timeout, virtual_time_budget_ms, user_data_dir):
+    def fake_try(chrome, url, output, *, timeout, virtual_time_budget_ms, user_data_dir,
+                 **kw):
         if "a.en.html" in url:
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_bytes(b"%PDF-1.4 recovered")
@@ -1332,7 +1335,8 @@ def test_retry_html_recovers_and_records_failures(tmp_path, monkeypatch):
         return False
     monkeypatch.setattr(retry_mod, "_try_strategy", fake_try)
 
-    counts = retry_mod.retry_failed(cfg)
+    from tests.conftest import public_resolver
+    counts = retry_mod.retry_failed(cfg, resolver=public_resolver)
     assert counts.get("recovered") == 1
     assert counts.get("still-fail") == 1
     assert counts.get("skip") == 1
@@ -1379,8 +1383,9 @@ def test_convert_existing_rewrites_manifest(tmp_path, monkeypatch):
         output.write_bytes(b"%PDF-1.4 ok")
     monkeypatch.setattr(convert_mod, "render_url_to_pdf", fake_render)
 
-    counts = convert_mod.convert_existing(cfg)
-    assert counts == {"converted": 1}
+    from tests.conftest import public_resolver
+    counts = convert_mod.convert_existing(cfg, resolver=public_resolver)
+    assert counts == {"converted": 1, "refused": 0}
     pdf_path = html_path.with_suffix(".pdf")
     # New policy: keep BOTH the HTML and the rendered PDF.
     assert pdf_path.exists() and html_path.exists()

@@ -97,7 +97,9 @@ quarantine state lives in `data/download_quarantine.jsonl` (operational state,
 never committed — alongside `download_errors.jsonl`). Quarantined URLs are retried
 during the Sunday full sweep (via `QUARANTINE_RETRY=1`, set automatically by the
 `sync full` job). Tune the quarantine threshold with `QUARANTINE_AFTER_NIGHTS`
-(default: 5 nights of failure before quarantine); Monday–Saturday bounded syncs
+(default: 5 nights of failure before quarantine). A "night" is the **local** date
+(the container's `TZ`, Europe/Paris), taken once per `Storage` instance, i.e. once per
+process run of a command, so a run that crosses midnight counts as one night. Monday–Saturday bounded syncs
 do not bypass quarantine, keeping them nimble. For docs confirmed unrecoverable
 after a manual `recover-downloads --candidates` hunt, `recover-downloads
 --seed-quarantine <file>` is a one-time operator action that seeds them as
@@ -109,7 +111,10 @@ seeded state never reaches the running container. A `duplicate` verdict from
 in the corpus) now self-heals: the dead URL is stamped onto the matching
 row's `alt_urls` and its quarantine entry is released, so it stops
 reappearing as a fresh failure on every future nightly/recover pass instead
-of being rediscovered as `duplicate` forever.
+of being rediscovered as `duplicate` forever — but only when that row is a
+real PDF (no `html_path`; `Config.stamp_duplicate_html` relaxes this). With an
+HTML owner (including a page rendered to PDF) the dead URL is neither stamped
+nor released: it stays quarantined and the next recover pass re-evaluates it.
 
 **Migration:** stacks created before 2026-07-15 used the refresh/discover job
 pair — the crontab and job names changed; recreate the stack after re-pulling
@@ -187,6 +192,17 @@ transparency) but never alerted.
 - A `PARTIAL` status is not an emergency: failed banks are retried the next
   night. Investigate a bank only when it fails several nights in a row
   (its log under `reports/discover/<date>/<code>.log` has the traceback).
+- `data/reports/duplicate_stamps.jsonl`: one JSON line per URL found to
+  duplicate a row that already owns its content (`skip:duplicate-content` in the
+  nightly sync; in `recover-downloads` also its `skip:already-indexed` self-heals
+  and a candidate's final URL, so one recovered record can log two lines; see
+  `label`), with `persisted` = whether the URL was
+  stamped onto the owner row (`owner_doc_id`, `owner_bank`), plus an `error`
+  field when the stamping itself failed. Only a real PDF owner (no `html_path`)
+  is stamped by default, so a duplicate of an HTML page — or of a page rendered
+  to PDF — is fetched and re-logged (`persisted: false`) every night: expect the
+  file to grow by those lines nightly. It is append-only, never read back by the
+  crawler, and safe to rotate or truncate (e.g. keep the last N months).
 - A `cb-campaign` run that had to queue behind an in-progress sync logs
   `[campaign] WAITING (lock busy)` in `nas_runs.log` before it blocks — if a
   campaign looks stuck, check for that line plus whichever job is currently

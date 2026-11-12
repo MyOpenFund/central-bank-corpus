@@ -102,7 +102,8 @@ def parse_wp_table(html: str, base_url: str
                 break
         if not title:
             title = pdf_url.rsplit("/", 1)[-1].split(".")[0]
-        out.append((d, prec or "month", title, pdf_url))
+        # No parseable date -> no precision (None), never a fake "month".
+        out.append((d, (prec or "month") if d else None, title, pdf_url))
     return out
 
 

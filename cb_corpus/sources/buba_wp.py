@@ -167,7 +167,7 @@ def discover_buba_wp(fetcher: Fetcher, since: Optional[date] = None,
                 bank_code="de", doc_type=DocType.D1,
                 title=title or pdf.rsplit("/", 1)[-1], pdf_url=pdf, source_url=page or LISTING,
                 date=d, provenance="bank_site", mime_type="application/pdf",
-                date_precision="day" if d else "month", date_source="bank_site",
+                date_precision="day" if d else None, date_source="bank_site",
             )
         if since and rows and not page_has_fresh:   # newest-first -> rest is older
             break

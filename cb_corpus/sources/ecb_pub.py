@@ -45,37 +45,47 @@ def date_from_url(u: str, fmt: str = "auto") -> Optional[date]:
     `fmt`: "yyyymm" (e.g. fsr/projections), "yymmdd" (e.g. interviews/press conf),
     "yyyymmdd", or "auto" (8-digit, else 6-digit read as YYYYMM if the year is
     plausible, else YYMMDD). The section's known format avoids the YYYYMM/YYMMDD
-    ambiguity (e.g. "200612" = 2006-12 vs 2020-06-12)."""
+    ambiguity (e.g. "200612" = 2006-12 vs 2020-06-12). See
+    date_and_precision_from_url for how precise the returned date is."""
+    return date_and_precision_from_url(u, fmt)[0]
+
+
+def date_and_precision_from_url(u: str, fmt: str = "auto"
+                                ) -> tuple[Optional[date], Optional[str]]:
+    """(date, date_precision) from an ECB document filename -- same parsing
+    as date_from_url, plus the precision the matched format actually carries:
+    "day" for YYYYMMDD/YYMMDD, "month" for YYYYMM (day set to 1), "year" for a
+    bare YYYY (Jan 1). (None, None) when nothing parses."""
     fn = u.split("/")[-1]
     m8 = re.search(r"(\d{4})(\d{2})(\d{2})", fn)
     m6 = re.search(r"(\d{6})(?!\d)", fn)
     try:
         if fmt == "yyyymmdd" and m8:
-            return date(int(m8[1]), int(m8[2]), int(m8[3]))
+            return date(int(m8[1]), int(m8[2]), int(m8[3])), "day"
         if fmt == "yymmdd" and m6:
             s = m6[1]
-            return date(2000 + int(s[:2]), int(s[2:4]), int(s[4:6]))
+            return date(2000 + int(s[:2]), int(s[2:4]), int(s[4:6])), "day"
         if fmt == "yyyymm" and m6:
             s = m6[1]
-            return date(int(s[:4]), int(s[4:6]), 1)
+            return date(int(s[:4]), int(s[4:6]), 1), "month"
         if fmt == "yyyy":
             m4 = re.search(r"(19|20)(\d{2})", fn)
             if m4:
-                return date(int(m4.group(0)), 1, 1)
+                return date(int(m4.group(0)), 1, 1), "year"
         if fmt == "auto":
             if m8:
                 try:
-                    return date(int(m8[1]), int(m8[2]), int(m8[3]))
+                    return date(int(m8[1]), int(m8[2]), int(m8[3])), "day"
                 except ValueError:
                     pass
             if m6:
                 s = m6[1]
                 if 1997 <= int(s[:4]) <= date.today().year and 1 <= int(s[4:6]) <= 12:
-                    return date(int(s[:4]), int(s[4:6]), 1)
-                return date(2000 + int(s[:2]), int(s[2:4]), int(s[4:6]))
+                    return date(int(s[:4]), int(s[4:6]), 1), "month"
+                return date(2000 + int(s[:2]), int(s[2:4]), int(s[4:6])), "day"
             m4 = re.search(r"(19|20)(\d{2})", fn)          # year-only (e.g. annual report)
             if m4:
-                return date(int(m4.group(0)), 1, 1)
+                return date(int(m4.group(0)), 1, 1), "year"
     except (ValueError, IndexError):
-        return None
-    return None
+        return None, None
+    return None, None

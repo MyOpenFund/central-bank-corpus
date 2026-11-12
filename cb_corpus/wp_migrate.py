@@ -81,9 +81,15 @@ def repec_handle_from_source_url(url: str) -> str:
     return f"RePEc:{m.group(1)}:{m.group(2)}:{m.group(3)}" if m else ""
 
 
-def normalize_url(u: str) -> str:
-    """Canonicalise a PDF URL for equality: drop scheme, the ECB ``~hash`` segment,
-    and collapse doubled slashes (manifest rows carry ``//pub`` from RePEc/RSS)."""
+def match_key_url(u: str) -> str:
+    """FUZZY match key for joining a manifest row to a native record during the
+    WP migration / repec-check: drop scheme, the ECB ``~hash`` segment, case,
+    and collapse doubled slashes (manifest rows carry ``//pub`` from RePEc/RSS).
+
+    Not an identity: two different documents can share a key. Never use it for
+    the known-URL indexes or dedup -- that is ``storage.normalize_url`` (which
+    only collapses duplicate path slashes, because scheme/case/etc. can change
+    what a server returns). See also ``c2_migrate.match_key_url``."""
     u = (u or "").strip().lower()
     u = re.sub(r"^https?://", "", u)
     u = re.sub(r"~[0-9a-z]+", "", u)
@@ -124,7 +130,7 @@ def build_report(bank: str, fetcher: Fetcher,
         key = key_from_pdf(rec.pdf_url)
         if key is not None:
             native_by_key.setdefault(key, rec)
-        native_by_url.setdefault(normalize_url(rec.pdf_url), rec)
+        native_by_url.setdefault(match_key_url(rec.pdf_url), rec)
         t = normalize_title(rec.title)
         if t:
             title_recs.setdefault(t, []).append(rec)
@@ -146,7 +152,7 @@ def build_report(bank: str, fetcher: Fetcher,
         native = native_by_key.get(key) if key is not None else None
         match_type = "key" if native is not None else ""
         if native is None:
-            native = native_by_url.get(normalize_url(row.get("pdf_url") or ""))
+            native = native_by_url.get(match_key_url(row.get("pdf_url") or ""))
             match_type = "url" if native is not None else ""
         if native is None:
             native = native_by_title.get(normalize_title(row.get("title") or ""))
@@ -155,7 +161,7 @@ def build_report(bank: str, fetcher: Fetcher,
             summary["unmatched_manifest"] += 1
             continue
         summary[f"matched_{match_type}"] += 1
-        matched_native_urls.add(normalize_url(native.pdf_url))
+        matched_native_urls.add(match_key_url(native.pdf_url))
 
         # Already migrated? (idempotent — once a row's date came from the bank
         # site we don't touch it again, whatever its precision: a Fed paper can
@@ -174,6 +180,9 @@ def build_report(bank: str, fetcher: Fetcher,
             # the native source's own precision (e.g. Fed papers without a confirmed
             # day, or revisions outside the listing month, stay "month")
             "date_precision": native.date_precision,
+            # False when the native record has no date: apply_change then leaves
+            # date / date_precision / date_source untouched (alt URL + handle only)
+            "date_from_native": native.date is not None,
             "match_type": match_type,
             "old_url": row.get("pdf_url"),
             "native_url": native_url,
@@ -191,13 +200,19 @@ def apply_change(row: dict, change: dict) -> None:
     Metadata only: date + precision/source, repec_handle, and the native URL
     registered in alt_urls (so dedup recognises it). doc_id / sha256 / local_path
     / pdf_url are deliberately left untouched — the file on disk is the same.
+
+    A change whose native record carried no date (``date_from_native`` False)
+    touches NONE of date / year / date_precision / date_source: the row's own
+    (e.g. RePEc) date is kept with its own labels, never relabelled as a
+    bank-site day.
     """
-    row["date"] = change["new_date"]
-    # keep the derived `year` field consistent with the (possibly year-shifted) date
-    if change.get("new_date"):
-        row["year"] = int(change["new_date"][:4])
-    row["date_precision"] = change.get("date_precision") or "day"
-    row["date_source"] = "bank_site"
+    if change.get("date_from_native", True):
+        row["date"] = change["new_date"]
+        # keep the derived `year` field consistent with the (possibly year-shifted) date
+        if change.get("new_date"):
+            row["year"] = int(change["new_date"][:4])
+        row["date_precision"] = change.get("date_precision") or "day"
+        row["date_source"] = "bank_site"
     if change.get("repec_handle"):
         row["repec_handle"] = change["repec_handle"]
     alt = change.get("alt_url_added")

@@ -1,6 +1,7 @@
 """Runtime configuration."""
 from __future__ import annotations
 
+import ipaddress
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -62,6 +63,37 @@ class Config:
     # 2026-11-10. Reaching it while the last page still links to the next one
     # is recorded as a truncation (run-report / WARNING), never a clean end.
     repec_max_pages: int = REPEC_MAX_PAGES_DEFAULT
+    # Duplicate-content stamping (storage.flush_duplicate_stamps): a record
+    # whose bytes another row already owns has its URL (and source page)
+    # remembered on that owner row so it is never re-downloaded. By default
+    # only when the owner is a real PDF (mime_type application/pdf and no
+    # html_path -- storage.is_stampable_owner; a page rendered from HTML is
+    # not one): an HTML page can change while serving identical bytes today,
+    # so an HTML owner's duplicates stay in-memory for the run and are
+    # retried next night. recover-downloads' self-healing follows the same
+    # rule (and keeps the dead URL quarantined when it may not stamp).
+    # True also stamps HTML (and rendered-HTML) owners.
+    stamp_duplicate_html: bool = False
+    # Networks headless Chrome (run with --no-sandbox) must never be pointed
+    # at: htmlpdf.render_allowed refuses a render when the URL's host is, or
+    # resolves to, an address in one of these (the HTML then stays the
+    # canonical artifact). Default: loopback, RFC 1918 private, link-local
+    # (incl. the 169.254.169.254 cloud-metadata endpoint), CGNAT 100.64/10
+    # (the tailnet), "this network", multicast, reserved, and their IPv6
+    # counterparts (loopback, ULA fc00::/7, link-local, unspecified,
+    # multicast, deprecated site-local fec0::/10) plus the IPv6 forms that
+    # embed an IPv4 address (NAT64 64:ff9b::/96, 6to4 2002::/16,
+    # IPv4-compatible ::/96) -- these could smuggle a private IPv4 target.
+    # Blocks the private network rather than allowlisting domains, which
+    # would not scale to crawlers of many sites. CIDR strings; an invalid
+    # entry is rejected with a ValueError.
+    render_blocked_networks: tuple[str, ...] = (
+        "127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+        "169.254.0.0/16", "100.64.0.0/10", "0.0.0.0/8", "224.0.0.0/4",
+        "240.0.0.0/4",
+        "::1/128", "fc00::/7", "fe80::/10", "::/128", "ff00::/8",
+        "fec0::/10", "64:ff9b::/96", "2002::/16", "::/96",
+    )
 
     def __post_init__(self) -> None:
         # Normalize retry_http_4xx (a list from a caller is fine) and reject
@@ -84,6 +116,21 @@ class Config:
                 f"got {outside!r} in {raw!r}")
         self.retry_http_4xx = codes
         check_max_pages(self.repec_max_pages, "Config.repec_max_pages")
+
+        nets = self.render_blocked_networks
+        if isinstance(nets, str):
+            raise ValueError(
+                f"Config.render_blocked_networks must be an iterable of CIDR "
+                f"strings, not a single string: {nets!r}")
+        try:
+            nets = tuple(nets)
+            for n in nets:
+                ipaddress.ip_network(n, strict=False)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Config.render_blocked_networks: invalid network in "
+                f"{self.render_blocked_networks!r}: {exc}") from None
+        self.render_blocked_networks = nets
 
     @property
     def raw_dir(self) -> Path:

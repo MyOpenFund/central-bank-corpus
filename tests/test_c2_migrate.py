@@ -9,7 +9,7 @@ from cb_corpus.models import DocRecord
 from cb_corpus.storage import Storage, iter_manifest_rows
 from cb_corpus.taxonomy import DocType
 from cb_corpus import c2_migrate
-from cb_corpus.c2_migrate import run_c2_migrate, normalize_url
+from cb_corpus.c2_migrate import run_c2_migrate, match_key_url
 
 
 def _write_ecb_manifest(cfg: Config, rows: list[dict]) -> None:
@@ -24,10 +24,10 @@ def _read_csv(cfg: Config) -> list[dict]:
         return list(csv.DictReader(fh))
 
 
-def test_normalize_url_collapses_double_slash():
+def test_match_key_url_collapses_double_slash():
     a = "https://www.ecb.europa.eu//press/inter/date/2026/html/ecb.in260715~aa.en.html"
     b = "https://www.ecb.europa.eu/press/inter/date/2026/html/ecb.in260715~aa.en.html"
-    assert normalize_url(a) == normalize_url(b)
+    assert match_key_url(a) == match_key_url(b)
 
 
 def test_c2_migrate_stamps_title_and_date(tmp_path, monkeypatch):

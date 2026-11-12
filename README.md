@@ -40,7 +40,9 @@ no machine-translated or model-generated text.
 - **Per-bank adapters** (`adapters/`) → site-specific listings (A/B/E/F + native D1/D2). Bespoke
   `ECBAdapter`, `FedAdapter`, `BoJAdapter` (jp), `BoEAdapter` (gb), `BubaAdapter` (de),
   `BdfAdapter` (fr), `RiksbankAdapter` (se), `RBAAdapter` (au); TOML-declarative adapters
-  (`banks_sources.toml`: ch/ca). `GenericAdapter`
+  (`banks_sources.toml`: ch/ca; a missing/empty/malformed file, an unknown bank code or an
+  unknown section prints an `[adapters] WARNING` on stderr — a malformed file only skips the
+  declarative adapters, it never breaks the CLI). `GenericAdapter`
   (C1 + RePEc D) is the default. **Rate decisions, policy statements & minutes (A1/A2/A3) are
   wired for the majors.**
 - **Bank-of-England official recovery** (`sources/boe_wp.py` + `pipeline.run_boe_wp_recovery` /
@@ -50,12 +52,36 @@ no machine-translated or model-generated text.
 - **Wayback recovery** (`sources/wayback.py`) → official PDFs a bank has taken offline, fetched
   from archive.org's raw snapshot (`provenance="wayback"`, fully audited). Used for the Riksbank.
 - **HTML→PDF** (`htmlpdf.py`) → HTML-only documents (e.g. ECB monetary-policy accounts) are
-  rendered to PDF via headless Chrome; the **raw HTML is also kept** (`html_path`).
+  rendered to PDF via headless Chrome; the **raw HTML is also kept** (`html_path`). Chrome runs
+  with `--no-sandbox`, so **every** launch (Storage, `convert-html`, `retry-html`) goes through one
+  guard (`htmlpdf.render_allowed`): a render is **refused** when the URL is not http(s), contains a
+  backslash/whitespace/control character, or its host is, or resolves to, an address in
+  `Config.render_blocked_networks` (default: loopback, RFC 1918, link-local incl. cloud metadata,
+  CGNAT `100.64.0.0/10` = the tailnet, multicast/reserved, the IPv6 equivalents, and IPv6 forms
+  that embed an IPv4 address: NAT64, 6to4, IPv4-compatible). The HTML then stays the artifact;
+  each refusal prints a `render refused` stderr line and is counted (`render refused: N` per
+  `save_many` batch, `refused` in the `convert-html` / `retry-html` summaries).
+  **Residual limits:** only the top-level URL is checked — Chrome follows redirects, loads
+  sub-resources and re-resolves DNS itself, none of which is inspected; a full guarantee needs
+  an egress proxy (Backlog follow-up).
 - **Storage / dedup** (`storage.py`) → **per-bank manifests** `data/manifest/<bank>.jsonl`
   (a legacy single `data/manifest.jsonl` is auto-split on first use); committed to git for
   replayability. Dedup on `doc_id` (stable hash of bank+type+**url** — date-independent, so
   correcting a date is a pure metadata update, no id churn), persisted `alt_urls`, and content
-  `sha256`. **No domain guard** — discovery owns URL quality.
+  `sha256`. **No domain guard** — discovery owns URL quality. A record whose bytes another
+  row already owns (`skip:duplicate-content`) is remembered on that owning row (its URL into
+  `alt_urls`, its source page into the optional `alt_source_urls`), so the next run skips it
+  before any fetch instead of re-downloading it every night. Only when the owner row is a
+  **real PDF owner (no `html_path`)**: an HTML owner — including a page rendered to PDF by
+  `html_to_pdf`, `convert-html` or `retry-html`, whose `sha256` is still the HTML's — keeps the
+  URL for the current run only (retried next night), unless `Config.stamp_duplicate_html=True`.
+  `recover-downloads` applies the same rule to its duplicate self-healing (log label `recover`):
+  a dead URL whose owner is not a real PDF is neither stamped nor released from quarantine, and
+  is re-evaluated by the next recover pass. The stamp is an add-only merge done under the bank's
+  manifest lock on a fresh read of the owner row. Every duplicate is logged in
+  `data/reports/duplicate_stamps.jsonl` (`persisted` = owner eligible and found; an
+  `error` field when the stamping itself failed), with one
+  `duplicate-content: N (stamped U urls on R rows)` stderr line per batch when N > 0.
 - **Reindex from disk** (`pipeline.reindex_native_from_disk` / `reindex_bis_from_disk`, CLI
   `reindex-from-disk`) → rebuild manifest rows for PDFs that are **on disk but missing from the
   manifest** (e.g. the manifest was reset/lost while downloads kept accumulating). Replays
@@ -234,7 +260,7 @@ cb_corpus/
   taxonomy.py        DocType A1..G3, FULL_SCOPE (A–F)
   banks.py           the 63 BIS members + BIS_ALIASES (institution matching)
   models.py          DocRecord
-  config.py          settings (UA, throttle, html_to_pdf)
+  config.py          settings (UA, throttle, html_to_pdf, render_blocked_networks)
   http.py            fetcher (per-host throttle + retry/backoff; throttle() for Chrome)
   storage.py         manifest, dedup (doc_id + sha256), HTML→PDF render, html_path
   htmlpdf.py         headless-Chrome HTML→PDF (shared profile)
@@ -244,7 +270,7 @@ cb_corpus/
   cli.py             command line (`python -m cb_corpus --help` lists every subcommand)
   runreport.py       run reports (data/runs.jsonl) + honest exit codes
   cadence.py         median-gap silence watchdog (cadence-watch)
-  quarantine.py      per-URL download quarantine (dead-letter state)
+  quarantine.py      per-URL download quarantine (dead-letter state; one local night per Storage instance = per process run of a command)
   recover.py         recover-downloads (inventory-driven Wayback recovery)
   orphans.py         sweep-orphans (quarantine on-disk duplicates)
   convert.py / retry_html.py   HTML -> PDF migration and retries
