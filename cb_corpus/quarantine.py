@@ -55,6 +55,7 @@ mount; on the NAS's local disk it is exact.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
@@ -104,10 +105,23 @@ class Quarantine:
     # -- state file IO ---------------------------------------------------
     def _load(self) -> None:
         """Startup read, under the sidecar lock when the file exists (a
-        missing file is read lock-free: reading must create nothing)."""
+        missing file is read lock-free: reading must create nothing).
+
+        A data dir where the sidecar cannot be created or opened for append
+        (read-only mount, foreign owner -- e.g. a reporting command run on a
+        snapshot) must not make every command fail at startup: the state is
+        then read WITHOUT the lock, after one WARNING. Such a read can at
+        worst miss a line being appended at that instant; the writes
+        (_update) still take the lock and fail loudly if it is unavailable."""
         if not self._path.exists():
             return
-        with locked_sidecar(self._path):
+        with contextlib.ExitStack() as stack:
+            try:
+                stack.enter_context(locked_sidecar(self._path))
+            except OSError as exc:
+                print(f"[quarantine] WARNING: cannot lock {self._path} "
+                      f"({type(exc).__name__}: {exc}); reading it unlocked",
+                      file=sys.stderr, flush=True)
             self._catch_up()
 
     def _catch_up(self) -> None:

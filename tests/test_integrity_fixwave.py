@@ -434,3 +434,25 @@ def test_cli_sweep_orphans_temp_min_age_flag(tmp_path, monkeypatch, capsys):
     assert cli.main(["sweep-orphans", "--temp-min-age-hours", "1"]) == 0
     out = capsys.readouterr().out
     assert '"temps_stale": 1' in out and "1 stale temp" in out
+
+
+# -- quarantine: startup load on a read-only data dir ---------------------
+
+def test_quarantine_load_falls_back_to_unlocked_read_when_lock_unavailable(
+        tmp_path, monkeypatch, capsys):
+    import contextlib
+    from cb_corpus import quarantine as q_mod
+    url = "https://x.test/dead.pdf"
+    (tmp_path / "download_quarantine.jsonl").write_text(
+        _json.dumps({"url": url, "nights": [f"2026-11-0{i}" for i in range(1, 7)]})
+        + "\n")
+
+    @contextlib.contextmanager
+    def read_only(path):
+        raise PermissionError(13, "Read-only file system", str(path))
+        yield  # pragma: no cover
+    monkeypatch.setattr(q_mod, "locked_sidecar", read_only)
+    q = q_mod.Quarantine(Config(data_dir=tmp_path))
+    assert q.is_quarantined(url)
+    err = capsys.readouterr().err
+    assert err.count("WARNING") == 1 and "unlocked" in err
