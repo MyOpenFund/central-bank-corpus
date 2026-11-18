@@ -22,10 +22,11 @@ from pathlib import Path
 
 from cb_corpus import pipeline
 from cb_corpus.config import Config
+from tests.conftest import pdf_body
 
 SPEECH_URL = "https://www.bis.org/review/r200115a.pdf"
 OTHER_URL = "https://www.bis.org/review/r200220b.pdf"
-PDF_BYTES = b"%PDF-1.4 recovered-from-disk\n"
+PDF_BYTES = pdf_body(b"%PDF-1.4 recovered-from-disk")
 
 SITEMAP_INDEX = """<?xml version="1.0" encoding="UTF-8"?>
 <sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">

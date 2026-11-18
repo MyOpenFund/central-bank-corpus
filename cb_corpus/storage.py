@@ -93,6 +93,21 @@ def _atomic_write_bytes(path: Path, data: bytes) -> None:
         raise
 
 
+# Storage.reindex() status for an on-disk .pdf that fails the PDF check
+# (issue #21, A2). Tallied under its own key by status_key().
+BAD_CONTENT = "skip:bad-content"
+
+
+def status_key(status: str) -> str:
+    """The tally key of a save()/reindex() status: its prefix ("saved",
+    "skip", "dry-run", ...), except `skip:bad-content`, which keeps its own
+    key "bad-content" -- a file that failed the content check is a damage
+    signal, not a routine skip, and must stay visible in the counts."""
+    if status == BAD_CONTENT:
+        return "bad-content"
+    return status.split(":")[0]
+
+
 def _is_html_mime(mime: str) -> bool:
     m = (mime or "").lower()
     return m.startswith("text/html") or m.startswith("application/xhtml")
@@ -1163,22 +1178,43 @@ class Storage:
         (re-discovered) record. Idempotent: skips a ``doc_id`` already indexed or
         whose content hash is already present. ``dry_run`` reports the action
         without writing (mirrors :meth:`save`'s no-write contract).
+
+        Content check (issue #21, A2): a ``.pdf`` file must pass the same PDF
+        check as a download (pdfcheck.check_pdf_bytes with
+        Config.min_pdf_bytes / pdf_require_eof) BEFORE it is hashed. A
+        truncated file left by a killed process or a full disk, or an error
+        page saved as .pdf, returns ``skip:bad-content`` with one stderr line
+        naming the file: it is never indexed, never a dedup owner, and its
+        quarantine is not released. The file is left in place (evidence; the
+        operator decides). The check also runs in dry run -- reading is not
+        writing, and "would reindex" would be a lie for such a file. An
+        ``.html`` artifact is not checked (an HTML page is its own document).
         """
         if rec.doc_id in self._ids:
             return "skip:already-indexed"
         if not path.is_file():
             return "skip:missing-file"
+        ext = path.suffix.lower().lstrip(".")
+        content: Optional[bytes] = None
+        if ext == "pdf":
+            content = path.read_bytes()
+            problem = check_pdf_bytes(content, min_bytes=self.cfg.min_pdf_bytes,
+                                      require_eof=self.cfg.pdf_require_eof)
+            if problem:
+                print(f"[storage] reindex skipped bad-content {path}: {problem}",
+                      file=sys.stderr, flush=True)
+                return BAD_CONTENT
         if dry_run:
             return "dry-run:would-reindex"
 
-        content = path.read_bytes()
+        if content is None:
+            content = path.read_bytes()
         digest = hashlib.sha256(content).hexdigest()
         if digest in self._hash_docid:
             owner = self._hash_docid[digest]
             self._note_duplicate(rec, owner)
             return f"skip:duplicate-content:{owner}"
 
-        ext = path.suffix.lower().lstrip(".")
         rec.mime_type = {"pdf": "application/pdf", "html": "text/html"}.get(ext, rec.mime_type)
         if ext == "html":
             rec.html_path = str(path)

@@ -83,7 +83,7 @@ from .pdfcheck import MAGIC_WINDOW, has_pdf_magic
 from .quarantine import Quarantine
 from .sources.repec import IDEAS, _paper_meta, extract_pdf_candidates
 from .sources.wayback import latest_capture, raw_url
-from .storage import Storage
+from .storage import BAD_CONTENT, Storage
 from .taxonomy import by_code
 
 _ACTIONS = ("recoverable", "recovered", "duplicate", "unrecoverable", "converged")
@@ -505,6 +505,19 @@ def _run_candidates_pass(cfg: Config, storage: Storage, fetcher: Fetcher,
             if date_source:
                 rec.date_source = date_source
 
+            # The probe below (a dry-run reindex) also runs Storage's content
+            # check (issue #21): a candidate that passed _verify_local_pdf
+            # (magic + 20 KB) but that reindex() would refuse -- typically a
+            # truncated file with no %%EOF -- is reported as "bad-file" like
+            # any unusable candidate, in BOTH modes, before anything is copied
+            # into raw/ (a copy would only leave unindexed bytes behind).
+            probe = storage.reindex(rec, file_path, dry_run=True)
+            if probe == BAD_CONTENT:
+                _bump(bank, "bad-file")
+                csv_rows.append({"bank": bank, "pdf_url": dead_url, "action": "bad-file",
+                                 "snapshot_ts": "", "title": fallback_title})
+                continue
+
             _bump(bank, "recoverable")
             action = "recoverable"
             canonical_doc_id = ""
@@ -518,7 +531,7 @@ def _run_candidates_pass(cfg: Config, storage: Storage, fetcher: Fetcher,
             # mode it's also a safety guard -- copying then unlinking on
             # "skip:already-indexed" would DELETE the real canonical file,
             # leaving a dangling manifest row (the exact bug this guards).
-            probe = storage.reindex(rec, file_path, dry_run=True)
+            # (`probe` was computed above, before the content-check exit.)
             if probe == "skip:already-indexed":
                 _bump(bank, "duplicate")
                 action = "duplicate"

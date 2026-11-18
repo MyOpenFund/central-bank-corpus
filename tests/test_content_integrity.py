@@ -375,3 +375,120 @@ def test_chrome_failure_removes_its_temp_output(tmp_path, monkeypatch):
     assert rec.local_path.endswith(".html")
     d = Path(rec.local_path).parent
     assert [p.name for p in d.iterdir()] == [Path(rec.local_path).name]
+
+
+# -- A2: Storage.reindex() ------------------------------------------------
+
+def _on_disk(st: Storage, rec: DocRecord, data: bytes, ext: str = "pdf") -> Path:
+    path = st.target_path(rec).with_suffix("." + ext)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return path
+
+
+@pytest.mark.parametrize("data", [
+    make_pdf()[:-20],                    # truncated: killed process / ENOSPC
+    b"%PDF-1.4\n" + b"x" * 200 + b"\n%%EOF\n",   # a 300-byte stub
+    CONSENT_PAGE,                        # an error page saved as .pdf
+    b"",                                 # empty file
+])
+def test_reindex_bad_pdf_is_skipped_never_indexed(tmp_path, data, capsys):
+    st = _storage(tmp_path, {})
+    st.quarantine.record_failure(U, night="2026-11-01")
+    rec = _rec(U)
+    path = _on_disk(st, rec, data)
+    assert st.reindex(rec, path) == "skip:bad-content"
+    assert st._ids == set() and st._hash_docid == {} and st._pending_dups == []
+    assert _manifest_rows(tmp_path) == []
+    assert path.exists()                              # evidence left in place
+    assert U in st.quarantine._state                  # not released
+    err = capsys.readouterr().err
+    assert len([l for l in err.splitlines() if "bad-content" in l]) == 1
+    assert str(path) in err
+
+
+def test_reindex_bad_pdf_reported_in_dry_run_too(tmp_path):
+    st = _storage(tmp_path, {})
+    rec = _rec(U)
+    path = _on_disk(st, rec, make_pdf()[:-20])
+    assert st.reindex(rec, path, dry_run=True) == "skip:bad-content"
+    good = _rec("https://bank.example/good.pdf")
+    gpath = _on_disk(st, good, make_pdf("good"))
+    assert st.reindex(good, gpath, dry_run=True) == "dry-run:would-reindex"
+
+
+def test_reindex_bad_file_never_becomes_a_dedup_owner(tmp_path):
+    st = _storage(tmp_path, {})
+    a, b = _rec("https://bank.example/a.pdf"), _rec("https://bank.example/b.pdf")
+    pa, pb = _on_disk(st, a, CONSENT_PAGE), _on_disk(st, b, CONSENT_PAGE)
+    assert st.reindex(a, pa) == "skip:bad-content"
+    assert st.reindex(b, pb) == "skip:bad-content"     # not duplicate-content:a
+
+
+def test_reindex_valid_pdf_and_html_still_indexed(tmp_path):
+    st = _storage(tmp_path, {})
+    rec = _rec(U)
+    assert st.reindex(rec, _on_disk(st, rec, b"\n " + make_pdf())) == "reindexed"
+    h = _rec("https://bank.example/page.html", mime="text/html")
+    # An HTML artifact is not a PDF: no PDF check on a .html path.
+    assert st.reindex(h, _on_disk(st, h, b"<html>tiny</html>", ext="html")) == "reindexed"
+
+
+def test_reindex_honours_relaxed_config(tmp_path):
+    st = _storage(tmp_path, {}, min_pdf_bytes=0, pdf_require_eof=False)
+    rec = _rec(U)
+    assert st.reindex(rec, _on_disk(st, rec, b"%PDF-1.4 stub")) == "reindexed"
+
+
+def test_reindex_bis_from_disk_tallies_bad_content(tmp_path, monkeypatch,
+                                                   fetcher_factory, capsys):
+    from cb_corpus import pipeline
+    from tests.test_reindex_from_disk import SPEECH_URL, _doc_id, _wire_sitemaps
+    path = tmp_path / "raw" / "de" / "C1" / "2020" / f"{_doc_id('de', SPEECH_URL)}.pdf"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(make_pdf()[:-20])                  # truncated on disk
+    _wire_sitemaps(monkeypatch, fetcher_factory)
+    counts = pipeline.reindex_bis_from_disk(dry_run=False, config=Config(data_dir=tmp_path))
+    assert counts["matched"] == 1 and counts["reindexed"] == 0
+    assert counts["bad-content"] == 1 and counts["skip"] == 0
+    assert "bad_content=1" in capsys.readouterr().err
+    assert not (tmp_path / "manifest" / "de.jsonl").exists()
+
+
+def test_apply_reindex_tallies_bad_content(tmp_path):
+    from cb_corpus.pipeline import _apply_reindex
+    st = _storage(tmp_path, {})
+    bad, good = _rec("https://bank.example/bad.pdf"), _rec("https://bank.example/good.pdf")
+    missing = {bad.doc_id: _on_disk(st, bad, CONSENT_PAGE),
+               good.doc_id: _on_disk(st, good, make_pdf("good"))}
+    counts = _apply_reindex([bad, good], st, missing, dry_run=False)
+    assert counts == {"matched": 2, "reindexed": 1, "skip": 0, "bad-content": 1}
+
+
+@pytest.mark.parametrize("download", [True, False])
+def test_recover_candidate_truncated_is_bad_file_and_never_copied(tmp_path, monkeypatch,
+                                                                  download):
+    # Passes _verify_local_pdf (magic, > 20 KB) but has no %%EOF: reindex
+    # would refuse it, so recover reports bad-file before copying into raw/.
+    from cb_corpus.recover import run_recover_downloads
+    from tests.test_recover_candidates import (_NullFetcher, _csv_rows, _entry,
+                                               _stub_refresh_metadata,
+                                               _write_candidates, _write_inventory)
+    cfg = Config(data_dir=tmp_path)
+    dead_url = "https://www.banque-france.fr/cut.pdf"
+    _write_inventory(cfg, [_entry(bank="fr", pdf_url=dead_url)])
+    cut = tmp_path / "cut.pdf"
+    cut.write_bytes(b"%PDF-1.4 " + b"x" * (25 * 1024))
+    cand_path = _write_candidates(tmp_path, [{
+        "dead_pdf_url": dead_url, "file_path": str(cut),
+        "recovered_from": "wayback", "final_url": "https://web.archive.org/x",
+    }])
+    _stub_refresh_metadata(monkeypatch)
+    results = run_recover_downloads(config=cfg, fetcher=_NullFetcher(),
+                                    candidates=str(cand_path), download=download,
+                                    csv_path=str(tmp_path / "r.csv"))
+    assert results["fr"]["bad-file"] == 1 and results["fr"]["recoverable"] == 0
+    assert _csv_rows(tmp_path / "r.csv")[0]["action"] == "bad-file"
+    assert not (tmp_path / "manifest" / "fr.jsonl").exists()
+    raw = tmp_path / "raw"
+    assert not raw.exists() or not [p for p in raw.rglob("*") if p.is_file()]
