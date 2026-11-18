@@ -171,7 +171,7 @@ dated by its period, monthly-dated minutes). A row without the field counts as
 before. The output fields do not change; the table shows the dropped rows per
 series in a `coarse` column, lists series left with no judgeable rows as
 `unjudged`, and the job writes one stderr line per affected series (`cadence: ecb
-E4: 4 year-precision row(s) dropped`) into `nas_runs.log`. These lines are a
+E4: 109 year-precision row(s) dropped; series not judged`) into `nas_runs.log`. These lines are a
 report, not an alert (no ntfy push). `CADENCE_DROP_PRECISIONS` sets which
 precisions are dropped: default `year`; `month,year` judges day rows only (on the
 committed manifests it leaves `au E1`, `ca A3`, `ecb E1`, `gb A3` and `gb E1`
