@@ -17,6 +17,9 @@ _DEFAULT_CONTACT = "https://github.com/MyOpenFund/central-bank-corpus"
 # RePEc walkers handed a fetcher without a Config.
 REPEC_MAX_PAGES_DEFAULT = 200
 
+# Allowed values of Config.pdf_url_served_html (see there).
+PDF_URL_SERVED_HTML_MODES = ("reject", "accept")
+
 
 def check_max_pages(value: object, name: str = "repec_max_pages") -> int:
     """Validate a RePEc listing-page cap: an int (not a bool) >= 1.
@@ -74,6 +77,33 @@ class Config:
     # rule (and keeps the dead URL quarantined when it may not stamp).
     # True also stamps HTML (and rendered-HTML) owners.
     stamp_duplicate_html: bool = False
+    # Content checks on stored bytes (issue #21, integrity wave 2026-11):
+    # an HTTP 200 is not a document. Bytes that claim to be a PDF (server
+    # mime application/pdf, or a producer that expects a PDF and a server
+    # that does not say HTML) must carry `%PDF` within their first 1,024
+    # bytes, be at least `min_pdf_bytes` long and, when `pdf_require_eof`,
+    # hold `%%EOF` in their last 2,048 bytes (a truncated download fails).
+    # Applied by Storage.save() to every candidate URL before the sha256
+    # dedup (an error page must never become a dedup owner), by
+    # Storage.reindex() to an on-disk .pdf (`skip:bad-content`) and to the
+    # headless-Chrome render output. 0 / False relax the respective rule.
+    min_pdf_bytes: int = 1024
+    pdf_require_eof: bool = True
+    # A producer that EXPECTS a PDF (DocRecord.mime_type application/pdf)
+    # but gets an HTML response (consent wall, error or "moved" page served
+    # with 200): "reject" (default) skips that candidate URL and tries the
+    # next fallback; when none passes, save() raises
+    # storage.ContentCheckFailed (download error + quarantine like any
+    # failed download). "accept" restores the old behaviour: the HTML is
+    # stored, and rendered to PDF when html_to_pdf is on.
+    # Not the same knob as `accept_html_when_no_pdf` above: that field is a
+    # discovery-side preference (may a producer hand over an HTML page when
+    # a document has no PDF at all?) and no code path reads it today; such
+    # a producer sets mime_type text/html (or leaves it empty), and an HTML
+    # producer's response is never judged by this setting. This one only
+    # governs the case where the producer said "PDF" and the server
+    # answered HTML.
+    pdf_url_served_html: str = "reject"
     # Networks headless Chrome (run with --no-sandbox) must never be pointed
     # at: htmlpdf.render_allowed refuses a render when the URL's host is, or
     # resolves to, an address in one of these (the HTML then stays the
@@ -131,6 +161,17 @@ class Config:
                 f"Config.render_blocked_networks: invalid network in "
                 f"{self.render_blocked_networks!r}: {exc}") from None
         self.render_blocked_networks = nets
+
+        m = self.min_pdf_bytes
+        if isinstance(m, bool) or not isinstance(m, int) or m < 0:
+            raise ValueError(f"Config.min_pdf_bytes must be an int >= 0, got {m!r}")
+        if not isinstance(self.pdf_require_eof, bool):
+            raise ValueError(
+                f"Config.pdf_require_eof must be a bool, got {self.pdf_require_eof!r}")
+        if self.pdf_url_served_html not in PDF_URL_SERVED_HTML_MODES:
+            raise ValueError(
+                f"Config.pdf_url_served_html must be one of "
+                f"{PDF_URL_SERVED_HTML_MODES!r}, got {self.pdf_url_served_html!r}")
 
     @property
     def raw_dir(self) -> Path:
