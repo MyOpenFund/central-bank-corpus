@@ -54,7 +54,8 @@ POLICY_DOC_TYPES = ("A1", "A2", "A3", "B1", "E1", "F1")
 DATE_KEYS = ("date", "year", "date_precision", "date_source", "date_kind")
 
 #: A dated row WITHOUT a `date_precision` key is read downstream as a day
-#: (the corpus' meaning before precision was recorded). The command therefore
+#: (the corpus' meaning before precision was recorded; a key that is present
+#: and null means "not stated" and is always replaced). The command therefore
 #: writes a label only where that reading would be wrong (a month, a year) or
 #: where it writes the date itself; a confirmed day keeps its row unlabelled.
 ASSUMED_PRECISION_WHEN_UNLABELLED = PRECISION_DAY
@@ -154,8 +155,10 @@ def plan_row(row: dict, *, rules: Optional[dict] = None, kinds: Optional[dict] =
     stored = _stored_date(old_date) if old_date else None
     if old_label in PRECISIONS:
         effective = old_label
+    elif old_date and "date_precision" not in row:
+        effective = ASSUMED_PRECISION_WHEN_UNLABELLED     # written before labels existed
     else:
-        effective = ASSUMED_PRECISION_WHEN_UNLABELLED if old_date else None
+        effective = None        # undated, or a producer that stated no precision
 
     if old_date is None:
         target: Optional[tuple[date, Optional[str]]] = (new.date, new.precision)

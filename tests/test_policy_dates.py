@@ -349,6 +349,17 @@ def test_a_stored_day_inside_the_evidence_month_is_kept():
     assert (p.new_date, p.new_precision) == ("2021-06-24", "day")
 
 
+def test_a_dated_row_whose_precision_was_not_stated_gets_its_label():
+    """Key present and null = a producer that stated nothing: unlike a row
+    written before labels existed, it is labelled even for a confirmed day."""
+    r = row("us", "A2", "FOMC statement 2018-08-01",
+            f"{FED}/newsevents/pressreleases/monetary20180801a.htm", "2018-08-01",
+            date_precision=None, date_source="bank_site")
+    p = plan_row(r)
+    assert p.action == "to-day"
+    assert p.updates == {"date_precision": "day", "date_kind": "meeting"}
+
+
 def test_rows_without_evidence_or_rule_are_untouched():
     r = row("gb", "A3", "Bank Rate maintained at 0.5%", f"{BOE}/a.pdf", "2018-01-01",
             source_url=f"{BOE}/b")

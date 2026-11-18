@@ -47,7 +47,7 @@ from cb_corpus.dates import (PICK_FIRST, PICK_LAST, find_title_date, find_url_da
     ("", (None, None)),
     (None, (None, None)),
     # not a month name: "market", "mayor", "decide"
-    ("Market 2020 review", (None, None)),
+    ("Market 2020 outlook", (None, None)),
     ("The mayor 2019 report and the decide 2018 note", (None, None)),
     # an impossible day is not a date; the month still is one
     ("Meeting of 31 February 2010", (date(2010, 2, 1), "month")),
