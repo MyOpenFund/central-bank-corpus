@@ -725,3 +725,41 @@ def test_stamps_applied_even_if_cdx_pass_dies_mid_loop(tmp_path, monkeypatch):
     # crash while resolving the second entry's `_is_converged` check.
     rows = {r["pdf_url"]: r for r in iter_manifest_rows(cfg, "fr")}
     assert dead_url_1 in rows[canonical_url_1]["alt_urls"]
+
+
+# -- torn lines in download_errors.jsonl (issue #20, integrity wave A6) --------
+
+def test_read_inventory_skips_torn_lines_with_one_warning_each(tmp_path, capsys):
+    # download_errors.jsonl is appended lock-free by up to 6 parallel discover
+    # workers: a torn line (killed mid-write, or two writes interleaved) must
+    # never make every later recover-downloads run crash.
+    from cb_corpus.recover import _read_inventory
+    cfg = Config(data_dir=tmp_path)
+    good = lambda u: json.dumps({"bank_code": "fr", "pdf_url": u, "title": "é"})
+    raw = (good("https://x/a.pdf") + "\n"
+           + '{"bank_code": "fr", "pdf_url": "https://x/b.p' + "\n"   # torn mid-line
+           + good("https://x/c.pdf") + "\n"
+           + "[1, 2]\n"                                              # JSON, not an entry
+           ).encode() + '{"bank_code": "fr", "title": "é'.encode()[:-1]  # torn mid-UTF-8, EOF
+    (tmp_path / "download_errors.jsonl").write_bytes(raw)
+    entries = _read_inventory(cfg)
+    assert sorted(e["pdf_url"] for e in entries) == ["https://x/a.pdf", "https://x/c.pdf"]
+    warnings = [l for l in capsys.readouterr().err.splitlines() if "WARNING" in l]
+    assert len(warnings) == 3
+    assert any("line 2 " in w for w in warnings)
+    assert any("line 4 " in w for w in warnings)
+    assert any("line 5 " in w for w in warnings)
+
+
+def test_seed_quarantine_still_aborts_on_a_malformed_line(tmp_path):
+    # Deliberately unchanged: the operator's seed file is validated whole
+    # before any seed is applied (see _apply_seed_quarantine).
+    import pytest
+    from cb_corpus.quarantine import Quarantine
+    from cb_corpus.recover import _apply_seed_quarantine
+    seed = tmp_path / "seed.jsonl"
+    seed.write_text('{"url": "https://x/a.pdf"}\n{"url": "https://x/b.p\n')
+    q = Quarantine(Config(data_dir=tmp_path))
+    with pytest.raises(json.JSONDecodeError):
+        _apply_seed_quarantine(q, str(seed))
+    assert not (tmp_path / "download_quarantine.jsonl").exists()

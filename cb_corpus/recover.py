@@ -109,19 +109,40 @@ def _read_inventory(cfg: Config,
     overwrites an earlier one for the same url). Optional ``bank_codes``
     filter. A missing file is tolerated: empty inventory, a stderr note, no
     crash (the file is created lazily by the crawler only once a download
-    actually fails)."""
+    actually fails).
+
+    A line that does not parse as a JSON object is skipped with ONE stderr
+    warning naming its line number (same pattern as ``_read_candidates``),
+    the good lines around it still collected (issue #20). The file is
+    appended lock-free by up to 6 parallel discover workers, so a torn line
+    (a writer killed mid-write, or torn mid UTF-8 character) is an expected
+    accident, not a reason to make every later recover-downloads run crash
+    until someone hand-edits it. Unlike ``_apply_seed_quarantine``, which
+    reads the operator's own file and aborts on purpose."""
     path = cfg.data_dir / "download_errors.jsonl"
     if not path.exists():
         print(f"[recover] no {path} -- nothing to recover", file=sys.stderr, flush=True)
         return []
     codes = set(bank_codes) if bank_codes else None
     by_url: dict[str, dict] = {}
-    with path.open() as fh:
-        for line in fh:
+    # errors="replace": a line torn mid multi-byte character must fail ITS
+    # json.loads (and be skipped), not abort the whole read with a
+    # UnicodeDecodeError.
+    with path.open(encoding="utf-8", errors="replace") as fh:
+        for lineno, line in enumerate(fh, start=1):
             line = line.strip()
             if not line:
                 continue
-            entry = json.loads(line)
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError as exc:
+                print(f"[recover] WARNING: malformed JSON on line {lineno} of "
+                      f"{path}, skipped: {exc}", file=sys.stderr, flush=True)
+                continue
+            if not isinstance(entry, dict):
+                print(f"[recover] WARNING: line {lineno} of {path} is not a JSON "
+                      f"object, skipped", file=sys.stderr, flush=True)
+                continue
             if codes is not None and entry.get("bank_code") not in codes:
                 continue
             url = entry.get("pdf_url")
