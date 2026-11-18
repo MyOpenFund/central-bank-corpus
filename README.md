@@ -96,15 +96,21 @@ no machine-translated or model-generated text.
   owner. Bytes that claim to be a PDF (server mime `application/pdf`, or an expected PDF not
   served as HTML) must hold `%PDF` in their first 1,024 bytes, be at least
   `Config.min_pdf_bytes` (default 1,024) and, with `Config.pdf_require_eof` (default true), hold
-  `%%EOF` in their last 2,048 bytes. A producer that expects a PDF but gets HTML (consent wall,
+  `%%EOF` in their last 2,048 bytes (the three fields default from the environment variables
+  `CB_MIN_PDF_BYTES`, `CB_PDF_REQUIRE_EOF`, `CB_PDF_URL_SERVED_HTML`; an invalid value warns on
+  stderr and keeps the default — see deploy/README.md). Bytes that pass that check are stored
+  as a PDF even when the server says `text/html`. A producer that expects a PDF but gets HTML (consent wall,
   error or "moved" page) is refused with `Config.pdf_url_served_html="reject"` (default;
   `"accept"` = the old behaviour, the HTML is stored and rendered). A failing candidate is
   skipped and the next fallback URL tried; when none passes, `save()` raises
   `ContentCheckFailed`: the record is a download error (`download_errors.jsonl`, quarantine,
-  `error` in the counts) and one `bad-content: N` stderr line per `save_many` batch. HTML
-  producers are untouched. Artifacts are written atomically (temp file in the same directory,
-  `fsync`, `os.replace`); Chrome renders to a temp path and its output must pass the same PDF
-  check before it replaces the HTML as the artifact. Rows already bound to bad bytes before this
+  `error` in the counts, plus a `bad-content` sub-count and the run-report's `bad_content`
+  counter) and one `bad-content: N` stderr line per `save_many` batch. HTML
+  producers are untouched. Artifacts are written atomically (hidden `.part` temp file in the
+  same directory, created under the umask, `fsync`, `os.replace`); Chrome renders to a temp
+  path and its output must pass the same PDF check before it replaces the HTML as the
+  artifact — in `save()`, `convert-html` and `retry-html` alike (`retry-html` adopts a PDF
+  already on disk only if it passes the check). Rows already bound to bad bytes before this
   check are not detected (it guards new writes).
   **Quarantine** (`quarantine.py`): parallel discover workers share
   `data/download_quarantine.jsonl`; every write takes its sidecar `flock` and first replays the
@@ -146,7 +152,8 @@ python3.13 -m pytest -q
 
 Every work command (`discover`, `bis-sitemap`, `repec`) appends a structured
 run-report line to `data/runs.jsonl` (run id, per-source counters, fetch
-errors, an explicit `truncated` flag) and exits honestly: `0` clean, `1`
+errors, `bad_content` — failed documents whose URLs served the wrong bytes —,
+an explicit `truncated` flag) and exits honestly: `0` clean, `1`
 fatal, `3` degraded — a run that did no useful work never exits 0. An HTTP 404
 on an IDEAS listing page after the last one (not linked from the previous page)
 ends the RePEc walk cleanly (no truncation; the run can still be degraded for
@@ -257,7 +264,10 @@ owning row's own file is still on disk with the same size and sha256 — the
 sweep never removes the last good copy of a document); any other orphan is
 **unindexed** and stays in place — follow up with `reindex-from-disk` on that
 scope. Indexed files are never touched; symlinks are ignored; an unreadable
-file is reported (`hash-failed`), never moved. A `kept-owner-missing` row
+file is reported (`hash-failed`), never moved. A hidden `.part` temp (an
+atomic write in progress) younger than `--temp-min-age-hours` (default 24) is
+skipped; an older one, left by a killed process, is reported as `stale-temp`
+(`temps_stale`) and moved only with `--move`. A `kept-owner-missing` row
 carries the reason (`error`) and the resolved `owner_path`. Every run writes
 `data/reports/orphan_sweep_<ts>.jsonl` (one line per orphan) and
 `orphan_sweep_<ts>.summary.json`. Exit 0 when the sweep completed (failed
