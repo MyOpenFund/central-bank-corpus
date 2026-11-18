@@ -79,6 +79,7 @@ from .banks import get_bank
 from .config import Config
 from .http import Fetcher
 from .models import DocRecord
+from .pdfcheck import MAGIC_WINDOW, has_pdf_magic
 from .quarantine import Quarantine
 from .sources.repec import IDEAS, _paper_meta, extract_pdf_candidates
 from .sources.wayback import latest_capture, raw_url
@@ -95,9 +96,10 @@ _DUPLICATE_CONTENT_PREFIX = "skip:duplicate-content"
 
 # --candidates local-file verification: reject anything too small to
 # plausibly be a real working paper (a truncated download, an HTML error
-# page saved with a .pdf extension, etc).
+# page saved with a .pdf extension, etc). Deliberately higher than
+# Config.min_pdf_bytes (storage's floor for any PDF): it judges externally
+# hunted candidates, a different question (integrity wave 2026-11).
 _MIN_CANDIDATE_PDF_BYTES = 20 * 1024
-_PDF_MAGIC = b"%PDF"
 
 
 def _read_inventory(cfg: Config,
@@ -220,20 +222,24 @@ def _read_candidates(path: str) -> list[dict]:
 
 
 def _verify_local_pdf(path: Path) -> bool:
-    """True iff ``path`` exists, starts with the ``%PDF`` magic, and is
-    bigger than ``_MIN_CANDIDATE_PDF_BYTES`` -- the honesty check before an
+    """True iff ``path`` exists, carries the ``%PDF`` magic (the shared rule,
+    pdfcheck.has_pdf_magic: within the first 1,024 bytes, so a valid file
+    after leading whitespace passes) and is bigger than
+    ``_MIN_CANDIDATE_PDF_BYTES`` -- the honesty check before an
     externally-hunted file is ever registered into the corpus (recover-
-    quarantine design: verified local PDF)."""
+    quarantine design: verified local PDF). The truncation (``%%EOF``) rule
+    is applied afterwards by Storage.reindex, which returns
+    ``skip:bad-content`` for such a file."""
     try:
         if not path.is_file():
             return False
         if path.stat().st_size <= _MIN_CANDIDATE_PDF_BYTES:
             return False
         with path.open("rb") as fh:
-            head = fh.read(len(_PDF_MAGIC))
+            head = fh.read(MAGIC_WINDOW)
     except OSError:
         return False
-    return head == _PDF_MAGIC
+    return has_pdf_magic(head)
 
 
 def _apply_seed_quarantine(quarantine: Quarantine, path: str) -> int:
