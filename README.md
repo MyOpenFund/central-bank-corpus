@@ -91,13 +91,35 @@ no machine-translated or model-generated text.
   `data/reports/duplicate_stamps.jsonl` (`persisted` = owner eligible and found; an
   `error` field when the stamping itself failed), with one
   `duplicate-content: N (stamped U urls on R rows)` stderr line per batch when N > 0.
+  **Content check** (`pdfcheck.py`): an HTTP 200 is not a document. Each candidate URL's bytes
+  are checked **before** the sha256 dedup, so an error page is never stored nor becomes a dedup
+  owner. Bytes that claim to be a PDF (server mime `application/pdf`, or an expected PDF not
+  served as HTML) must hold `%PDF` in their first 1,024 bytes, be at least
+  `Config.min_pdf_bytes` (default 1,024) and, with `Config.pdf_require_eof` (default true), hold
+  `%%EOF` in their last 2,048 bytes. A producer that expects a PDF but gets HTML (consent wall,
+  error or "moved" page) is refused with `Config.pdf_url_served_html="reject"` (default;
+  `"accept"` = the old behaviour, the HTML is stored and rendered). A failing candidate is
+  skipped and the next fallback URL tried; when none passes, `save()` raises
+  `ContentCheckFailed`: the record is a download error (`download_errors.jsonl`, quarantine,
+  `error` in the counts) and one `bad-content: N` stderr line per `save_many` batch. HTML
+  producers are untouched. Artifacts are written atomically (temp file in the same directory,
+  `fsync`, `os.replace`); Chrome renders to a temp path and its output must pass the same PDF
+  check before it replaces the HTML as the artifact. Rows already bound to bad bytes before this
+  check are not detected (it guards new writes).
+  **Quarantine** (`quarantine.py`): parallel discover workers share
+  `data/download_quarantine.jsonl`; every write takes its sidecar `flock` and first replays the
+  lines other processes appended, so no worker regresses another's night count or resurrects
+  a released URL (`flock` is advisory; on a network filesystem it depends on the server).
 - **Reindex from disk** (`pipeline.reindex_native_from_disk` / `reindex_bis_from_disk`, CLI
   `reindex-from-disk`) → rebuild manifest rows for PDFs that are **on disk but missing from the
   manifest** (e.g. the manifest was reset/lost while downloads kept accumulating). Replays
   discovery — native per-bank adapters (`--source native`, default; covers C1/A/B/E/F) or BIS
   sitemaps (`--source bis-sitemap`; C1) — to recover each document's exact **date** and **title**,
   then writes the row **without re-downloading the PDF**, matched to the on-disk file by the
-  stable `doc_id`. Dry-run by default (`--write` to persist); idempotent.
+  stable `doc_id`. Dry-run by default (`--write` to persist); idempotent. An on-disk `.pdf`
+  that fails the PDF content check (truncated, too small, an error page) returns
+  `skip:bad-content` with one stderr line naming the file: it is never indexed, is left in
+  place, and is tallied as `bad-content` (`bad_content=N` in the summary line, dry run too).
 - **Completeness matrix** (`completeness.py`) → expected-vs-downloaded per (bank × type × year):
   `ok / partial / missing / unknown`.
 - **Fetcher** (`http.py`) → per-host rate limit (0.5s default) + retries with exponential
@@ -351,9 +373,11 @@ cb_corpus/
   models.py          DocRecord
   dates.py           date + precision from a title / URL; policy-core tables (date_kind, date rules)
   policy_dates.py    policy-dates backfill (date, precision, kind of existing policy rows)
-  config.py          settings (UA, throttle, html_to_pdf, render_blocked_networks)
+  config.py          settings (UA, throttle, html_to_pdf, render_blocked_networks, PDF content check)
   http.py            fetcher (per-host throttle + retry/backoff; throttle() for Chrome)
-  storage.py         manifest, dedup (doc_id + sha256), HTML→PDF render, html_path
+  storage.py         manifest, dedup (doc_id + sha256), content check, atomic writes, HTML→PDF render, html_path
+  pdfcheck.py        PDF shape check (magic, size, %%EOF) shared by save/reindex/render/recover
+  filelock.py        sidecar flock shared by the manifests and the quarantine
   htmlpdf.py         headless-Chrome HTML→PDF (shared profile)
   completeness.py    expected-vs-downloaded matrix
   pipeline.py        run() (convergence), run_bis_sitemap(), run_repec(),
@@ -361,7 +385,7 @@ cb_corpus/
   cli.py             command line (`python -m cb_corpus --help` lists every subcommand)
   runreport.py       run reports (data/runs.jsonl) + honest exit codes
   cadence.py         median-gap silence watchdog (cadence-watch)
-  quarantine.py      per-URL download quarantine (dead-letter state; one local night per Storage instance = per process run of a command)
+  quarantine.py      per-URL download quarantine (dead-letter state; one local night per Storage instance = per process run of a command; locked writes, parallel-worker safe)
   recover.py         recover-downloads (inventory-driven Wayback recovery)
   orphans.py         sweep-orphans (quarantine on-disk duplicates)
   convert.py / retry_html.py   HTML -> PDF migration and retries

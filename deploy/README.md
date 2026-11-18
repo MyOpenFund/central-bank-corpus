@@ -115,6 +115,26 @@ of being rediscovered as `duplicate` forever — but only when that row is a
 real PDF (no `html_path`; `Config.stamp_duplicate_html` relaxes this). With an
 HTML owner (including a page rendered to PDF) the dead URL is neither stamped
 nor released: it stays quarantined and the next recover pass re-evaluates it.
+The parallel discover workers (`DISCOVER_WORKERS`) all write this one file:
+every write takes its sidecar lock (`.download_quarantine.jsonl.lock`, never
+delete it while a job runs) and first replays what the other workers appended,
+so their night counts and releases never overwrite each other. Each process
+still decides what to skip from the state it read at startup.
+
+**Content check (bad-content):** a download that answers HTTP 200 with the
+wrong bytes — a consent wall or error page served as HTML for a PDF URL, an
+HTML page labelled `application/pdf`, a stub under `Config.min_pdf_bytes`
+(1,024), a PDF cut off before its `%%EOF` (`Config.pdf_require_eof`) — is not
+stored: the next fallback URL is tried, and when none passes the document is
+a download error (`ContentCheckFailed` in `download_errors.jsonl`), counted in
+the quarantine like a dead URL, with one `[<label>] bad-content: N` line per
+batch in the logs. A burst of `bad-content` on one bank usually means the site
+put a wall in front of its PDFs. If a source legitimately serves HTML on URLs
+its producer declares as PDF, `Config.pdf_url_served_html="accept"` restores
+the old behaviour. `reindex-from-disk` reports an on-disk PDF that fails the
+same check as `skip:bad-content` (`bad_content=N`), never indexes it and
+leaves the file in place for inspection. Rows indexed before this check
+(2026-11) are not re-verified.
 
 **Migration:** stacks created before 2026-07-15 used the refresh/discover job
 pair — the crontab and job names changed; recreate the stack after re-pulling
