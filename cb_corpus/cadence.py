@@ -53,8 +53,10 @@ _STATUS_ORDER = {"overdue": 0, "soon": 1, "on-track": 2}
 # fallbacks). Fed into the median they collapse real releases onto one fake
 # date per month/year and can become `last`, so they are dropped before the
 # window. A row without the key (or with null) predates the field and is kept
-# as it always was.
+# as it always was. This is the DEFAULT; `coarse_precisions()` reads the
+# operator override.
 COARSE_PRECISIONS: frozenset[str] = frozenset({"month", "year"})
+_PRECISION_VALUES = frozenset({"day", "month", "year"})
 
 
 # -- env thresholds (re-read on EVERY call, never cached -- same discipline
@@ -86,6 +88,25 @@ def lookback_years() -> int:
     return _int_env("CADENCE_LOOKBACK_YEARS", _DEFAULT_LOOKBACK_YEARS)
 
 
+def coarse_precisions() -> frozenset[str]:
+    """`date_precision` values dropped before the median: env
+    `CADENCE_DROP_PRECISIONS`, a comma list of `month` / `year` (e.g. `year`
+    to keep judging month-precision series such as quarterly reports dated
+    by their period), or `none` to drop nothing. Unset, empty or containing
+    an unknown value -> the default `COARSE_PRECISIONS` (month, year): a typo
+    never crashes the weekly job, same discipline as the thresholds above.
+    `day` is never dropped (it would empty every series)."""
+    raw = os.environ.get("CADENCE_DROP_PRECISIONS", "").strip().lower()
+    if not raw:
+        return COARSE_PRECISIONS
+    if raw == "none":
+        return frozenset()
+    vals = {v.strip() for v in raw.split(",") if v.strip()}
+    if not vals or not vals <= (_PRECISION_VALUES - {"day"}):
+        return COARSE_PRECISIONS
+    return frozenset(vals)
+
+
 # -- pure computation ----------------------------------------------------
 def _parse_date(value) -> Optional[date]:
     """Parse a manifest row's `date` field (ISO `%Y-%m-%d`, possibly with a
@@ -106,8 +127,8 @@ def compute_series(cfg: Config, *, today: Optional[date] = None,
     enough recent history to judge, straight from `iter_manifest_rows` (no
     network, no state file involved).
 
-    Rows whose `date_precision` is in `COARSE_PRECISIONS` (month, year) are
-    dropped FIRST, before the window, the median and `last` (issue #23): their
+    Rows whose `date_precision` is in `coarse_precisions()` (default month,
+    year; env `CADENCE_DROP_PRECISIONS`) are dropped FIRST, before the window, the median and `last` (issue #23): their
     date is a placeholder (the 1st of the month, 1 January), not a release day.
     When `dropped` is a dict, it receives `(bank_code, doc_type) -> number of
     dropped rows` (all years, dated rows only) for every series that lost at
@@ -141,6 +162,7 @@ def compute_series(cfg: Config, *, today: Optional[date] = None,
     soon = soon_days()
     min_n = min_docs()
     window_start = today - timedelta(days=365 * lookback_years())
+    coarse = coarse_precisions()
 
     by_series: dict[tuple[str, str], list[date]] = {}
     for row in iter_manifest_rows(cfg):
@@ -151,7 +173,7 @@ def compute_series(cfg: Config, *, today: Optional[date] = None,
         dtype = (row.get("doc_type") or "").strip()
         if not bank or not dtype:
             continue
-        if row.get("date_precision") in COARSE_PRECISIONS:
+        if row.get("date_precision") in coarse:
             if dropped is not None:
                 dropped[(bank, dtype)] = dropped.get((bank, dtype), 0) + 1
             continue
@@ -409,14 +431,17 @@ def _format_table(entries: list[dict], dropped: Optional[dict] = None) -> str:
     return "\n".join(lines)
 
 
-def _dropped_lines(entries: list[dict], dropped: dict) -> list[str]:
-    """One stderr line per series that lost month/year-precision rows, saying
-    whether it was still judged on its day rows or not judged at all."""
+def _dropped_lines(entries: list[dict], dropped: dict,
+                   coarse: Optional[frozenset[str]] = None) -> list[str]:
+    """One stderr line per series that lost coarse-precision rows (labelled
+    with the precisions actually dropped, e.g. `month/year`), saying whether
+    it was still judged on its remaining rows or not judged at all."""
+    label = "/".join(sorted(COARSE_PRECISIONS if coarse is None else coarse))
     judged = {(e["bank_code"], e["doc_type"]) for e in entries}
     out = []
     for (bank, dtype), n in sorted(dropped.items()):
         tail = "" if (bank, dtype) in judged else "; series not judged"
-        out.append(f"cadence: {bank} {dtype}: {n} month/year-precision row(s) "
+        out.append(f"cadence: {bank} {dtype}: {n} {label}-precision row(s) "
                    f"dropped{tail}")
     return out
 
@@ -434,7 +459,7 @@ def run_cadence_watch(cfg: Config, *, write: bool = False,
     dropped: dict = {}
     entries = compute_series(cfg, today=today, dropped=dropped)
     print(_format_table(entries, dropped))
-    for line in _dropped_lines(entries, dropped):
+    for line in _dropped_lines(entries, dropped, coarse_precisions()):
         print(line, file=sys.stderr, flush=True)
     if write:
         write_cadence_jsonl(cfg, entries)

@@ -501,6 +501,51 @@ def test_rows_without_precision_key_count_as_before(tmp_path):
     assert e["n_3y"] == 7 and dropped == {}
 
 
+def _quarterly_period_series(cfg):
+    """A quarterly report dated by its period (month precision, the 1st), the
+    shape of ecb/gb/au E1, plus a year-precision placeholder."""
+    recs = [_rec("gb", DocType.E1, date(y, m, 1), date_precision="month", _i=y * 100 + m)
+            for y in (2024, 2025) for m in (2, 5, 8, 11)]
+    recs.append(_rec("gb", DocType.E1, date(2026, 1, 1), date_precision="year", _i=1))
+    _write(cfg, recs)
+
+
+def test_drop_precisions_env_override(tmp_path, monkeypatch):
+    """`CADENCE_DROP_PRECISIONS=year` keeps judging month-precision series;
+    `none` drops nothing; garbage falls back to the default (never a crash)."""
+    cfg = _mk_cfg(tmp_path)
+    _quarterly_period_series(cfg)
+    today = date(2026, 1, 10)
+
+    dropped: dict = {}
+    assert compute_series(cfg, today=today, dropped=dropped) == []      # default
+    assert dropped == {("gb", "E1"): 9}
+
+    monkeypatch.setenv("CADENCE_DROP_PRECISIONS", "year")
+    dropped = {}
+    [e] = compute_series(cfg, today=today, dropped=dropped)
+    assert e["n_3y"] == 8 and e["last"] == "2025-11-01" and dropped == {("gb", "E1"): 1}
+
+    monkeypatch.setenv("CADENCE_DROP_PRECISIONS", "none")
+    dropped = {}
+    [e] = compute_series(cfg, today=today, dropped=dropped)
+    assert e["n_3y"] == 9 and e["last"] == "2026-01-01" and dropped == {}
+
+    for bad in ("day", "month,daily", ",", "MONTH;YEAR"):
+        monkeypatch.setenv("CADENCE_DROP_PRECISIONS", bad)
+        dropped = {}
+        assert compute_series(cfg, today=today, dropped=dropped) == [], bad
+        assert dropped == {("gb", "E1"): 9}
+
+
+def test_stderr_label_follows_the_override(tmp_path, monkeypatch, capsys):
+    cfg = _mk_cfg(tmp_path)
+    _quarterly_period_series(cfg)
+    monkeypatch.setenv("CADENCE_DROP_PRECISIONS", "year")
+    run_cadence_watch(cfg, write=False, today=date(2026, 1, 10))
+    assert "cadence: gb E1: 1 year-precision row(s) dropped" in capsys.readouterr().err
+
+
 def test_dropped_count_shown_in_the_table_row(tmp_path, capsys):
     cfg = _mk_cfg(tmp_path)
     days = _day_series(date(2025, 1, 5), 8, 20)
