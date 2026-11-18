@@ -353,3 +353,84 @@ def test_retry_still_adopts_a_valid_pdf_left_on_disk(tmp_path, monkeypatch):
     monkeypatch.setattr(retry_mod, "find_chrome", lambda: "/fake/chrome")
     counts = retry_mod.retry_failed(cfg, parallelism=1, resolver=public_resolver)
     assert counts.get("already-pdf") == 1
+
+
+# -- S5: `.part` temps in sweep-orphans -----------------------------------
+
+from datetime import datetime, timezone                             # noqa: E402
+
+from cb_corpus import orphans                                       # noqa: E402
+
+_NOW = datetime(2026, 11, 18, 12, 0, tzinfo=timezone.utc)
+
+
+def _temp(cfg, rel: str, data: bytes, age_s: float) -> Path:
+    p = cfg.raw_dir / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(data)
+    t = _NOW.timestamp() - age_s
+    os.utime(p, (t, t))
+    return p
+
+
+def _sweep_cfg(tmp_path):
+    cfg = Config(data_dir=tmp_path / "data")
+    cfg.raw_dir.mkdir(parents=True)
+    cfg.manifest_dir.mkdir(parents=True)
+    return cfg
+
+
+def _report(summary) -> list[dict]:
+    return [_json.loads(l) for l in Path(summary.report_path).read_text().splitlines()]
+
+
+def test_is_temp_part():
+    assert orphans.is_temp_part(Path(".abc.pdf.0123456789ab.part"))
+    assert not orphans.is_temp_part(Path("abc.part"))          # not hidden
+    assert not orphans.is_temp_part(Path(".abc.pdf"))
+
+
+def test_recent_temp_is_ignored_and_old_one_reported_as_stale(tmp_path):
+    cfg = _sweep_cfg(tmp_path)
+    fresh = _temp(cfg, "xx/C1/2025/.a.pdf.111111111111.part", b"%PDF half", 60)
+    stale = _temp(cfg, "xx/C1/2025/.b.pdf.222222222222.part", b"%PDF half2", 3 * 86400)
+    s = orphans.sweep_orphans(cfg, now=_NOW)
+    assert (s.temps_fresh, s.temps_stale) == (1, 1)
+    assert (s.orphans, s.unindexed, s.duplicates) == (0, 0, 0)
+    [entry] = _report(s)
+    assert entry["rel"] == "xx/C1/2025/.b.pdf.222222222222.part"
+    assert entry["action"] == "stale-temp"
+    assert fresh.exists() and stale.exists()                  # dry run: nothing moves
+
+
+def test_stale_temp_moved_only_with_move(tmp_path):
+    cfg = _sweep_cfg(tmp_path)
+    fresh = _temp(cfg, "xx/C1/2025/.a.pdf.111111111111.part", b"%PDF half", 60)
+    stale = _temp(cfg, "xx/C1/2025/.b.pdf.222222222222.part", b"%PDF half2", 3 * 86400)
+    s = orphans.sweep_orphans(cfg, move=True, now=_NOW)
+    assert s.temps_stale == 1 and s.moved == 1
+    assert fresh.exists() and not stale.exists()
+    assert (cfg.orphans_dir / "xx/C1/2025/.b.pdf.222222222222.part").read_bytes() == b"%PDF half2"
+
+
+def test_temp_min_age_is_configurable(tmp_path):
+    cfg = _sweep_cfg(tmp_path)
+    _temp(cfg, "xx/C1/2025/.a.pdf.111111111111.part", b"%PDF half", 600)
+    assert orphans.sweep_orphans(cfg, now=_NOW).temps_fresh == 1
+    s = orphans.sweep_orphans(cfg, now=_NOW, temp_min_age=300)
+    assert (s.temps_fresh, s.temps_stale) == (0, 1)
+
+
+def test_cli_sweep_orphans_temp_min_age_flag(tmp_path, monkeypatch, capsys):
+    from cb_corpus import cli
+    monkeypatch.chdir(tmp_path)
+    cfg = Config()
+    cfg.raw_dir.mkdir(parents=True)
+    p = cfg.raw_dir / "xx" / ".a.pdf.111111111111.part"
+    p.parent.mkdir()
+    p.write_bytes(b"x")
+    t = datetime.now(timezone.utc).timestamp() - 2 * 3600
+    os.utime(p, (t, t))
+    assert cli.main(["sweep-orphans", "--temp-min-age-hours", "1"]) == 0
+    out = capsys.readouterr().out
+    assert '"temps_stale": 1' in out and "1 stale temp" in out

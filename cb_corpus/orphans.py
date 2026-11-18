@@ -19,7 +19,13 @@ Rules (see the design note of 2026-09-03):
   never moved — quarantining it would leave zero on-disk copies of that
   document;
 * symlinks are ignored: never walked as orphans, never used as a move
-  destination.
+  destination;
+* a ``.part`` temp (``.<name>.<random>.part``, written by storage's atomic
+  writes and checked renders, issue #21) is not an orphan: one younger than
+  ``temp_min_age`` (default 24 h) may still be in use by a running job and
+  is skipped (``temps_fresh``); an older one was left by a killed process
+  and is reported as ``stale-temp`` (``temps_stale``), moved to
+  ``raw_orphans/`` only with ``--move`` like a duplicate, never deleted.
 
 The manifest is read once, through :func:`storage.iter_manifest_rows` (no
 ``Storage()`` side effects). On the NAS the run-job global lock guarantees no
@@ -45,6 +51,16 @@ from .storage import iter_manifest_rows
 PDF_MAGIC = b"%PDF"
 MIN_VALID_PDF_BYTES = 20 * 1024      # same honesty rule as recover._verify_local_pdf
 _CHUNK = 1024 * 1024
+# A `.part` temp younger than this may still be written by a running job
+# (a download or a Chrome render takes minutes at most; a whole night's job
+# is bounded by DISCOVER_BANK_TIMEOUT, 3 h): left alone by the sweep.
+DEFAULT_TEMP_MIN_AGE_SECONDS = 24 * 3600
+
+
+def is_temp_part(path: Path) -> bool:
+    """True for a storage temp sibling: hidden and `.part`-suffixed
+    (storage._temp_sibling names them `.<name>.<random>.part`)."""
+    return path.name.startswith(".") and path.name.endswith(".part")
 
 
 @dataclass
@@ -60,6 +76,7 @@ class OrphanEntry:
     valid_pdf: bool
     matched_doc_id: Optional[str]
     # would-move | moved | move-failed | kept-unindexed | kept-owner-missing | hash-failed
+    # | stale-temp (an old `.part` temp, dry run)
     action: str
     dest: Optional[str]       # relative path under raw_orphans/ (duplicates only)
     error: Optional[str] = None
@@ -82,6 +99,8 @@ class SweepSummary:
     hash_failed: int = 0
     owner_missing: int = 0
     banks: Optional[list[str]] = None
+    temps_fresh: int = 0      # `.part` temps younger than temp_min_age: skipped
+    temps_stale: int = 0      # older `.part` temps: reported (moved with --move)
 
 
 @dataclass
@@ -297,7 +316,8 @@ def _raise_sigterm(signum, frame) -> None:
 
 def sweep_orphans(cfg: Config, *, banks: Optional[set[str]] = None, move: bool = False,
                   progress_every: int = 1000, report_path: Optional[Path] = None,
-                  now: Optional[datetime] = None) -> SweepSummary:
+                  now: Optional[datetime] = None,
+                  temp_min_age: float = DEFAULT_TEMP_MIN_AGE_SECONDS) -> SweepSummary:
     """Find, classify, (move) and report every orphan under raw/.
 
     Raises ``FileNotFoundError`` when ``raw/`` is missing or not a directory —
@@ -307,6 +327,11 @@ def sweep_orphans(cfg: Config, *, banks: Optional[set[str]] = None, move: bool =
     Installs a ``SIGTERM`` handler (main thread only) for the duration of the
     sweep so an operator-issued kill still writes the summary; the previous
     handler is always restored.
+
+    ``temp_min_age`` (seconds between a file's mtime and the sweep start,
+    ``now``): a
+    ``.part`` temp younger than this is skipped, an older one reported as a
+    stale temp (see the module docstring).
     """
     if not cfg.raw_dir.is_dir():
         raise FileNotFoundError(f"corpus raw dir not found or not a directory: {cfg.raw_dir}")
@@ -324,6 +349,7 @@ def sweep_orphans(cfg: Config, *, banks: Optional[set[str]] = None, move: bool =
     owner_hash_cache: dict[Path, str] = {}
     files_seen = orphans_n = dups = unindexed = moved = failed = 0
     hash_failed = owner_missing = 0
+    temps_fresh = temps_stale = 0
     bytes_dups = 0
 
     install_handler = threading.current_thread() is threading.main_thread()
@@ -335,6 +361,29 @@ def sweep_orphans(cfg: Config, *, banks: Optional[set[str]] = None, move: bool =
                 if progress_every and files_seen % progress_every == 0:
                     print(f"sweep-orphans: examined {files_seen} files "
                           f"({orphans_n} orphans, {dups} duplicates so far)", file=sys.stderr, flush=True)
+                if is_temp_part(path):
+                    try:
+                        age = started.timestamp() - path.stat().st_mtime
+                    except OSError:          # renamed into place meanwhile
+                        continue
+                    if age < temp_min_age:
+                        temps_fresh += 1
+                        continue
+                    temps_stale += 1
+                    try:
+                        entry = classify(path, cfg.raw_dir, index)
+                    except OSError:
+                        continue
+                    entry.action, entry.dest = "stale-temp", entry.rel
+                    if move:
+                        move_to_orphans(entry, cfg)
+                        if entry.action == "moved":
+                            moved += 1
+                        else:
+                            failed += 1
+                    out.write(json.dumps(asdict(entry), ensure_ascii=True) + "\n")
+                    out.flush()
+                    continue
                 # Multi-dot names (e.g. "x.tar.gz") would have stem "x.tar";
                 # the corpus layout is "<id>.<ext>" so this never arises here.
                 if path.stem in index.doc_ids:
@@ -376,6 +425,7 @@ def sweep_orphans(cfg: Config, *, banks: Optional[set[str]] = None, move: bool =
             report_path=str(report_path), started_at=started.isoformat(),
             finished_at=finished.isoformat(), hash_failed=hash_failed, owner_missing=owner_missing,
             banks=sorted(banks) if banks is not None else None,
+            temps_fresh=temps_fresh, temps_stale=temps_stale,
         )
         report_path.with_suffix(".summary.json").write_text(
             json.dumps(asdict(summary), indent=2) + "\n", encoding="utf-8")

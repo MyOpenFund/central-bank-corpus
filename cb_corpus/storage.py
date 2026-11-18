@@ -62,8 +62,9 @@ def _temp_sibling(path: Path) -> Path:
     created empty. Same directory on purpose: os.replace is atomic only
     within one filesystem. Hidden and `.part`-suffixed so readers that glob
     raw/ for `*.pdf` / `*.html` (reindex) never pick up a half-written file;
-    `sweep-orphans` walks every file, dotfiles included, so it does see a
-    temp left behind by a killed process.
+    `sweep-orphans` walks every file, dotfiles included: it skips a recent
+    temp and reports an old one (left by a killed process) as a stale temp
+    (orphans.is_temp_part).
 
     Created with mode 0o666 through os.open, so the process umask applies
     and the final artifact (renamed from this file) gets the same mode a
