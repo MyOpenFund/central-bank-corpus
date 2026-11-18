@@ -6,6 +6,7 @@ from dataclasses import dataclass, field, asdict
 from datetime import date
 from typing import Optional, Union
 
+from .dates import date_kind_for
 from .taxonomy import DocType
 
 
@@ -51,6 +52,12 @@ class DocRecord:
     date_precision: Optional[str] = None  # day | month | year | None (not stated / undated)
     # None for undated records, e.g. RePEc/IDEAS pages without a date.
     date_source: Optional[str] = "bank_site"  # bank_site | repec | wayback | pdf_meta | nep_bound | llm_crawl | sitemap_lastmod
+    # What `date` IS: meeting | publication | period (cb_corpus.dates.DATE_KINDS).
+    # Leave it None: `to_row` takes it from the per-bank table
+    # (dates.POLICY_DATE_KIND) for the policy core. A producer sets it only to
+    # say something the table does not. Optional manifest key: written only
+    # when there is a date AND a kind, absent otherwise. Never part of doc_id.
+    date_kind: Optional[str] = None
     # RePEc handle (e.g. "RePEc:ecb:ecbwps:20253117"), stamped by repec-check /
     # the v2 migration when a manifest row is matched to its IDEAS record. Empty
     # when unknown. Optional metadata only — never part of doc_id.
@@ -88,6 +95,11 @@ class DocRecord:
         d["date"] = self.date.isoformat() if self.date else None
         if self.date is None:
             d["date_precision"] = None      # no date -> no precision
+        kind = self.date_kind or date_kind_for(self.bank_code, self.doc_type)
+        if self.date is not None and kind:
+            d["date_kind"] = kind
+        else:
+            del d["date_kind"]              # optional key: absent, never null
         d["doc_id"] = self.doc_id
         d["year"] = self.year
         return d

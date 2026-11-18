@@ -20,6 +20,9 @@ read from, for audit CSVs):
                                   1999", "October 31 and November 1, 2016",
                                   "June 2021")
   parse_url_date(url, pattern)    a regex with named groups for the date parts
+
+The module also owns the `date_kind` table: what the date of a policy
+document IS (meeting, publication, period), per bank and document type.
 """
 from __future__ import annotations
 
@@ -49,6 +52,65 @@ TWO_DIGIT_YEAR_PIVOT = 70
 #: Years outside this range are not read as years (a 4-digit number in a
 #: title is more often an amount or a reference).
 MIN_YEAR, MAX_YEAR = 1900, 2100
+
+#: What a date IS. One date field cannot say it by itself:
+#:   meeting      the day the policy meeting ended / the decision was taken
+#:                (minutes dated at their meeting are read weeks later)
+#:   publication  the day (or month) the document was released
+#:   period       the issue the document belongs to ("the May 2020 Statement"),
+#:                a month, not an event
+KIND_MEETING = "meeting"
+KIND_PUBLICATION = "publication"
+KIND_PERIOD = "period"
+DATE_KINDS = (KIND_MEETING, KIND_PUBLICATION, KIND_PERIOD)
+
+#: (bank_code, doc type code) -> what `date` is, for the policy core. This
+#: table is the single owner of that knowledge: new rows take their
+#: `date_kind` from it (DocRecord.to_row) and the `policy-dates` backfill
+#: stamps it on existing rows. It records what each series' date has always
+#: been -- it does not move any date to another meaning. A pair that is not
+#: listed claims nothing (no `date_kind` key on the row).
+POLICY_DATE_KIND: dict[tuple[str, str], str] = {
+    # Federal Reserve: everything is dated at the FOMC meeting, except the
+    # semi-annual Monetary Policy Report (its own release day).
+    ("us", "A2"): KIND_MEETING,
+    ("us", "A3"): KIND_MEETING,
+    ("us", "B1"): KIND_MEETING,
+    ("us", "F1"): KIND_MEETING,
+    ("us", "E1"): KIND_PUBLICATION,
+    # ECB: decision, statement and press conference on the meeting day; the
+    # account is dated at its release, four weeks later; staff projections
+    # are an issue (month).
+    ("ecb", "A1"): KIND_MEETING,
+    ("ecb", "A2"): KIND_MEETING,
+    ("ecb", "B1"): KIND_MEETING,
+    ("ecb", "A3"): KIND_PUBLICATION,
+    ("ecb", "E1"): KIND_PERIOD,
+    # Bank of England: minutes at the day the MPC meeting ended (or its
+    # month); the Monetary Policy Report is an issue (month).
+    ("gb", "A3"): KIND_MEETING,
+    ("gb", "E1"): KIND_PERIOD,
+    # Reserve Bank of Australia: decision and minutes at the board meeting;
+    # the Statement on Monetary Policy is a quarterly issue.
+    ("au", "A1"): KIND_MEETING,
+    ("au", "A3"): KIND_MEETING,
+    ("au", "E1"): KIND_PERIOD,
+    # Bank of Canada: the summary of deliberations is dated at the month it
+    # was published (two weeks after the decision); the Monetary Policy
+    # Report is an issue.
+    ("ca", "A3"): KIND_PUBLICATION,
+    ("ca", "E1"): KIND_PERIOD,
+    # Bank of Japan: minutes at the last day of the meeting.
+    ("jp", "A3"): KIND_MEETING,
+}
+
+
+def date_kind_for(bank_code: str, doc_type) -> Optional[str]:
+    """What `date` is for this bank and document type (a DocType or its
+    code), from POLICY_DATE_KIND; None when the table does not say."""
+    code = getattr(doc_type, "code", doc_type)
+    return POLICY_DATE_KIND.get((bank_code, code))
+
 
 _MONTH_NAMES = ("january", "february", "march", "april", "may", "june", "july",
                 "august", "september", "october", "november", "december")
