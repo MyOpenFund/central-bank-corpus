@@ -25,6 +25,9 @@ exist anywhere in RePEc** (IDEAS meta tags, EconPapers, API — all carry
 For each legacy paper, try in order; stop at the first hit. Every recovered
 date must satisfy the **month constraint**: RePEc's `YYYY-MM` is authoritative
 for the month — a candidate date in a different month is rejected (next rung).
+A row with `date_precision="year"` (RePEc `citation_year` fallback, dated
+1 January) asserts no month, so nothing passes the constraint: it keeps year
+precision (there is deliberately no year-level check).
 
 ### 1. Wayback Machine CDX — first capture of the PDF (best signal)
 

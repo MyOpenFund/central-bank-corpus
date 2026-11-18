@@ -157,3 +157,20 @@ def test_dry_run_counts_the_rejection_without_writing(tmp_path):
                                    config=cfg)
     assert counts["index_rejected"] == 1 and counts["unresolved"] == 1
     assert index_path(cfg).read_text() == before
+
+
+def test_year_precision_row_never_passes_the_month_constraint(tmp_path):
+    """A year-precision row's 1 January is a placeholder, not an asserted
+    January: no candidate passes `month_ok`, a January day included, so
+    neither replay nor fresh recovery can stamp a day on it."""
+    from datetime import date
+    from cb_corpus.wp_dates import month_ok
+    row = _row("y1", "us", "2015-01-01", date_precision="year")
+    assert month_ok(date(2015, 1, 20), row) is False
+    assert month_ok(date(2015, 6, 20), row) is False
+    assert month_ok(date(2015, 1, 20), dict(row, date_precision="month")) is True
+    cfg = _setup(tmp_path, [row], [_entry(row_key(row), "2015-01-20")])
+    counts = wp_dates.run_wp_dates(bank_codes=["us"], write=True, apply_only=True, config=cfg)
+    assert counts["index_rejected"] == 1
+    after = _manifest(cfg, "us")["y1"]
+    assert after["date"] == "2015-01-01" and after["date_precision"] == "year"

@@ -120,7 +120,18 @@ def _row_ym(row: dict) -> Optional[tuple[int, int]]:
 
 
 def month_ok(cand: Optional[date], row: dict) -> bool:
-    """Candidate day is in the row's asserted YYYY-MM and not the 1st."""
+    """Candidate day is in the row's asserted YYYY-MM and not the 1st.
+
+    A row whose `date_precision` is `year` NEVER passes: its 1 January is a
+    placeholder (RePEc `citation_year` fallback, E4 bulletins), not an
+    asserted January, so reading it as "January" would reject the true day
+    and accept a wrong January capture (issue #23 a). There is deliberately
+    no year-level check instead: a Wayback first capture or a PDF
+    /CreationDate anywhere in the year is too weak to stamp a day on it
+    (digitisation snapshots, revision-era PDFs). Such rows keep year
+    precision, on fresh recovery and on index replay alike."""
+    if row.get("date_precision") == "year":
+        return False
     ym = _row_ym(row)
     return bool(cand and ym and (cand.year, cand.month) == ym and cand.day != 1)
 
