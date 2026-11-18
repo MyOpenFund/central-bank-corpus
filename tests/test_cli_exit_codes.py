@@ -69,15 +69,65 @@ def test_suite_pins_runs_log_outside_the_repo(tmp_path, monkeypatch):
     assert runs.exists()
 
 
-def test_data_tree_listing_sees_new_nested_files(tmp_path):
-    """The session guard in conftest.py diffs this listing before/after."""
-    from tests.conftest import data_tree_listing
+def test_guard_catches_append_to_preexisting_runs_log(tmp_path):
+    """Every checkout that ran the old suite already has a data/runs.jsonl:
+    an append to it (same path, grown file) must trip the session guard in
+    conftest.py, as must a new file or an edited manifest."""
+    import os
 
-    assert data_tree_listing(tmp_path / "absent") == set()
+    from tests.conftest import data_tree_changes, data_tree_snapshot
+
+    assert data_tree_snapshot(tmp_path / "absent") == {}
+    runs = tmp_path / "runs.jsonl"
+    runs.write_text('{"run": 1}\n')
     (tmp_path / "manifest").mkdir()
+    man = tmp_path / "manifest" / "us.jsonl"
+    man.write_text("{}\n")
+    before = data_tree_snapshot(tmp_path)
+    assert set(before) == {"runs.jsonl", "manifest/us.jsonl"}
+    assert data_tree_changes(before, data_tree_snapshot(tmp_path)) == []
+
+    with runs.open("a") as fh:          # 1 -> 2 lines: same path, new size
+        fh.write('{"run": 2}\n')
+    assert data_tree_changes(before, data_tree_snapshot(tmp_path)) == ["runs.jsonl"]
+
+    # same-size rewrite: only the mtime moves
+    st = man.stat()
+    man.write_text("[]\n")
+    os.utime(man, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+    (tmp_path / "reports").mkdir()
+    (tmp_path / "reports" / "r.csv").write_text("x\n")
+    assert data_tree_changes(before, data_tree_snapshot(tmp_path)) == [
+        "manifest/us.jsonl", "reports/r.csv", "runs.jsonl"]
+
+
+def test_guard_snapshot_never_enters_raw_or_follows_symlinks(tmp_path, monkeypatch):
+    """The guard must stay cheap on a corpus host: it never descends into
+    data/raw* (tens of GB of downloads), nor below manifest/ and reports/,
+    and never follows a symlink."""
+    import os
+
+    from tests import conftest
+
+    for sub in ("raw/us/2024", "raw_orphans/us", "manifest/nested"):
+        (tmp_path / sub).mkdir(parents=True)
+    (tmp_path / "raw" / "us" / "2024" / "x.pdf").write_bytes(b"%PDF")
+    (tmp_path / "raw_orphans" / "us" / "y.pdf").write_bytes(b"%PDF")
+    (tmp_path / "manifest" / "nested" / "deep.jsonl").write_text("{}\n")
     (tmp_path / "manifest" / "us.jsonl").write_text("{}\n")
-    before = data_tree_listing(tmp_path)
-    (tmp_path / "runs.jsonl").write_text("{}\n")
-    (tmp_path / "raw" / "us").mkdir(parents=True)
-    (tmp_path / "raw" / "us" / "x.pdf").write_bytes(b"%PDF")
-    assert data_tree_listing(tmp_path) - before == {"runs.jsonl", "raw/us/x.pdf"}
+    outside = tmp_path.parent / f"{tmp_path.name}-outside"
+    outside.mkdir()
+    (outside / "z.jsonl").write_text("{}\n")
+    (tmp_path / "reports").symlink_to(outside, target_is_directory=True)
+    (tmp_path / "link.jsonl").symlink_to(outside / "z.jsonl")
+
+    scanned = []
+    real_scandir = os.scandir
+
+    def spy(path):
+        scanned.append(os.path.relpath(path, tmp_path))
+        return real_scandir(path)
+
+    monkeypatch.setattr(conftest.os, "scandir", spy)
+    assert conftest.data_tree_snapshot(tmp_path).keys() == {"manifest/us.jsonl"}
+    assert sorted(scanned) == [".", "manifest"]
