@@ -978,6 +978,19 @@ class Storage:
                 / str(year) / f"{rec.doc_id}.{ext}")
 
     # -- content check ---------------------------------------------------
+    def _sniffed_mime(self, body: bytes, served_mime: str) -> str:
+        """The mime to judge and store `body` under: "application/pdf" when
+        the server labels it HTML but the bytes pass the PDF check
+        (pdfcheck.check_pdf_bytes with Config.min_pdf_bytes /
+        pdf_require_eof) -- the bytes win over the header, so a mislabelled
+        PDF is stored as a .pdf, not rejected as a wall nor stored and
+        rendered as HTML. Any other answer keeps `served_mime`."""
+        if _is_html_mime(served_mime) and check_pdf_bytes(
+                body, min_bytes=self.cfg.min_pdf_bytes,
+                require_eof=self.cfg.pdf_require_eof) is None:
+            return "application/pdf"
+        return served_mime
+
     def _content_problem(self, body: bytes, served_mime: str,
                          expected_mime: str) -> Optional[str]:
         """Why `body` (served with `served_mime`) must not be stored for a
@@ -995,7 +1008,9 @@ class Storage:
             application/pdf by the server, whatever the producer expected:
             they would otherwise be stored as a .pdf.
         HTML producers (`expected_mime` text/html or empty) served HTML are
-        untouched: an HTML page is their document."""
+        untouched: an HTML page is their document. save() first passes the
+        server's mime through _sniffed_mime, so bytes that ARE a PDF never
+        reach (1) whatever their header says."""
         expects_pdf = (expected_mime or "").lower() == "application/pdf"
         served = (served_mime or "").lower()
         if _is_html_mime(served):
@@ -1089,6 +1104,7 @@ class Storage:
             except Exception as exc:
                 failures.append(f"{url}: fetch failed ({type(exc).__name__})")
                 continue
+            served = self._sniffed_mime(body, served)
             problem = self._content_problem(body, served, expected_mime)
             if problem:
                 rejected = True

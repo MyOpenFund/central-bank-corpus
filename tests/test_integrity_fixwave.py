@@ -59,3 +59,25 @@ def test_rendered_pdf_follows_the_umask(tmp_path, monkeypatch, umask, mask, expe
     assert rec.local_path.endswith(".pdf")
     assert _mode(Path(rec.local_path)) == expected
     assert _mode(Path(rec.html_path)) == expected
+
+
+# -- S4: sniff the bytes before trusting an HTML mime header ---------------
+
+@pytest.mark.parametrize("producer_mime", ["application/pdf", "text/html", ""])
+@pytest.mark.parametrize("served", ["text/html", "text/html; charset=utf-8",
+                                    "application/xhtml+xml"])
+def test_pdf_bytes_served_as_html_are_stored_as_pdf(tmp_path, producer_mime, served):
+    body = make_pdf("mislabelled")
+    st = _storage(tmp_path, {U: (body, served)})
+    rec = _rec(U, mime=producer_mime)
+    assert st.save(rec) == "saved"
+    assert rec.mime_type == "application/pdf"
+    assert rec.local_path.endswith(".pdf") and rec.html_path is None
+    assert Path(rec.local_path).read_bytes() == body
+
+
+def test_html_bytes_served_as_html_still_rejected_for_a_pdf_producer(tmp_path):
+    from cb_corpus.storage import ContentCheckFailed
+    st = _storage(tmp_path, {U: (b"<html>wall</html>" * 100, "text/html")})
+    with pytest.raises(ContentCheckFailed):
+        st.save(_rec(U))
