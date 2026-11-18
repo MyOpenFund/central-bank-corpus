@@ -178,8 +178,10 @@ weekly run reads corrected dates. Expect exactly this, and nothing else:
   dated at their meeting and released after the following meeting, so the newest row is
   always about one interval old and the series alerts again after each recovery.
   To acknowledge: do nothing — the state file records it as known-overdue and stays quiet
-  until it recovers. To mute for good, append this line to `data/cadence_state.jsonl` on the
-  volume (before the run, or at any time later):
+  until it recovers. To mute for good, append this line to `cadence_state.jsonl` at the root of
+  the data volume (`/app/data/cadence_state.jsonl` in the container, next to `manifest/`),
+  before the run or at any time later. End it with a newline: without one the next
+  automatic append is glued to it, the line is skipped as corrupt and the mute is lost.
 
   ```json
   {"bank_code": "jp", "doc_type": "A3", "muted": true, "reason": "minutes dated at the meeting, released after the following one"}

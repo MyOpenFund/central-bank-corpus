@@ -201,8 +201,9 @@ year leaves `local_path` under the old year folder (`data/raw/<bank>/<type>/<old
      leave it (the state file remembers a known-overdue series: one line, once per silence) or
      mute it before that run by appending this line to `cadence_state.jsonl` on the volume:
      `{"bank_code": "jp", "doc_type": "A3", "muted": true, "reason": "minutes dated at the meeting, released after the following one"}`
-     (a muted series stays in `cadence.jsonl`, it is only never alerted; delete the line to
-     lift the mute).
+     (end the line with a newline, or the next automatic append is glued to it and the mute
+     is lost; a muted series stays in `cadence.jsonl`, it is only never alerted; delete the
+     line to lift the mute).
 6. **Stub pages.** Seven Bank of England rows (five `gb A3`, two `gb E1`, all 2026) were
    captured before the document was published: their title ends in "(to be published at
    12pm)" and the stored file is the placeholder page. They get the month of their title — one

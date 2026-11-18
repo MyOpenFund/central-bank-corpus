@@ -122,6 +122,11 @@ def date_kind_for(bank_code: str, doc_type) -> Optional[str]:
 #: publication day before this date, the meeting day from it.
 RBA_SAME_DAY_ANNOUNCEMENT_FROM = date(2008, 2, 5)
 
+#: Since then, decisions announced the day AFTER their meeting: the board met
+#: out of schedule on 18 March 2020 (its minutes are dated that day) and the
+#: decision was released on the 19th. A dated list, to extend when it happens.
+RBA_ANNOUNCED_THE_DAY_AFTER = frozenset({date(2020, 3, 19)})
+
 #: Federal Reserve individual projections (us F1): `FOMC<date>SEPcompilation.pdf`
 #: is dated at its meeting like the projection tables, but is RELEASED ABOUT
 #: FIVE YEARS LATER. Its kind stays `meeting` (what the date holds); the
@@ -144,19 +149,25 @@ KINDLESS_DATE_SOURCES = ("sitemap_lastmod",)
 @dataclass(frozen=True)
 class KindException:
     """A documented exception to a series' kind: rows whose date is before
-    `before` and/or whose precision is `precision` have `kind` instead."""
+    `before`, and/or whose precision is `precision`, and/or whose date is one
+    of `on`, have `kind` instead."""
     kind: str
     why: str
     before: Optional[date] = None
     precision: Optional[str] = None
+    on: frozenset = frozenset()
 
 
 #: (bank_code, doc type code) -> exceptions to POLICY_DATE_KIND, first match
-#: wins. Rules on the row's own date and precision, never lists of rows.
+#: wins. Rules on the row's own date and precision, or a dated list of
+#: meetings (never a list of rows).
 POLICY_DATE_KIND_EXCEPTIONS: dict[tuple[str, str], tuple[KindException, ...]] = {
     ("au", "A1"): (KindException(
         KIND_PUBLICATION, before=RBA_SAME_DAY_ANNOUNCEMENT_FROM,
-        why="announced the morning after the board meeting until December 2007"),),
+        why="announced the morning after the board meeting until December 2007"),
+        KindException(
+        KIND_PUBLICATION, on=RBA_ANNOUNCED_THE_DAY_AFTER,
+        why="an unscheduled meeting whose decision was announced the next day"),),
     ("ca", "E1"): (KindException(
         KIND_PUBLICATION, precision="day",
         why="a day read from /mpr-YYYY-MM-DD/ is the day the report was released; "
@@ -201,7 +212,8 @@ def policy_date_kind(bank_code: str, doc_type, *, date: Optional[date],
         return None
     for exc in POLICY_DATE_KIND_EXCEPTIONS.get((bank_code, code), ()):
         if ((exc.before is None or date < exc.before)
-                and (exc.precision is None or precision == exc.precision)):
+                and (exc.precision is None or precision == exc.precision)
+                and (not exc.on or date in exc.on)):
             return exc.kind
     return kind
 

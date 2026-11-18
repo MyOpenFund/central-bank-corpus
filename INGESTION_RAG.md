@@ -97,7 +97,7 @@ exceptions that depend on the row's own date and precision (`POLICY_DATE_KIND_EX
 | `gb` | A3 MPC minutes | `meeting` | day when the title names it ("held on 3 and 4 February 1999" → the 4th, the day the meeting ended), else month | title, then page URL, then file URL |
 | `gb` | E1 Monetary Policy Report | `period` | month | title, then page URL, then file URL |
 | `au` | A1 decision, dated from 2008-02-05 | `meeting` | day | listing link text (kept at the end of the title) |
-| `au` | A1 decision, dated before 2008-02-05 | `publication` (until December 2007 the decision was announced at 9.30 am the morning **after** the board meeting; from the meeting of 5 February 2008, at 2.30 pm on the meeting day — `RBA_SAME_DAY_ANNOUNCEMENT_FROM`) | day | same |
+| `au` | A1 decision, dated before 2008-02-05 | `publication` (until December 2007 the decision was announced at 9.30 am the morning **after** the board meeting; from the meeting of 5 February 2008, at 2.30 pm on the meeting day — `RBA_SAME_DAY_ANNOUNCEMENT_FROM`; also the decision of 19 March 2020, announced the day after the unscheduled meeting of the 18th — `RBA_ANNOUNCED_THE_DAY_AFTER`) | day | same |
 | `au` | A3 board minutes | `meeting` | day | document URL (`YYYY-MM-DD` or `DDMMYYYY`) |
 | `au` | E1 Statement on Monetary Policy | `period` | month | `/smp/<year>/<feb\|may\|aug\|nov>/` |
 | `ca` | A3 summary of deliberations | `publication` | month | `/<YYYY>/<MM>/` of the page URL (the decision day in the slug is not used) |

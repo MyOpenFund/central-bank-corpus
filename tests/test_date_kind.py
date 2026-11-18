@@ -55,7 +55,8 @@ def test_exceptions_are_documented_rules_on_known_series():
     for excs in POLICY_DATE_KIND_EXCEPTIONS.values():
         for e in excs:
             assert e.kind in DATE_KINDS and e.why
-            assert e.before is not None or e.precision is not None    # a rule, not a row list
+            # a rule on the date or the precision, or a dated list of meetings: never empty
+            assert e.before is not None or e.precision is not None or e.on
 
 
 def test_no_date_no_kind():
@@ -72,6 +73,9 @@ def test_rba_decisions_before_same_day_announcements_are_release_days():
     assert k(date(2007, 12, 5)) == KIND_PUBLICATION       # Wednesday, meeting on the 4th
     assert k(date(1997, 7, 30)) == KIND_PUBLICATION
     assert k(date(2008, 2, 5)) == KIND_MEETING            # Tuesday, the meeting day
+    # The unscheduled meeting of 18 March 2020 was announced on the 19th: a dated exception.
+    assert k(date(2020, 3, 19)) == KIND_PUBLICATION
+    assert k(date(2020, 3, 3)) == KIND_MEETING and k(date(2020, 4, 7)) == KIND_MEETING
     assert k(date(2026, 11, 3)) == KIND_MEETING
     # the minutes are dated at the meeting in every period
     assert policy_date_kind("au", "A3", date=date(2006, 12, 5), precision="day") == KIND_MEETING
