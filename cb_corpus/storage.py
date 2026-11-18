@@ -28,9 +28,9 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import sys
-import tempfile
 from pathlib import Path
 from typing import Iterable, Iterator, Mapping, Optional
 
@@ -60,12 +60,24 @@ class ContentCheckFailed(RuntimeError):
 def _temp_sibling(path: Path) -> Path:
     """A fresh, unique temp path in `path`'s directory (`.<name>.<random>.part`),
     created empty. Same directory on purpose: os.replace is atomic only
-    within one filesystem. Hidden and `.part`-suffixed so no reader that
-    walks raw/ for `*.pdf` / `*.html` (reindex, sweep-orphans) ever sees a
-    half-written file."""
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".part")
-    os.close(fd)
-    return Path(tmp)
+    within one filesystem. Hidden and `.part`-suffixed so readers that glob
+    raw/ for `*.pdf` / `*.html` (reindex) never pick up a half-written file;
+    `sweep-orphans` walks every file, dotfiles included, so it does see a
+    temp left behind by a killed process.
+
+    Created with mode 0o666 through os.open, so the process umask applies
+    and the final artifact (renamed from this file) gets the same mode a
+    plain write would give (0644 under umask 022, 0664 under 002) --
+    tempfile.mkstemp would force 0600 on every artifact."""
+    for _ in range(100):
+        tmp = path.with_name(f".{path.name}.{secrets.token_hex(6)}.part")
+        try:
+            fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
+        except FileExistsError:
+            continue
+        os.close(fd)
+        return tmp
+    raise FileExistsError(f"no free temp name next to {path}")
 
 
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
