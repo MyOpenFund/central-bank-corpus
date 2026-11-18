@@ -47,6 +47,15 @@ _DEFAULT_LOOKBACK_YEARS = 3
 
 _STATUS_ORDER = {"overdue": 0, "soon": 1, "on-track": 2}
 
+# `date_precision` values whose `date` is a placeholder, not a release day
+# (issue #23): a month-precision row sits on the 1st of its month, a
+# year-precision row on 1 January (ECB E4 bulletins, RePEc year-only
+# fallbacks). Fed into the median they collapse real releases onto one fake
+# date per month/year and can become `last`, so they are dropped before the
+# window. A row without the key (or with null) predates the field and is kept
+# as it always was.
+COARSE_PRECISIONS: frozenset[str] = frozenset({"month", "year"})
+
 
 # -- env thresholds (re-read on EVERY call, never cached -- same discipline
 #    as quarantine.py's _threshold(): a typo in an env var must never crash
@@ -91,15 +100,34 @@ def _parse_date(value) -> Optional[date]:
         return None
 
 
-def compute_series(cfg: Config, *, today: Optional[date] = None) -> list[dict]:
+def compute_series(cfg: Config, *, today: Optional[date] = None,
+                   dropped: Optional[dict] = None) -> list[dict]:
     """Compute one cadence entry per `(bank_code, doc_type)` series that has
     enough recent history to judge, straight from `iter_manifest_rows` (no
     network, no state file involved).
+
+    Rows whose `date_precision` is in `COARSE_PRECISIONS` (month, year) are
+    dropped FIRST, before the window, the median and `last` (issue #23): their
+    date is a placeholder (the 1st of the month, 1 January), not a release day.
+    When `dropped` is a dict, it receives `(bank_code, doc_type) -> number of
+    dropped rows` (all years, dated rows only) for every series that lost at
+    least one, including series that end up not judged -- the CLI prints it.
+    It is an out-parameter on purpose: the returned rows keep their contract.
 
     A series qualifies when it has at least `min_docs()` dated rows within
     the last `lookback_years()` years (`n_3y` in the output) AND at least 2
     DISTINCT publication dates among them (a single distinct date carries no
     gap information -- skipped, not a crash).
+
+    Known coverage gap (stated, not fixed): a series below either threshold
+    is silently UNMONITORED -- no entry, no status, never overdue. That covers
+    the sparsest series (a yearly report, a bank with fewer than `min_docs()`
+    releases in the window) and, since the precision filter, any series whose
+    rows are all month/year precision (ECB E4: every bulletin sits on
+    1 January). The watchdog is the backstop the discovery-failure alerts rely
+    on, so for those series a silent discovery failure is caught only by the
+    completeness report or a human. The CLI lists such series with their
+    dropped count ("not judged") so the gap is at least visible.
 
     Output rows are the CONTRACT with the orchestrator dashboard (spec
     design decision 2): lowercase bank_code, doc_type CODE, ISO `%Y-%m-%d`
@@ -122,6 +150,10 @@ def compute_series(cfg: Config, *, today: Optional[date] = None) -> list[dict]:
         bank = (row.get("bank_code") or "").strip().lower()
         dtype = (row.get("doc_type") or "").strip()
         if not bank or not dtype:
+            continue
+        if row.get("date_precision") in COARSE_PRECISIONS:
+            if dropped is not None:
+                dropped[(bank, dtype)] = dropped.get((bank, dtype), 0) + 1
             continue
         by_series.setdefault((bank, dtype), []).append(d)
 
@@ -346,20 +378,47 @@ def apply_state(state: CadenceState, entries: Iterable[dict], *,
 
 
 # -- CLI entry point --------------------------------------------------------
-def _format_table(entries: list[dict]) -> str:
-    if not entries:
+def _format_table(entries: list[dict], dropped: Optional[dict] = None) -> str:
+    """The human table. `coarse` = month/year-precision rows dropped from the
+    series (see `compute_series`); series that lost rows and were then not
+    judged at all are listed after the judged ones as `unjudged`, so a series
+    the precision filter silenced does not just vanish from the report."""
+    dropped = dropped or {}
+    judged = {(e["bank_code"], e["doc_type"]) for e in entries}
+    unjudged = sorted(k for k in dropped if k not in judged)
+    if not entries and not unjudged:
         return "cadence: no series with enough history to judge"
     ordered = sorted(entries, key=lambda e: (
         _STATUS_ORDER.get(e["status"], 9), e["bank_code"], e["doc_type"]))
     header = (f"{'bank':<6}{'type':<6}{'status':<10}{'last':<12}"
-              f"{'next_expected':<16}{'days_until':>11}  {'~/yr':>4}  n_3y")
-    lines = [header]
+              f"{'next_expected':<16}{'days_until':>11}  {'~/yr':>4}  {'n_3y':>4}  coarse")
+    lines = [] if entries else ["cadence: no series with enough history to judge"]
+    lines.append(header)
     for e in ordered:
+        n_coarse = dropped.get((e["bank_code"], e["doc_type"]), 0)
         lines.append(
             f"{e['bank_code']:<6}{e['doc_type']:<6}{e['status']:<10}{e['last']:<12}"
-            f"{e['next_expected']:<16}{e['days_until']:>11}  {e['expected_per_year']:>4}  {e['n_3y']}"
+            f"{e['next_expected']:<16}{e['days_until']:>11}  {e['expected_per_year']:>4}"
+            f"  {e['n_3y']:>4}  {n_coarse}"
+        )
+    for bank, dtype in unjudged:
+        lines.append(
+            f"{bank:<6}{dtype:<6}{'unjudged':<10}{'-':<12}"
+            f"{'-':<16}{'-':>11}  {'-':>4}  {'-':>4}  {dropped[(bank, dtype)]}"
         )
     return "\n".join(lines)
+
+
+def _dropped_lines(entries: list[dict], dropped: dict) -> list[str]:
+    """One stderr line per series that lost month/year-precision rows, saying
+    whether it was still judged on its day rows or not judged at all."""
+    judged = {(e["bank_code"], e["doc_type"]) for e in entries}
+    out = []
+    for (bank, dtype), n in sorted(dropped.items()):
+        tail = "" if (bank, dtype) in judged else "; series not judged"
+        out.append(f"cadence: {bank} {dtype}: {n} month/year-precision row(s) "
+                   f"dropped{tail}")
+    return out
 
 
 def run_cadence_watch(cfg: Config, *, write: bool = False,
@@ -368,9 +427,15 @@ def run_cadence_watch(cfg: Config, *, write: bool = False,
     `write=True` -- persist `data/cadence.jsonl` and update
     `data/cadence_state.jsonl` (new-overdue/recovery alerting). Dry-run
     (default) is read-only: no jsonl, no state mutation, no alert lines --
-    it just shows the table (CLI contract per spec design decision 4)."""
-    entries = compute_series(cfg, today=today)
-    print(_format_table(entries))
+    it just shows the table (CLI contract per spec design decision 4).
+    In both modes the month/year-precision rows dropped per series are shown
+    in the table and reported on stderr (one line per series; a report, not
+    an alert: it lands in the job's stderr log, not the ntfy push)."""
+    dropped: dict = {}
+    entries = compute_series(cfg, today=today, dropped=dropped)
+    print(_format_table(entries, dropped))
+    for line in _dropped_lines(entries, dropped):
+        print(line, file=sys.stderr, flush=True)
     if write:
         write_cadence_jsonl(cfg, entries)
         state = CadenceState(cfg)
