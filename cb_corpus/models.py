@@ -6,6 +6,7 @@ from dataclasses import dataclass, field, asdict
 from datetime import date
 from typing import Optional, Union
 
+from .dates import policy_date_kind
 from .taxonomy import DocType
 
 
@@ -35,19 +36,28 @@ class DocRecord:
     sha256: Optional[str] = None       # filled after download
     local_path: Optional[str] = None   # filled after download — the canonical artifact (PDF preferred)
     html_path: Optional[str] = None    # set when source was HTML — the original HTML sibling file
-    # Date-quality metadata (WP v3). `date_precision` is how precise `date` is;
-    # `date_source` is where that date came from. Defaults describe the common
-    # case — a native bank-site listing with an exact day. Producers that yield a
-    # coarser/different date MUST set these explicitly (e.g. RePEc → month/repec,
-    # a year-only listing → year). This makes date quality auditable per row.
-    # `date_precision` is None when there is no date at all (`date` is None);
-    # a producer with no date may also leave `date_source` None (e.g. an
-    # IDEAS page without a date) rather than claim a source for nothing.
+    # Date-quality metadata. `date_precision` is how precise `date` is;
+    # `date_source` is where that date came from. A month- or year-precision
+    # date is stored as the FIRST DAY of the period (see cb_corpus/dates.py).
+    # The default precision is None = "not stated": a producer that reads a
+    # day, a month or a year MUST say so explicitly (a native listing with an
+    # exact day -> "day", RePEc -> "month", a year-only listing -> "year").
+    # A producer that says nothing no longer claims a day it may not have.
+    # An undated record (`date` is None) never has a precision: `to_row`
+    # writes null whatever the producer set. A producer with no date may also
+    # leave `date_source` None (e.g. an IDEAS page without a date) rather
+    # than claim a source for nothing.
     # `sitemap_lastmod` = a sitemap <lastmod> (last modification day, not a
     # publication date) used for lack of anything better.
-    date_precision: Optional[str] = "day"  # day | month | year | None (undated)
+    date_precision: Optional[str] = None  # day | month | year | None (not stated / undated)
     # None for undated records, e.g. RePEc/IDEAS pages without a date.
     date_source: Optional[str] = "bank_site"  # bank_site | repec | wayback | pdf_meta | nep_bound | llm_crawl | sitemap_lastmod
+    # What `date` IS: meeting | publication | period (cb_corpus.dates.DATE_KINDS).
+    # Leave it None: `to_row` takes it from dates.policy_date_kind (the
+    # series' kind and its documented row-level exceptions) for the policy
+    # core. A producer sets it only to say something those rules do not. Optional manifest key: written only
+    # when there is a date AND a kind, absent otherwise. Never part of doc_id.
+    date_kind: Optional[str] = None
     # RePEc handle (e.g. "RePEc:ecb:ecbwps:20253117"), stamped by repec-check /
     # the v2 migration when a manifest row is matched to its IDEAS record. Empty
     # when unknown. Optional metadata only — never part of doc_id.
@@ -83,6 +93,15 @@ class DocRecord:
         d = asdict(self)
         d["doc_type"] = self.doc_type.code
         d["date"] = self.date.isoformat() if self.date else None
+        if self.date is None:
+            d["date_precision"] = None      # no date -> no precision
+        kind = self.date_kind or policy_date_kind(
+            self.bank_code, self.doc_type, date=self.date, precision=self.date_precision,
+            date_source=self.date_source, title=self.title, pdf_url=self.pdf_url)
+        if self.date is not None and kind:
+            d["date_kind"] = kind
+        else:
+            del d["date_kind"]              # optional key: absent, never null
         d["doc_id"] = self.doc_id
         d["year"] = self.year
         return d

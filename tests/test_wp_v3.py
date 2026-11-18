@@ -34,13 +34,14 @@ FIX = Path(__file__).parent / "fixtures"
 def test_docrecord_date_quality_defaults():
     rec = DocRecord(bank_code="ecb", doc_type=DocType.D1, title="x",
                     pdf_url="https://x/wp.pdf")
-    assert (rec.date_precision, rec.date_source, rec.repec_handle) == ("day", "bank_site", "")
+    # precision is "not stated" unless the producer states one (never a claimed day)
+    assert (rec.date_precision, rec.date_source, rec.repec_handle) == (None, "bank_site", "")
 
 
 def test_to_row_serializes_alt_urls_and_quality_fields():
     rec = DocRecord(bank_code="ecb", doc_type=DocType.D1, title="x",
                     pdf_url="https://x/wp.pdf", alt_urls=["https://alt/wp.pdf"],
-                    date_precision="month", date_source="repec",
+                    date=date(2025, 9, 1), date_precision="month", date_source="repec",
                     repec_handle="RePEc:ecb:ecbwps:20253117")
     row = rec.to_row()
     assert row["alt_urls"] == ["https://alt/wp.pdf"]
@@ -859,7 +860,7 @@ def test_wp_migrate_se_key_match_registers_alt_url(monkeypatch):
         title="Subprime Borrowers, Securitization and the Transmission of Business Cycles",
         pdf_url=("https://www.riksbank.se/globalassets/media/rapporter/working-papers/2016/"
                  "no.-317-subprime-borrowers-securitization-and-the-transmission-of-business-cycles"),
-        date=date(2016, 3, 3))]
+        date=date(2016, 3, 3), date_precision="day")]   # as the Riksbank scraper states it
     monkeypatch.setitem(wp_migrate._NATIVE, "se", lambda fetcher: iter(native))
     manifest = [{
         "doc_id": "s317", "bank_code": "se", "doc_type": "D1", "date": "2016-03-01",

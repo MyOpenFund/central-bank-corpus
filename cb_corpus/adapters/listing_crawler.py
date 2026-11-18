@@ -7,6 +7,12 @@ listing URLs + regexes per doc_type. Configured declaratively from
 
 Each entry is a tuple `(url_template, link_regex)` where `url_template` can
 contain `{year}` for year iteration.
+
+A link is dated, in order, by the doc type's `date_patterns` entry (a
+dates.find_url_date pattern applied to the href, e.g. the Bank of Japan's
+`gYYMMDD.pdf`), by a full YYYYMMDD in the href or the link text, then by a
+date written in the link text ("Meeting on January 22 and 23, 2026" -> the
+last day named; "June 2021" -> month precision).
 """
 from __future__ import annotations
 
@@ -17,6 +23,7 @@ from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
 
+from ..dates import parse_title_date, parse_url_date
 from ..models import DocRecord
 from ..taxonomy import DocType
 from .base import BankAdapter
@@ -34,10 +41,34 @@ def _date_from(s: str) -> Optional[date]:
         return None
 
 
-def parse_links(html: str, base_url: str, pattern: re.Pattern) -> list[tuple[Optional[date], str, str]]:
+def link_date(href: str, title: str, date_pattern: Optional[str] = None
+              ) -> tuple[Optional[date], Optional[str]]:
+    """(date, precision) of one listing link -- see the module docstring for
+    the order. (None, None) when neither the href nor the text names a date."""
+    if date_pattern:
+        d, prec = parse_url_date(href, date_pattern)
+        if d:
+            return d, prec
+    d = _date_from(href) or _date_from(title)
+    if d:
+        return d, "day"
+    return parse_title_date(title)
+
+
+def parse_links(html: str, base_url: str, pattern: re.Pattern,
+                date_pattern: Optional[str] = None) -> list[tuple[Optional[date], str, str]]:
     """Extract (date, title, abs_url) from a listing page matching `pattern`."""
+    return [(d, title, url)
+            for d, _prec, title, url in parse_dated_links(html, base_url, pattern, date_pattern)]
+
+
+def parse_dated_links(html: str, base_url: str, pattern: re.Pattern,
+                      date_pattern: Optional[str] = None
+                      ) -> list[tuple[Optional[date], Optional[str], str, str]]:
+    """Extract (date, date_precision, title, abs_url) from a listing page
+    matching `pattern`; each link is dated by link_date."""
     soup = BeautifulSoup(html, "lxml")
-    out: list[tuple[Optional[date], str, str]] = []
+    out: list[tuple[Optional[date], Optional[str], str, str]] = []
     seen: set[str] = set()
     for a in soup.find_all("a", href=True):
         href = a["href"]
@@ -48,7 +79,7 @@ def parse_links(html: str, base_url: str, pattern: re.Pattern) -> list[tuple[Opt
             continue
         seen.add(url)
         title = a.get_text(" ", strip=True) or href.rsplit("/", 1)[-1]
-        out.append((_date_from(href) or _date_from(title), title, url))
+        out.append((*link_date(href, title, date_pattern), title, url))
     return out
 
 
@@ -61,8 +92,11 @@ class ListingCrawlerAdapter(BankAdapter):
     def __init__(self, bank, fetcher=None, *,
                  entries: dict[DocType, list[Entry]],
                  expected_per_year: Optional[dict[DocType, int]] = None,
-                 year_range: Optional[tuple[int, int]] = None):
+                 year_range: Optional[tuple[int, int]] = None,
+                 date_patterns: Optional[dict[DocType, str]] = None):
         super().__init__(bank, fetcher)
+        #: per doc type, how the date is written in a link's href (see link_date)
+        self.date_patterns = dict(date_patterns or {})
         self.entries = {
             dt: [(tpl, re.compile(rx, re.I)) for tpl, rx in lst]
             for dt, lst in entries.items()
@@ -86,7 +120,8 @@ class ListingCrawlerAdapter(BankAdapter):
                     html = self.fetcher.get_text(url)
                 except Exception:
                     continue
-                for d, title, abs_url in parse_links(html, url, regex):
+                for d, prec, title, abs_url in parse_dated_links(
+                        html, url, regex, self.date_patterns.get(doc_type)):
                     if since and d and d < since:
                         continue
                     mime = ("application/pdf" if abs_url.lower().endswith(".pdf")
@@ -95,4 +130,5 @@ class ListingCrawlerAdapter(BankAdapter):
                         bank_code=self.bank.code, doc_type=doc_type,
                         title=title, pdf_url=abs_url, source_url=url,
                         date=d, provenance="bank_site", mime_type=mime,
+                        date_precision=prec,
                     )

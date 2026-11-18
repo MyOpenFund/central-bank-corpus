@@ -54,6 +54,7 @@ def _make_listing_factory(cfg: dict) -> Callable[[Bank, Optional[Fetcher]], Bank
         entries[dt] = [(item[0], item[1]) for item in lst]
     expected = _resolve_types(cfg.get("expected_per_year", {}))
     year_range = tuple(cfg["year_range"]) if "year_range" in cfg else None
+    date_patterns = _resolve_types(cfg.get("date_patterns", {}))
 
     def factory(bank: Bank, fetcher: Optional[Fetcher] = None) -> BankAdapter:
         return ListingCrawlerAdapter(
@@ -61,6 +62,7 @@ def _make_listing_factory(cfg: dict) -> Callable[[Bank, Optional[Fetcher]], Bank
             entries=entries,
             expected_per_year=expected,
             year_range=year_range,
+            date_patterns=date_patterns,
         )
     return factory
 

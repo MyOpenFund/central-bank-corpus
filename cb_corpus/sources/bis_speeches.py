@@ -232,6 +232,7 @@ class BISSpeechIndex:
                     date=meta.date,
                     provenance="bis_index",
                     mime_type="application/pdf",
+                    date_precision="day",    # r<YYMMDD> in the BIS review slug
                 )
 
 

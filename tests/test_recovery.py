@@ -145,7 +145,12 @@ def test_run_boe_recovery_generic_section(tmp_path, monkeypatch):
     r = pipeline.run_boe_recovery("minutes", DocType.A3, r"/minutes/\d{4}/mpc",
                                   years=[2020], dry_run=False, config=cfg)
     assert r.get("saved") == 1
-    assert _manifest(cfg)[0]["doc_type"] == "A3"
+    row = _manifest(cfg)[0]
+    assert row["doc_type"] == "A3"
+    # no longer a bare year: the title names the month, and the row says what
+    # its date is (the first day of a month-precision date is not a day)
+    assert (row["date"], row["date_precision"], row["date_kind"]) == (
+        "2020-01-01", "month", "meeting")
 
 
 # --- boe_wp source units: sitemap_pages dedup + paper_pdf ---
@@ -183,6 +188,9 @@ def test_rba_adapter_discovers_minutes_and_smp():
     e1 = [r.date.isoformat() for r in recs if r.doc_type is DocType.E1]
     assert a3 == ["2010-10-05", "2025-11-04"]      # legacy DDMMYYYY + modern YYYY-MM-DD
     assert e1 == ["2026-02-01"]                    # quarterly issue only, not boxes.html
+    # the minutes name a day; the issue date is the first day of a MONTH
+    assert {r.date_precision for r in recs if r.doc_type is DocType.A3} == {"day"}
+    assert {r.date_precision for r in recs if r.doc_type is DocType.E1} == {"month"}
 
 
 # --- Fed adapter discovery: A2 statements + A3 minutes + F1 SEP from CAL page ---

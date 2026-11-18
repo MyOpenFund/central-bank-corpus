@@ -16,11 +16,17 @@ from typing import Iterator, Optional
 
 from bs4 import BeautifulSoup
 
+from ..dates import STATUS_DATED, infer_policy_date, parse_url_date
 from ..models import DocRecord
 from ..taxonomy import DocType
 from .base import BankAdapter
 
 _DATE_IN_URL_RE = re.compile(r"(20\d{2})[-_/]?(0[1-9]|1[0-2])[-_/]?(0[1-9]|[12]\d|3[01])")
+#: A year and a month in a URL, separated, with no day after them
+#: ("/mpr-2024-07/", "/2023-04/report.pdf"): a month-precision date. The
+#: separator is mandatory and a following digit refuses the match, so a
+#: reference number ("report-2023-045") is not read as a month.
+MONTH_IN_URL = r"(?<!\d)(?P<y>20\d{2})[-_/](?P<m>0[1-9]|1[0-2])(?![-_/]?\d)"
 
 
 def _parse_iso(s: str) -> Optional[date]:
@@ -99,18 +105,37 @@ class GenericSitemapAdapter(BankAdapter):
             if url in seen or not regex.search(url):
                 continue
             seen.add(url)
-            d = lastmod or _date_from_url(url)
+            title = url.rsplit("/", 1)[-1]
+            d, prec, source = self._date_of(doc_type, url, title, lastmod)
             if since and d and d < since:
                 continue
             mime = "application/pdf" if url.lower().endswith(".pdf") else "text/html"
-            # A sitemap <lastmod> is the page's last MODIFICATION day, not its
-            # publication date: label it as such so date quality stays
-            # auditable. A date read from the URL is the bank's own.
             yield DocRecord(
                 bank_code=self.bank.code, doc_type=doc_type,
-                title=url.rsplit("/", 1)[-1], pdf_url=url,
+                title=title, pdf_url=url,
                 source_url=self.sitemap_url, date=d,
                 provenance="bank_site", mime_type=mime,
-                date_precision="day" if d else None,
-                date_source="sitemap_lastmod" if lastmod else "bank_site",
+                date_precision=prec, date_source=source,
             )
+
+    def _date_of(self, doc_type: DocType, url: str, title: str, lastmod: Optional[date]
+                 ) -> tuple[Optional[date], Optional[str], str]:
+        """(date, date_precision, date_source) for one sitemap URL, in order:
+
+        1. the series' own rule (dates.POLICY_DATE_RULES), when it has one:
+           the same reading as the `policy-dates` backfill, so both agree;
+        2. the sitemap <lastmod> -- the page's last MODIFICATION day, not its
+           publication date: labelled `sitemap_lastmod` so it stays auditable;
+        3. a full date in the URL (day), then a year-month (MONTH_IN_URL,
+           month precision, first day of the month) -- the bank's own.
+        A URL that names nothing is undated, with no precision."""
+        inf = infer_policy_date(self.bank.code, doc_type, title=title, pdf_url=url)
+        if inf.status == STATUS_DATED:
+            return inf.match.date, inf.match.precision, "bank_site"
+        if lastmod:
+            return lastmod, "day", "sitemap_lastmod"
+        d = _date_from_url(url)
+        if d:
+            return d, "day", "bank_site"
+        d, prec = parse_url_date(url, MONTH_IN_URL)
+        return d, prec, "bank_site"

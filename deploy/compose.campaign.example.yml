@@ -16,6 +16,9 @@ services:
     # Maintenance: orphan sweep (dry-run, then --move) — see README § Maintenance
     # command: ["/app/deploy/run-job.sh", "campaign", "sweep-orphans"]
     # command: ["/app/deploy/run-job.sh", "campaign", "sweep-orphans", "--move"]
+    # Maintenance: policy-dates backfill (dry-run, read reports/policy_dates.csv, then --write)
+    # command: ["/app/deploy/run-job.sh", "campaign", "policy-dates"]
+    # command: ["/app/deploy/run-job.sh", "campaign", "policy-dates", "--write"]
     volumes:
       - /mnt/POOL/DATASET:/app/data
       - ./deploy_key:/run/secrets/deploy_key:ro

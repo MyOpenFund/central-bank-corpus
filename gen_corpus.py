@@ -83,7 +83,11 @@ def build_corpus_md(cfg: Config) -> str:
                  ("mime_type", "`application/pdf` / `text/html`"),
                  ("local_path", "**file path** to read"), ("html_path", "HTML source (if rendered)"),
                  ("sha256", "dedup / integrity"), ("doc_id", "stable primary key"),
-                 ("date_precision / date_source", "date quality (working papers)")]:
+                 ("date_precision / date_source",
+                  "date quality: `day` / `month` / `year` (a month or a year is stored "
+                  "as its first day) and where the date comes from"),
+                 ("date_kind", "policy documents: what the date is (`meeting` / "
+                               "`publication` / `period`)")]:
         W(f"| `{f}` | {u} |")
     W("\nLayout: `data/raw/<bank>/<doc_type>/<year>/<doc_id>.<pdf|html>`\n")
 

@@ -395,6 +395,8 @@ def reindex_bis_from_disk(only_banks: Optional[set[str]] = None,
                         title=title or meta.pdf_url, pdf_url=meta.pdf_url,
                         source_url=meta.detail_url, date=meta.date,
                         provenance="bis_index", mime_type="application/pdf",
+                        # r<YYMMDD> in the BIS review slug
+                        date_precision="day" if meta.date else None,
                     )
                     status = storage.reindex(rec, hit[1], dry_run=dry_run).split(":")[0]
                     counts[status] = counts.get(status, 0) + 1
@@ -560,7 +562,14 @@ def run_boe_recovery(sitemap_path: str, doc_type: DocType, href_filter: str,
     """Generic Bank of England recovery from a sitemap section (the live official
     source). Works for any doc type — minutes (A3), MP report (E1), FSR (E2)…
     A page's linked PDF is taken when present, else the HTML page is the artifact
-    (rendered to PDF by Storage). Skips docs already in the manifest (by URL)."""
+    (rendered to PDF by Storage). Skips docs already in the manifest (by URL).
+
+    Date: the sitemap only knows the year. For a series with a date rule
+    (dates.POLICY_DATE_RULES: minutes A3, Monetary Policy Report E1) the
+    title, then the page / file URL, give the day or the month -- kept only
+    when it falls in the URL's year, as the `policy-dates` backfill does.
+    Otherwise 1 January of the year, precision `year`."""
+    from .dates import STATUS_DATED, infer_policy_date
     from .sources.boe_wp import doc_pages, page_doc
     cfg, fetcher, storage = _make_storage(config)
 
@@ -573,12 +582,16 @@ def run_boe_recovery(sitemap_path: str, doc_type: DocType, href_filter: str,
             url = pdf or page              # PDF if linked, else the HTML page
             if storage.is_known_url(url):
                 continue
+            # doc_pages only knows the year (date(y, 1, 1)).
+            rec_date, prec = d, "year"
+            inf = infer_policy_date("gb", doc_type, title=title, pdf_url=url, source_url=page)
+            if inf.status == STATUS_DATED and inf.match.date.year == d.year:
+                rec_date, prec = inf.match.date, inf.match.precision
             yield DocRecord(
                 bank_code="gb", doc_type=doc_type, title=title,
-                pdf_url=url, source_url=page, date=d, provenance="bank_site",
+                pdf_url=url, source_url=page, date=rec_date, provenance="bank_site",
                 mime_type="application/pdf" if pdf else "",
-                # doc_pages only knows the year (date(y, 1, 1)).
-                date_precision="year", date_source="bank_site",
+                date_precision=prec, date_source="bank_site",
             )
 
     return storage.save_many(_recs(), dry_run=dry_run, label=f"boe:{doc_type.code}")
@@ -624,6 +637,7 @@ def run_listing_pdf_recovery(bank_code: str, doc_type: DocType, listing_urls,
                     bank_code=bank_code, doc_type=doc_type,
                     title=f"{title} {d.isoformat()}", pdf_url=url, date=d,
                     provenance="bank_site", mime_type=mime,
+                    date_precision="day",    # `path_regex` captures a YYYYMMDD
                 )
 
     return storage.save_many(_recs(), dry_run=dry_run, label=f"{bank_code}:{doc_type.code}")
@@ -643,11 +657,22 @@ def run_ecb_pub_recovery(section: str, doc_type: DocType, mime: str = "applicati
     `mime=""` saves HTML as-is (no Chrome render), e.g. for interviews.
     """
     import re
+    from .dates import STATUS_DATED, infer_policy_date
     from .sources.ecb_pub import section_include_docs, date_and_precision_from_url
     from .sources.wayback import cdx_pdfs, raw_url
     cfg, fetcher, storage = _make_storage(config, html_to_pdf=(False if not mime else None))
     cur = date.today().year
     exts = (".en.pdf",) if mime else (".en.html", ".en.pdf")
+
+    def _date_of(url):
+        """A series with a date rule (dates.POLICY_DATE_RULES, e.g. the staff
+        projections: `projectionsYYYYMM`, a month) is read by that rule -- the
+        same reading as the `policy-dates` backfill, and one a digit-only
+        file hash cannot fool. Any other section: the filename format."""
+        inf = infer_policy_date("ecb", doc_type, pdf_url=url)
+        if inf.status == STATUS_DATED:
+            return inf.match.date, inf.match.precision
+        return date_and_precision_from_url(url, date_fmt)
 
     def _emit(url, d, prec, alt=None):
         # `prec` follows the filename format the date was read from
@@ -671,7 +696,7 @@ def run_ecb_pub_recovery(section: str, doc_type: DocType, mime: str = "applicati
                     if u in seen or storage.is_known_url(u):
                         continue
                     seen.add(u)
-                    d, prec = date_and_precision_from_url(u, date_fmt)
+                    d, prec = _date_of(u)
                     if d:
                         yield _emit(u, d, prec)
         elif cdx_fallback_prefix:                             # FALLBACK: legacy CDX method
@@ -688,7 +713,7 @@ def run_ecb_pub_recovery(section: str, doc_type: DocType, mime: str = "applicati
                 if o in seen or storage.is_known_url(o):
                     continue
                 seen.add(o)
-                d, prec = date_and_precision_from_url(o, date_fmt)
+                d, prec = _date_of(o)
                 if d:
                     yield _emit(o, d, prec, alt=[raw_url(o, t)])
 

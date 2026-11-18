@@ -138,6 +138,13 @@ Maintenance example — orphan sweep (see README § Maintenance): first
 `command: ["/app/deploy/run-job.sh", "campaign", "sweep-orphans"]` (dry-run; read
 `reports/orphan_sweep_<ts>.summary.json`), then the same with `"--move"`.
 
+Maintenance example — policy-dates backfill (see README § Maintenance: policy-dates
+backfill): first `command: ["/app/deploy/run-job.sh", "campaign", "policy-dates"]`
+(dry-run; read `reports/policy_dates.csv` on the volume), then the same with `"--write"`
+(manifest date keys only; the autocommit pushes them), then the dry-run once more: it must
+report `unchanged` only. The image must be the one built from the commit that ships the
+command (§7) before the stack is deployed.
+
 ## 4a. Weekly cadence watchdog (automated)
 
 The cadence watchdog detects silent series — banks/doc-types with no new
@@ -160,6 +167,25 @@ console.
 by seeding a `{"bank_code", "doc_type", "muted": true, "reason"}` line in
 the state file — muted series are still written to cadence.jsonl (dashboard
 transparency) but never alerted.
+
+**After the `policy-dates` backfill** (README § Maintenance: policy-dates backfill) the next
+weekly run reads corrected dates. Expect exactly this, and nothing else:
+
+- `gb A3` and `gb E1` get real intervals — about 46 and 92 days instead of 366 (all their rows
+  used to sit on 1 January). No alert.
+- **One new series, `jp A3`, is reported overdue** (`NEW OVERDUE jp A3`, logged once). It was
+  not judged before (too few dated rows). It is structural, not a silence: BoJ minutes are
+  dated at their meeting and released after the following meeting, so the newest row is
+  always about one interval old and the series alerts again after each recovery.
+  To acknowledge: do nothing — the state file records it as known-overdue and stays quiet
+  until it recovers. To mute for good, append this line to `cadence_state.jsonl` at the root of
+  the data volume (`/app/data/cadence_state.jsonl` in the container, next to `manifest/`),
+  before the run or at any time later. End it with a newline: without one the next
+  automatic append is glued to it, the line is skipped as corrupt and the mute is lost.
+
+  ```json
+  {"bank_code": "jp", "doc_type": "A3", "muted": true, "reason": "minutes dated at the meeting, released after the following one"}
+  ```
 
 **Tuning:** Env vars override thresholds (no hard-coded constants):
 `CADENCE_OVERDUE_GRACE_DAYS` (default 7), `CADENCE_SOON_DAYS` (default 60),

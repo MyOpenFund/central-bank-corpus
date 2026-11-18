@@ -81,6 +81,9 @@ def parse_rba_minutes(html: str, base_url: str = RBA) -> list[tuple[date, str]]:
 def parse_rba_smp(html: str, base_url: str = RBA) -> list[tuple[date, str]]:
     """(issue_date, url) for RBA Statement on Monetary Policy issues (quarterly).
 
+    The URL names the issue month only: `issue_date` is the FIRST DAY of that
+    month and the record is labelled month precision (see RBAAdapter._rec).
+
     Only the issue overview `/publications/smp/<year>/<feb|may|aug|nov>/` is kept
     — not the per-chapter sub-pages (boxes.html, …) that bloated the old capture.
     """
@@ -104,11 +107,15 @@ class RBAAdapter(BankAdapter):
     native_types = (DocType.A1, DocType.A3, DocType.E1)
     expected_per_year = {DocType.A1: 8, DocType.A3: 8, DocType.E1: 4}
 
-    def _rec(self, dt: DocType, label: str, d: date, url: str, src: str) -> DocRecord:
+    def _rec(self, dt: DocType, label: str, d: date, url: str, src: str,
+             precision: str = "day") -> DocRecord:
+        """`precision`: decisions (link text) and minutes (URL) name the day;
+        a Statement issue is a month (`date` = its first day)."""
         return DocRecord(
             bank_code="au", doc_type=dt, title=f"{label} {d.isoformat()}",
             pdf_url=url, source_url=src, date=d,
             provenance="bank_site", mime_type="text/html",  # rendered to PDF by Storage
+            date_precision=precision,
         )
 
     def _walk_years(self, tmpl, parse_fn, dt, label, since, start) -> Iterator[DocRecord]:
@@ -143,4 +150,4 @@ class RBAAdapter(BankAdapter):
                     continue
                 seen.add(link)
                 yield self._rec(DocType.E1, "RBA Statement on Monetary Policy",
-                                d, link, SMP_INDEX)
+                                d, link, SMP_INDEX, precision="month")
