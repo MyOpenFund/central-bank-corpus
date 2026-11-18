@@ -168,6 +168,23 @@ by seeding a `{"bank_code", "doc_type", "muted": true, "reason"}` line in
 the state file — muted series are still written to cadence.jsonl (dashboard
 transparency) but never alerted.
 
+**After the `policy-dates` backfill** (README § Maintenance: policy-dates backfill) the next
+weekly run reads corrected dates. Expect exactly this, and nothing else:
+
+- `gb A3` and `gb E1` get real intervals — about 46 and 92 days instead of 366 (all their rows
+  used to sit on 1 January). No alert.
+- **One new series, `jp A3`, is reported overdue** (`NEW OVERDUE jp A3`, logged once). It was
+  not judged before (too few dated rows). It is structural, not a silence: BoJ minutes are
+  dated at their meeting and released after the following meeting, so the newest row is
+  always about one interval old and the series alerts again after each recovery.
+  To acknowledge: do nothing — the state file records it as known-overdue and stays quiet
+  until it recovers. To mute for good, append this line to `data/cadence_state.jsonl` on the
+  volume (before the run, or at any time later):
+
+  ```json
+  {"bank_code": "jp", "doc_type": "A3", "muted": true, "reason": "minutes dated at the meeting, released after the following one"}
+  ```
+
 **Tuning:** Env vars override thresholds (no hard-coded constants):
 `CADENCE_OVERDUE_GRACE_DAYS` (default 7), `CADENCE_SOON_DAYS` (default 60),
 `CADENCE_MIN_DOCS` (default 6, minimum to detect a median), `CADENCE_LOOKBACK_YEARS`

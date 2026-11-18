@@ -59,17 +59,19 @@ period** and `date_precision` says so:
 | `day` | the day itself | that day |
 | `month` | the first day of the month (`2021-06-01` = "June 2021") | the whole month |
 | `year` | 1 January (`2016-01-01` = "2016") | the whole year |
-| key absent | a date written before precision was recorded | a day for the policy core (see below); unknown elsewhere |
+| key absent | a date written before precision was recorded: nothing verified | unknown (in practice a day, or an unlabelled first-of-period placeholder) |
 | `null` | no date, or a date whose producer stated no precision | undated / unknown |
 
 A date on the first of a month is **not** a placeholder by itself: `2018-08-01` with precision
 `day` is a real meeting day. Only `date_precision` tells the two apart. A row whose `date` is
 `null` always has a `null` precision.
 
-**Policy core** (doc types A1 A2 A3 B1 E1 F1 of `ecb`, `us`, `gb`, `au`, `ca`, `jp`): every dated
-row carries `date_kind`, and every row whose date is not a day carries its `date_precision`
-(after the `policy-dates` backfill, README § Maintenance). On these rows an absent
-`date_precision` means the day was confirmed against the document's own URL or title.
+**Policy core** (doc types A1 A2 A3 B1 E1 F1 of `ecb`, `us`, `gb`, `au`, `ca`, `jp`), after the
+`policy-dates` backfill (README § Maintenance): every dated row carries its `date_precision`.
+`day` there is a verified fact — the document's own URL or title names that very day, the
+first of a month included. The only rows left without the key are those whose stored day the
+evidence neither names nor contradicts (none in the manifests of 2026-11-18). Every dated row
+also carries `date_kind`, except the rows listed under "No kind" below.
 
 `date_kind` says what the date **is** — one date field does not mean the same thing everywhere:
 
@@ -79,28 +81,51 @@ row carries `date_kind`, and every row whose date is not a day carries its `date
 | `publication` | the day (or month) the document was released |
 | `period` | the issue the document belongs to ("the May 2020 Statement"): a month, not an event |
 
-Per bank and document type (table owned by `cb_corpus/dates.py`: `POLICY_DATE_KIND` for the
-kind, `POLICY_DATE_RULES` for where the date is read):
+The kind is decided **row by row** by `cb_corpus/dates.py::policy_date_kind` (the same function
+for new rows and for the backfill): the series' kind (`POLICY_DATE_KIND`), minus documented
+exceptions that depend on the row's own date and precision (`POLICY_DATE_KIND_EXCEPTIONS`).
+`POLICY_DATE_RULES` says where the date is read:
 
 | Bank | Type | `date_kind` | Precision | Date read from |
 |---|---|---|---|---|
-| `us` | A2 statement, A3 minutes, B1 press conference, F1 projections | `meeting` | day | `YYYYMMDD` in the document URL |
+| `us` | A2 statement, A3 minutes, B1 press conference | `meeting` | day | `YYYYMMDD` in the document URL |
+| `us` | F1 projections | `meeting` — **see the warning below** for the `SEPcompilation` files | day | `YYYYMMDD` in the document URL |
 | `us` | E1 Monetary Policy Report | `publication` | day | `YYYYMMDD` in the document URL |
 | `ecb` | A1 decision, A2 statement, B1 press conference | `meeting` | day | `YYMMDD` in the file name |
 | `ecb` | A3 account | `publication` | day | `YYMMDD` in the file name (released four weeks after the meeting) |
 | `ecb` | E1 staff projections | `period` | month | `YYYYMM` in the file name |
 | `gb` | A3 MPC minutes | `meeting` | day when the title names it ("held on 3 and 4 February 1999" → the 4th, the day the meeting ended), else month | title, then page URL, then file URL |
 | `gb` | E1 Monetary Policy Report | `period` | month | title, then page URL, then file URL |
-| `au` | A1 decision | `meeting` | day | listing link text (kept at the end of the title) |
+| `au` | A1 decision, dated from 2008-02-05 | `meeting` | day | listing link text (kept at the end of the title) |
+| `au` | A1 decision, dated before 2008-02-05 | `publication` (until December 2007 the decision was announced at 9.30 am the morning **after** the board meeting; from the meeting of 5 February 2008, at 2.30 pm on the meeting day — `RBA_SAME_DAY_ANNOUNCEMENT_FROM`) | day | same |
 | `au` | A3 board minutes | `meeting` | day | document URL (`YYYY-MM-DD` or `DDMMYYYY`) |
 | `au` | E1 Statement on Monetary Policy | `period` | month | `/smp/<year>/<feb\|may\|aug\|nov>/` |
 | `ca` | A3 summary of deliberations | `publication` | month | `/<YYYY>/<MM>/` of the page URL (the decision day in the slug is not used) |
-| `ca` | E1 Monetary Policy Report | `period` | month, or day when the URL has one | `/mpr/mpr-YYYY-MM[-DD]/` |
+| `ca` | E1 Monetary Policy Report, URL with a month only | `period` | month | `/mpr/mpr-YYYY-MM/` |
+| `ca` | E1 Monetary Policy Report, URL with a day | `publication` (the day the report was released) | day | `/mpr/mpr-YYYY-MM-DD/` |
 | `jp` | A3 minutes | `meeting` | day | `gYYMMDD.pdf` (last day of the meeting) |
 
-No row changes meaning: the table records what each series' date has always been. A document
+> ⚠️ **Federal Reserve individual projections (`us` F1, `…/FOMC<YYYYMMDD>SEPcompilation.pdf`,
+> 53 of the 76 F1 rows on 2026-11-18).** These files are dated at their FOMC meeting like the
+> projection tables (`fomcprojtabl<YYYYMMDD>.pdf`), so their kind is `meeting` — but the Fed
+> **releases them about five years after that meeting**. Never treat one as available on its
+> date. Recognise them by the URL pattern, exposed as `cb_corpus.dates.FED_SEP_COMPILATION_URL`
+> (`/FOMC\d{8}SEPcompilation\.pdf$`). The same caution applies, with a lag of weeks, to every
+> `meeting`-dated set of minutes.
+
+**No kind.** A dated policy row carries no `date_kind` when nothing true can be said:
+
+- its date is a sitemap last-modified day (`date_source = "sitemap_lastmod"`): neither an event
+  nor an issue;
+- its URL is not a document of the series — the index pages under the Bank of Canada's
+  `/publications/mpr/` (they also stay undated unless the sitemap gives a last-modified day);
+- it is filed in the wrong series: Bank of England rows catalogued as minutes (`gb` A3) whose
+  file or title shows an Inflation Report, a Monetary Policy Report or a press-conference
+  transcript (`cb_corpus.dates.BOE_NOT_MINUTES`; 10 rows on 2026-11-18). They are dated like
+  the page they were found on (a month) and `policy-dates` reports them as `misfiled`.
+
+No row changes meaning: these rules record what each row's date has always been. A document
 has one date; a second one (meeting **and** publication side by side) is not recorded yet.
-Rows under `/publications/mpr/` that are index pages, not reports, stay undated.
 
 ---
 
@@ -261,7 +286,9 @@ With every answer, return the **official source**: `title` + `bank_name` + `date
 - **Policy documents**: read `date_precision` and `date_kind` (§1a). Bank of England minutes
   and reports, RBA Statements, ECB staff projections and Bank of Canada reports are often known
   to the month only; Fed, RBA, BoJ and BoE minutes are dated at the **meeting**, not at their
-  release.
+  release, and the Fed's individual projections (`SEPcompilation`) come out about five years
+  after the meeting they are dated at. A few Bank of England rows are placeholder pages
+  captured before publication (title ending in "(to be published at 12pm)").
 - **Other document types** still hold first-of-period placeholders without a label (rows written
   before precision was recorded, mostly working papers): outside the policy core, an absent
   `date_precision` on a `-01` or `-01-01` date is not a confirmed day.

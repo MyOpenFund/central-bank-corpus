@@ -40,10 +40,11 @@ no machine-translated or model-generated text.
 - **Policy dates** (`dates.py`, `policy_dates.py`) → for the policy core (A1 A2 A3 B1 E1 F1 of
   ecb, us, gb, au, ca, jp) every row says how precise its date is (`date_precision`: a month or
   a year is stored as the first day of the period, never passed off as a day) and what the date
-  is (`date_kind`: `meeting` / `publication` / `period`). One rule table per bank and document
-  type (`dates.POLICY_DATE_RULES` / `POLICY_DATE_KIND`) is shared by the producers of new rows
-  and by the `policy-dates` backfill, so the nightly sync and the backfill agree by
-  construction. A producer that states no precision gets `null`, not `day`. Contract and
+  is (`date_kind`: `meeting` / `publication` / `period`, decided row by row by
+  `dates.policy_date_kind`). One rule table per bank and document type
+  (`dates.POLICY_DATE_RULES` / `POLICY_DATE_KIND` and its documented exceptions) is shared by
+  the producers of new rows and by the `policy-dates` backfill, so the nightly sync and the
+  backfill agree by construction. A producer that states no precision gets `null`, not `day`. Contract and
   per-bank table: `INGESTION_RAG.md` §1a.
 - **Per-bank adapters** (`adapters/`) → site-specific listings (A/B/E/F + native D1/D2). Bespoke
   `ECBAdapter`, `FedAdapter`, `BoJAdapter` (jp), `BoEAdapter` (gb), `BubaAdapter` (de),
@@ -161,12 +162,24 @@ read from), `fields_changed`, then `title` and `pdf_url` to check against. Actio
 | `action` | Meaning | Written |
 |---|---|---|
 | `to-day` / `to-month` / `to-year` | the date and/or its precision label changes | yes |
-| `kind-only` | the date was already right (first-of-month included, when the URL or title names the 1st); `date_kind` is added | yes |
+| `day-confirmed` | the URL or title names the very day the row holds (first-of-month included): the date stays, `date_precision: day` and `date_kind` are written | yes |
+| `kind-only` | date and label already right; `date_kind` is added | yes |
+| `misfiled` | not a document of its series (an Inflation Report or a press-briefing transcript filed as Bank of England minutes): dated like its page, **no** `date_kind`. Reported on every run, so the list stays visible | date keys, first run |
 | `unchanged` | nothing to do | no |
 | `not-a-report` | an index page under a report path: never dated (only a false precision label on its null date is cleared) | label only |
 | `no-evidence` | neither title nor URL names a date | no |
 | `conflict` | the title and the URL name different periods | no |
-| `mismatch` | the evidence falls outside the period the stored date asserts (a stored 1 January may become any day of that year, a stored 1st any day of that month, nothing else moves). `--allow-moves` applies these too | no |
+| `mismatch` | the evidence falls outside the period the stored date asserts: its explicit `date_precision` when it has one (a date labelled `day` is never moved, a `month` stays in its month, a `year` in its year), else its shape (an unlabelled 1 January may become any day of that year, an unlabelled 1st any day of that month, nothing else moves) | no |
+
+`new_date` and `new_precision` are what the row holds after the write, key for key (an empty
+`new_precision` = the row keeps no label: its day is plausible but not confirmed). The `note`
+column flags rows to know about whatever their action: `stub: …` (page captured before
+publication), `individual projections: …` (Federal Reserve `SEPcompilation` files, released
+about five years after the meeting they are dated at), `misfiled: …`.
+
+`--allow-moves` also applies the `mismatch` rows. It is a deliberate, scoped action: it refuses
+to run without `--banks` and/or `--types`. Files are never moved, so a date moved to another
+year leaves `local_path` under the old year folder (`data/raw/<bank>/<type>/<old year>/…`).
 
 **On the NAS** (the volume owns the manifests; the write goes through the job lock, see
 [deploy/README.md](deploy/README.md) §4):
@@ -178,7 +191,27 @@ read from), `fields_changed`, then `title` and `pdf_url` to check against. Actio
    are never written.
 3. Same stack with `"policy-dates", "--write"`. The autocommit pushes the manifests.
 4. Re-run the dry-run: every dated row must read `unchanged`.
-5. The vault picks the dates up at its next ingestion of the manifests (it upserts `date`,
+5. **Cadence watchdog.** The next weekly run (Sunday 06:30) sees the new dates:
+   - `gb A3` and `gb E1` get real intervals, about 46 and 92 days instead of 366 (every row
+     used to sit on 1 January). No alert.
+   - **One new series is reported overdue: `jp A3`** (`NEW OVERDUE jp A3` in `nas_runs.log`,
+     once). It had too few dated rows to be judged before. It is not a silence: BoJ minutes are
+     dated at their meeting and released after the *following* meeting, so the series is
+     structurally "late" by one interval and will alert again after each recovery. Either
+     leave it (the state file remembers a known-overdue series: one line, once per silence) or
+     mute it before that run by appending this line to `cadence_state.jsonl` on the volume:
+     `{"bank_code": "jp", "doc_type": "A3", "muted": true, "reason": "minutes dated at the meeting, released after the following one"}`
+     (a muted series stays in `cadence.jsonl`, it is only never alerted; delete the line to
+     lift the mute).
+6. **Stub pages.** Seven Bank of England rows (five `gb A3`, two `gb E1`, all 2026) were
+   captured before the document was published: their title ends in "(to be published at
+   12pm)" and the stored file is the placeholder page. They get the month of their title — one
+   of them (`December 2026`) lies in the future until the document appears, and is `gb A3`'s
+   latest date for the watchdog meanwhile. The stub is stored under the real URL, so the real
+   document is never fetched. Their `doc_id`s are the CSV lines whose `note` starts with
+   `stub:`; to get the real documents, delete those rows and their files, then re-run the Bank
+   of England recovery (`pipeline.run_boe_recovery`). `policy-dates` does not do it.
+7. The vault picks the dates up at its next ingestion of the manifests (it upserts `date`,
    `year` and the extra keys on `doc_id`; nothing is re-downloaded or re-embedded). The search
    index (Qdrant payloads) is **not** updated by this command nor by the vault: another tool
    syncs the payload metadata afterwards, so date filters keep the old dates until it has run.
