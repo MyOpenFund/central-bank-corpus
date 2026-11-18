@@ -174,3 +174,58 @@ def test_year_precision_row_never_passes_the_month_constraint(tmp_path):
     assert counts["index_rejected"] == 1
     after = _manifest(cfg, "us")["y1"]
     assert after["date"] == "2015-01-01" and after["date_precision"] == "year"
+
+
+def test_rejected_own_key_recovery_is_written_under_a_doc_key_and_rebuilds_stable(
+        tmp_path, monkeypatch):
+    """Real shape (FEDS 2025-101 and its r1 revision): two papers share one
+    RePEc handle. The handle entry holds the original's day; the revision's
+    replay is rejected (other month), it is recovered afresh -- and that
+    resolution must NOT be written under the shared handle, or it shadows the
+    original's entry (last line wins): the next rebuild rejects the original,
+    re-recovers it, overwrites the handle again -- a flip-flop that grows the
+    index on every run. It goes under `<handle>#<doc_id>`, looked up first
+    for that row."""
+    handle_src = "https://ideas.repec.org/p/fip/fedgfe/2025-101.html"
+    orig = _row("orig", "us", "2025-11-01", source_url=handle_src)
+    rev = _row("rev1", "us", "2026-06-01", source_url=handle_src)
+    handle = row_key(orig)
+    assert handle == row_key(rev) == "RePEc:fip:fedgfe:2025-101"
+    cfg = _setup(tmp_path, [orig, rev], [_entry(handle, "2025-11-10")])
+    manifest_before = cfg.manifest_file("us").read_text()
+    caps = {orig["pdf_url"]: "20251110000000", rev["pdf_url"]: "20260612000000"}
+    monkeypatch.setattr(wp_dates, "first_capture",
+                        lambda f, u: caps.get("https://" + u))
+
+    c1 = wp_dates.run_wp_dates(bank_codes=["us"], write=True, since_year=1900, config=cfg)
+    # `wayback` counts both resolutions by source (the replayed one included)
+    assert c1["from_index"] == 1 and c1["index_rejected"] == 1 and c1["wayback"] == 2
+    lines = [json.loads(ln) for ln in index_path(cfg).read_text().splitlines()]
+    assert [e["key"] for e in lines] == [handle, f"{handle}#rev1"]
+    after = _manifest(cfg, "us")
+    assert (after["orig"]["date"], after["rev1"]["date"]) == ("2025-11-10", "2026-06-12")
+
+    # fresh-clone rebuild: replay only, both papers keep their own day
+    cfg.manifest_file("us").write_text(manifest_before)
+    c2 = wp_dates.run_wp_dates(bank_codes=["us"], write=True, apply_only=True, config=cfg)
+    after = _manifest(cfg, "us")
+    assert (after["orig"]["date"], after["rev1"]["date"]) == ("2025-11-10", "2026-06-12")
+    assert c2["from_index"] == 2 and c2["index_rejected"] == 0
+
+    # a second recovering run on the reset manifest appends nothing, no network
+    size = index_path(cfg).stat().st_size
+    cfg.manifest_file("us").write_text(manifest_before)
+
+    def _no_network(f, u):
+        raise AssertionError(f"unexpected CDX call for {u}")
+    monkeypatch.setattr(wp_dates, "first_capture", _no_network)
+    c3 = wp_dates.run_wp_dates(bank_codes=["us"], write=True, since_year=1900, config=cfg)
+    assert index_path(cfg).stat().st_size == size
+    assert c3["from_index"] == 2 and c3["index_rejected"] == 0
+
+
+def test_doc_key_entry_is_still_month_checked(tmp_path):
+    row = _row("e1", "ecb", "2010-03-01")
+    cfg = _setup(tmp_path, [row], [_entry(f"{row_key(row)}#e1", "2010-04-15")])
+    counts = wp_dates.run_wp_dates(bank_codes=["ecb"], write=True, apply_only=True, config=cfg)
+    assert counts["index_rejected"] == 1 and counts["from_index"] == 0

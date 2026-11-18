@@ -94,17 +94,38 @@ def legacy_title_key(row: dict) -> Optional[str]:
     return "t:" + t if t else None
 
 
+#: Separator between a shared key and a row's doc_id in a disambiguated key.
+#: Neither a RePEc handle nor a normalized title contains it.
+DOC_KEY_SEP = "#"
+
+
+def doc_key(row: dict) -> Optional[str]:
+    """`<row_key>#<doc_id>`: the key a row's fresh resolution is written under
+    when its own `row_key` already holds an entry for ANOTHER paper (one that
+    failed the month check against this row).
+
+    Why (real case on the committed manifests): FEDS 2025-101 and its r1
+    revision share one RePEc handle. Writing the revision's day under the
+    handle would shadow the original's entry (last line wins): the next
+    rebuild rejects the original, re-recovers it, overwrites the handle again
+    -- a flip-flop that grows the index on every run. None when the row has
+    no `row_key` or no `doc_id`."""
+    key, did = row_key(row), row.get("doc_id")
+    return f"{key}{DOC_KEY_SEP}{did}" if key and did else None
+
+
 def lookup_index(idx: dict, row: dict) -> tuple[Optional[dict], bool]:
     """Find the committed-index entry that may be replayed onto `row`.
 
-    Tries `row_key` then `legacy_title_key`; the first entry whose date passes
-    `month_ok` against THIS row wins. Returns `(entry, rejected)`: `entry` is
-    None when nothing usable was found, and `rejected` is True when at least
-    one keyed entry existed but every one failed the month check (or carried
-    an unparseable date) -- the caller counts it and treats the row as a miss.
+    Tries `doc_key` (this row's own disambiguated entry), then `row_key`, then
+    `legacy_title_key`; the first entry whose date passes `month_ok` against
+    THIS row wins. Returns `(entry, rejected)`: `entry` is None when nothing
+    usable was found, and `rejected` is True when at least one keyed entry
+    existed but every one failed the month check (or carried an unparseable
+    date) -- the caller counts it and treats the row as a miss.
     """
     rejected = False
-    for key in (row_key(row), legacy_title_key(row)):
+    for key in (doc_key(row), row_key(row), legacy_title_key(row)):
         hit = idx.get(key) if key else None
         if hit is None:
             continue
@@ -266,6 +287,10 @@ def run_wp_dates(bank_codes: Optional[Iterable[str]] = None,
                 yr = (_row_ym(row) or (0, 0))[0]
                 # PDF meta is free (any year); Wayback only from ~the online era.
                 r = recover(fetcher, row, use_wayback=(use_wayback and yr >= since_year))
+                if key and key in idx:
+                    # this row's own key belongs to another paper (its entry
+                    # failed the month check here): never shadow it -- see doc_key
+                    key = doc_key(row)
                 if r and key:
                     hit = {"key": key, "title_norm": normalize_title(row.get("title") or ""),
                            **r, "date_precision": "day", "resolved_at": date.today().isoformat()}
