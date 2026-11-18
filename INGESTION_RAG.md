@@ -32,11 +32,12 @@ Fields useful for ingestion:
 | `local_path` | **path of the file to read** (PDF, or HTML if rendering failed) |
 | `bank_code` | **filter** + metadata (map to full name via `cb_corpus.banks`) |
 | `doc_type` | **filter** + metadata (map to a readable label, cf. §5) |
-| `year`, `date` | **temporal filter** / facet |
+| `year`, `date` | **temporal filter** / facet. `date` is always a full `YYYY-MM-DD` or `null`; read it with `date_precision` (§1a) |
 | `title` | chunk title / display |
 | `pdf_url` | **citation** (official source) |
 | `language` | filter (all `en` today) |
-| `date_precision` | `day` / `month` / `year` when set (mostly working papers); absent = not recorded (older rows: do not assume a day); `null` on newer undated rows |
+| `date_precision` | how much of `date` is real: `day`, `month` (`date` = first day of the month), `year` (`date` = 1 January). Key absent = written before precision was recorded; `null` = undated row, or a producer that stated nothing. See §1a |
+| `date_kind` | optional, policy core only: what `date` is — `meeting`, `publication` or `period` (§1a). Absent on every other row and on undated rows |
 | `date_source` | where the date comes from: `bank_site`, `pdf_meta`, `wayback`, `repec` (working papers), `sitemap_lastmod` (a sitemap's last-modified day, not a publication date); `null` on some newer undated rows |
 | `mime_type` | `application/pdf` or `text/html` (the HTML is the artifact when PDF rendering failed); rarely another official format |
 | `html_path` | the kept raw HTML next to a rendered PDF, when there is one |
@@ -44,6 +45,62 @@ Fields useful for ingestion:
 | `alt_source_urls` | optional, rare: other landing pages that pointed at the same bytes (dedup only) |
 | `doc_id` | stable primary key (ideal as a document `id` in the store) |
 | `sha256` | change detection / ingestion idempotence |
+
+---
+
+## 1a. Dates: precision and kind
+
+**One date field, always a full date.** `date` is `YYYY-MM-DD` or `null`, never a partial
+string. When the source only names a month or a year, `date` holds the **first day of that
+period** and `date_precision` says so:
+
+| `date_precision` | `date` holds | A date filter should treat it as |
+|---|---|---|
+| `day` | the day itself | that day |
+| `month` | the first day of the month (`2021-06-01` = "June 2021") | the whole month |
+| `year` | 1 January (`2016-01-01` = "2016") | the whole year |
+| key absent | a date written before precision was recorded | a day for the policy core (see below); unknown elsewhere |
+| `null` | no date, or a date whose producer stated no precision | undated / unknown |
+
+A date on the first of a month is **not** a placeholder by itself: `2018-08-01` with precision
+`day` is a real meeting day. Only `date_precision` tells the two apart. A row whose `date` is
+`null` always has a `null` precision.
+
+**Policy core** (doc types A1 A2 A3 B1 E1 F1 of `ecb`, `us`, `gb`, `au`, `ca`, `jp`): every dated
+row carries `date_kind`, and every row whose date is not a day carries its `date_precision`
+(after the `policy-dates` backfill, README § Maintenance). On these rows an absent
+`date_precision` means the day was confirmed against the document's own URL or title.
+
+`date_kind` says what the date **is** — one date field does not mean the same thing everywhere:
+
+| `date_kind` | Meaning |
+|---|---|
+| `meeting` | the day the policy meeting ended / the decision was taken. Minutes dated this way were **published weeks later**: do not use the date as "known on that day" |
+| `publication` | the day (or month) the document was released |
+| `period` | the issue the document belongs to ("the May 2020 Statement"): a month, not an event |
+
+Per bank and document type (table owned by `cb_corpus/dates.py`: `POLICY_DATE_KIND` for the
+kind, `POLICY_DATE_RULES` for where the date is read):
+
+| Bank | Type | `date_kind` | Precision | Date read from |
+|---|---|---|---|---|
+| `us` | A2 statement, A3 minutes, B1 press conference, F1 projections | `meeting` | day | `YYYYMMDD` in the document URL |
+| `us` | E1 Monetary Policy Report | `publication` | day | `YYYYMMDD` in the document URL |
+| `ecb` | A1 decision, A2 statement, B1 press conference | `meeting` | day | `YYMMDD` in the file name |
+| `ecb` | A3 account | `publication` | day | `YYMMDD` in the file name (released four weeks after the meeting) |
+| `ecb` | E1 staff projections | `period` | month | `YYYYMM` in the file name |
+| `gb` | A3 MPC minutes | `meeting` | day when the title names it ("held on 3 and 4 February 1999" → the 4th, the day the meeting ended), else month | title, then page URL, then file URL |
+| `gb` | E1 Monetary Policy Report | `period` | month | title, then page URL, then file URL |
+| `au` | A1 decision | `meeting` | day | listing link text (kept at the end of the title) |
+| `au` | A3 board minutes | `meeting` | day | document URL (`YYYY-MM-DD` or `DDMMYYYY`) |
+| `au` | E1 Statement on Monetary Policy | `period` | month | `/smp/<year>/<feb\|may\|aug\|nov>/` |
+| `ca` | A3 summary of deliberations | `publication` | month | `/<YYYY>/<MM>/` of the page URL (the decision day in the slug is not used) |
+| `ca` | E1 Monetary Policy Report | `period` | month, or day when the URL has one | `/mpr/mpr-YYYY-MM[-DD]/` |
+| `jp` | A3 minutes | `meeting` | day | `gYYMMDD.pdf` (last day of the meeting) |
+
+No row changes meaning: the table records what each series' date has always been. A document
+has one date; a second one (meeting **and** publication side by side) is not recorded yet.
+Rows under `/publications/mpr/` that are index pages, not reports, stay undated.
 
 ---
 
@@ -85,6 +142,8 @@ def doc_metadata(d: dict) -> dict:
         "doc_type_label": by_code(d["doc_type"]).label,  # ex. "Speech"
         "year":   d.get("year"),
         "date":   d.get("date"),
+        "date_precision": d.get("date_precision"),   # day | month | year | None (§1a)
+        "date_kind": d.get("date_kind"),             # meeting | publication | period | None
         "title":  d.get("title", ""),
         "source_url": d.get("pdf_url"),   # <- the official citation
         "language":   d.get("language", "en"),
@@ -173,7 +232,8 @@ Metadata filters make answers targeted and citable:
 ## 6. Citation
 
 With every answer, return the **official source**: `title` + `bank_name` + `date` + `source_url`
-(`pdf_url`). Example rendering:
+(`pdf_url`). Write the date as precisely as `date_precision` allows ("June 2021" for a `month`,
+"2016" for a `year`), never the stored first day. Example rendering:
 
 > *"…"* — Bank of England, *Andrew Bailey: Monetary policy and the outlook*, 2023-05-18.
 > Source: https://www.bis.org/review/r230518a.pdf
@@ -198,5 +258,14 @@ With every answer, return the **official source**: `title` + `bank_name` + `date
   recovered the day; `fr` and `se` RePEc-era rows are not migrated yet. Read `date_precision` /
   `date_source` before treating the day as exact (absent = not recorded); a small number of rows
   may be undated (null `year`).
+- **Policy documents**: read `date_precision` and `date_kind` (§1a). Bank of England minutes
+  and reports, RBA Statements, ECB staff projections and Bank of Canada reports are often known
+  to the month only; Fed, RBA, BoJ and BoE minutes are dated at the **meeting**, not at their
+  release.
+- **Other document types** still hold first-of-period placeholders without a label (rows written
+  before precision was recorded, mostly working papers): outside the policy core, an absent
+  `date_precision` on a `-01` or `-01-01` date is not a confirmed day.
 - **Idempotence**: re-ingest based on `sha256` (unchanged = already indexed) to avoid
-  recomputing everything on each corpus update.
+  recomputing everything on each corpus update. A date correction changes `date`, `year`,
+  `date_precision`, `date_source` or `date_kind` only — never `doc_id`, `sha256` or
+  `local_path`: update the metadata of the document you already hold, do not re-embed it.

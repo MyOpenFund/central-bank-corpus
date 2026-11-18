@@ -138,6 +138,13 @@ Maintenance example — orphan sweep (see README § Maintenance): first
 `command: ["/app/deploy/run-job.sh", "campaign", "sweep-orphans"]` (dry-run; read
 `reports/orphan_sweep_<ts>.summary.json`), then the same with `"--move"`.
 
+Maintenance example — policy-dates backfill (see README § Maintenance: policy-dates
+backfill): first `command: ["/app/deploy/run-job.sh", "campaign", "policy-dates"]`
+(dry-run; read `reports/policy_dates.csv` on the volume), then the same with `"--write"`
+(manifest date keys only; the autocommit pushes them), then the dry-run once more: it must
+report `unchanged` only. The image must be the one built from the commit that ships the
+command (§7) before the stack is deployed.
+
 ## 4a. Weekly cadence watchdog (automated)
 
 The cadence watchdog detects silent series — banks/doc-types with no new

@@ -37,6 +37,14 @@ no machine-translated or model-generated text.
   `sha256`/`local_path` untouched, zero re-downloads); `wp-dates` recovers the day for legacy
   rows via PDF `/CreationDate` + Wayback into the **committed** `data/wp_dates_index.jsonl`
   (run-once, replay-forever). See [docs/WP_V3_SUMMARY.md](docs/WP_V3_SUMMARY.md).
+- **Policy dates** (`dates.py`, `policy_dates.py`) → for the policy core (A1 A2 A3 B1 E1 F1 of
+  ecb, us, gb, au, ca, jp) every row says how precise its date is (`date_precision`: a month or
+  a year is stored as the first day of the period, never passed off as a day) and what the date
+  is (`date_kind`: `meeting` / `publication` / `period`). One rule table per bank and document
+  type (`dates.POLICY_DATE_RULES` / `POLICY_DATE_KIND`) is shared by the producers of new rows
+  and by the `policy-dates` backfill, so the nightly sync and the backfill agree by
+  construction. A producer that states no precision gets `null`, not `day`. Contract and
+  per-bank table: `INGESTION_RAG.md` §1a.
 - **Per-bank adapters** (`adapters/`) → site-specific listings (A/B/E/F + native D1/D2). Bespoke
   `ECBAdapter`, `FedAdapter`, `BoJAdapter` (jp), `BoEAdapter` (gb), `BubaAdapter` (de),
   `BdfAdapter` (fr), `RiksbankAdapter` (se), `RBAAdapter` (au); TOML-declarative adapters
@@ -132,6 +140,49 @@ never affect the exit code. The NAS
 wrapper pushes an ntfy notification on non-zero exits when `NTFY_URL` is set
 (absent = no-op).
 
+### Maintenance: policy-dates backfill
+
+`policy-dates` gives every existing policy-core row the best date its own title or URL
+carries, with its precision and its kind. No network, no file moved; it writes the keys `date`,
+`year`, `date_precision`, `date_source`, `date_kind` and nothing else (`doc_id`, `sha256`,
+`local_path`, URLs and titles are never touched). New rows need no backfill: run it once, and
+again whenever the summary of a dry-run shows something other than `unchanged`.
+
+```bash
+python -m cb_corpus policy-dates                       # dry-run: summary + data/reports/policy_dates.csv
+python -m cb_corpus policy-dates --banks gb --types A3 # restrict the scope
+python -m cb_corpus policy-dates --write               # apply (idempotent: a second run writes nothing)
+```
+
+The CSV has one line per row in scope: `old_date`, `old_precision`, `new_date`,
+`new_precision`, `kind`, `action`, `rule`, `evidence` (the title or URL fragment the date was
+read from), `fields_changed`, then `title` and `pdf_url` to check against. Actions:
+
+| `action` | Meaning | Written |
+|---|---|---|
+| `to-day` / `to-month` / `to-year` | the date and/or its precision label changes | yes |
+| `kind-only` | the date was already right (first-of-month included, when the URL or title names the 1st); `date_kind` is added | yes |
+| `unchanged` | nothing to do | no |
+| `not-a-report` | an index page under a report path: never dated (only a false precision label on its null date is cleared) | label only |
+| `no-evidence` | neither title nor URL names a date | no |
+| `conflict` | the title and the URL name different periods | no |
+| `mismatch` | the evidence falls outside the period the stored date asserts (a stored 1 January may become any day of that year, a stored 1st any day of that month, nothing else moves). `--allow-moves` applies these too | no |
+
+**On the NAS** (the volume owns the manifests; the write goes through the job lock, see
+[deploy/README.md](deploy/README.md) §4):
+
+1. `cb-campaign` with `command: ["/app/deploy/run-job.sh", "campaign", "policy-dates"]` — the
+   dry-run. It changes nothing and commits nothing.
+2. Read `reports/policy_dates.csv` on the volume: filter `action`, check `evidence` against
+   `title` / `pdf_url`. Rows in `conflict`, `mismatch` or `no-evidence` are yours to judge; they
+   are never written.
+3. Same stack with `"policy-dates", "--write"`. The autocommit pushes the manifests.
+4. Re-run the dry-run: every dated row must read `unchanged`.
+5. The vault picks the dates up at its next ingestion of the manifests (it upserts `date`,
+   `year` and the extra keys on `doc_id`; nothing is re-downloaded or re-embedded). The search
+   index (Qdrant payloads) is **not** updated by this command nor by the vault: another tool
+   syncs the payload metadata afterwards, so date filters keep the old dates until it has run.
+
 ### Maintenance: orphan sweep
 
 An *orphan* is a file under `data/raw/` whose name is not a manifest `doc_id`
@@ -176,6 +227,10 @@ python -m cb_corpus wp-migrate --banks ecb,us,jp,gb,de            # dry-run repo
 python -m cb_corpus wp-migrate --banks ecb,us,jp,gb,de --write    # apply (metadata only)
 # Recover the day for legacy / month-precision rows -> committed, replayable index
 python -m cb_corpus wp-dates --write
+
+# Policy core: honest dates, precision and kind from each row's own title/URL (no network)
+python -m cb_corpus policy-dates                                  # dry-run summary + CSV
+python -m cb_corpus policy-dates --write                          # apply (date keys only)
 
 # Per-bank native listings (A/B/E/F + inherited C1/D), with convergence retries
 python -m cb_corpus discover --banks us,ecb --types A3,E4 --download --rounds 3
@@ -260,6 +315,8 @@ cb_corpus/
   taxonomy.py        DocType A1..G3, FULL_SCOPE (A–F)
   banks.py           the 63 BIS members + BIS_ALIASES (institution matching)
   models.py          DocRecord
+  dates.py           date + precision from a title / URL; policy-core tables (date_kind, date rules)
+  policy_dates.py    policy-dates backfill (date, precision, kind of existing policy rows)
   config.py          settings (UA, throttle, html_to_pdf, render_blocked_networks)
   http.py            fetcher (per-host throttle + retry/backoff; throttle() for Chrome)
   storage.py         manifest, dedup (doc_id + sha256), HTML→PDF render, html_path
@@ -291,8 +348,8 @@ cb_corpus/
     base.py          BankAdapter ABC + registry + GenericAdapter + _fetch_text
     fed.py / ecb.py / boj.py / boe.py / buba.py / bdf.py / se.py / rba.py  bespoke adapters
     declarative.py + generic_sitemap.py + listing_crawler.py  TOML-driven adapters
-tests/               596 tests at 2026-11-10 (taxonomy, registry, parsers, dedup, matrix,
-                     reliability, quarantine, recovery, cadence, ...)
+tests/               1,000+ tests at 2026-11-18 (taxonomy, registry, parsers, dedup, matrix,
+                     reliability, quarantine, recovery, cadence, dates, ...)
 ```
 
 ## Notes
