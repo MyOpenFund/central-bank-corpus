@@ -105,7 +105,17 @@ def parse_rba_smp(html: str, base_url: str = RBA) -> list[tuple[date, str]]:
 @register("au")
 class RBAAdapter(BankAdapter):
     native_types = (DocType.A1, DocType.A3, DocType.E1)
-    expected_per_year = {DocType.A1: 8, DocType.A3: 8, DocType.E1: 4}
+    # Eras measured on the committed manifests (integrity wave, 2026-11-18):
+    # before 2008 a statement was issued only when the rate moved (no
+    # expectation: years before the first era are unknown); eleven Board
+    # meetings a year 2008-2023, eight since 2024. Minutes (A3) start in late
+    # 2006 (first full year 2007). The Statement on Monetary Policy (E1) is
+    # quarterly throughout.
+    expected_per_year = {
+        DocType.A1: [(2008, 11), (2024, 8)],
+        DocType.A3: [(2007, 11), (2024, 8)],
+        DocType.E1: 4,
+    }
 
     def _rec(self, dt: DocType, label: str, d: date, url: str, src: str,
              precision: str = "day") -> DocRecord:

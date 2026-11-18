@@ -282,7 +282,18 @@ class ECBAdapter(BankAdapter):
     # re-download; see docs/IMPLEMENTATION_PLAN.md phase 3).
     native_types = (DocType.A1, DocType.A2, DocType.A3, DocType.E4,
                     DocType.D1, DocType.D2, DocType.D3, DocType.C2)
-    expected_per_year = {DocType.A1: 8, DocType.A2: 8, DocType.A3: 8, DocType.E4: 8}
+    # Eras measured on the committed manifests (integrity wave, 2026-11-18):
+    # the Governing Council decided twice a month in 1999-2001 (A1 ~20-24),
+    # about monthly 2002-2014 (11-13), six-weekly since 2015 (8). The press
+    # conference (A2) and the Monthly Bulletin (E4, 12 issues; the Economic
+    # Bulletin since 2015, 8) follow the same switch. Accounts (A3) exist only
+    # since 2015 (flat 8: earlier years honestly read "missing").
+    expected_per_year = {
+        DocType.A1: [(1999, 20), (2002, 11), (2015, 8)],
+        DocType.A2: [(1999, 11), (2015, 8)],
+        DocType.A3: 8,
+        DocType.E4: [(1999, 12), (2015, 8)],
+    }
 
     def _discover_native(self, doc_type: DocType,
                          since: Optional[date]) -> Iterator[DocRecord]:

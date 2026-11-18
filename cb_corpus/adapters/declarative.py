@@ -14,7 +14,7 @@ from typing import Callable, Optional
 from ..banks import Bank
 from ..http import Fetcher
 from ..taxonomy import DocType, by_code
-from .base import BankAdapter, INSTANCE_FACTORIES
+from .base import BankAdapter, INSTANCE_FACTORIES, normalize_expected
 from .generic_sitemap import GenericSitemapAdapter
 from .listing_crawler import ListingCrawlerAdapter
 
@@ -30,10 +30,18 @@ def _resolve_types(d: dict) -> dict[DocType, object]:
     return {by_code(k): v for k, v in d.items()}
 
 
+def _resolve_expected(d: dict) -> dict[DocType, object]:
+    """`expected_per_year` table: each value an int or a list of
+    `[from_year, count]` eras (count may be the string "none": TOML has no
+    null). Validated here, at load time, so a malformed table aborts the whole
+    file through `load_toml`'s error path (ValueError) like any bad entry."""
+    return {by_code(k): normalize_expected(v) for k, v in d.items()}
+
+
 def _make_sitemap_factory(cfg: dict) -> Callable[[Bank, Optional[Fetcher]], BankAdapter]:
     sitemap_url = cfg["sitemap_url"]
     patterns = _resolve_types(cfg.get("patterns", {}))
-    expected = _resolve_types(cfg.get("expected_per_year", {}))
+    expected = _resolve_expected(cfg.get("expected_per_year", {}))
 
     def factory(bank: Bank, fetcher: Optional[Fetcher] = None) -> BankAdapter:
         return GenericSitemapAdapter(
@@ -52,7 +60,7 @@ def _make_listing_factory(cfg: dict) -> Callable[[Bank, Optional[Fetcher]], Bank
         dt = by_code(k)
         # lst is a list of [url, regex] pairs
         entries[dt] = [(item[0], item[1]) for item in lst]
-    expected = _resolve_types(cfg.get("expected_per_year", {}))
+    expected = _resolve_expected(cfg.get("expected_per_year", {}))
     year_range = tuple(cfg["year_range"]) if "year_range" in cfg else None
     date_patterns = _resolve_types(cfg.get("date_patterns", {}))
 

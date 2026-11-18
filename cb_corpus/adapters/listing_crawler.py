@@ -91,7 +91,7 @@ class ListingCrawlerAdapter(BankAdapter):
 
     def __init__(self, bank, fetcher=None, *,
                  entries: dict[DocType, list[Entry]],
-                 expected_per_year: Optional[dict[DocType, int]] = None,
+                 expected_per_year: Optional[dict[DocType, object]] = None,
                  year_range: Optional[tuple[int, int]] = None,
                  date_patterns: Optional[dict[DocType, str]] = None):
         super().__init__(bank, fetcher)

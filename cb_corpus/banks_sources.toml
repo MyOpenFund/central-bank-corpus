@@ -11,6 +11,12 @@
 #   - A listing may say how a doc type's date is written in its links:
 #     [<code>.listing.date_patterns]  A3 = "/g(?P<yy>\\d{2})(?P<m>\\d{2})(?P<d>\\d{2})\\.pdf$"
 #     (named groups y|yy, m|mon, d -- see cb_corpus/dates.py find_url_date).
+#   - Either section may state the completeness expectation per doc type:
+#     [<code>.listing.expected_per_year]  A3 = 8
+#     or, when the cadence changed over time, eras of [from_year, count]:
+#     A1 = [[1999, 12], [2015, 8]]      (count "none" = no expectation; years
+#     before the first era have none either -- see adapters/base.py
+#     normalize_expected). A malformed table aborts the file's load.
 #
 # Patterns are STARTING POINTS — verify each bank/url on first crawl. Selectors
 # tend to drift when sites are redesigned.
