@@ -254,7 +254,7 @@ def run_repec_check(bank_codes: Optional[Iterable[str]] = None,
                 recovered = False
                 try:
                     html = fetcher.get_text(f"{IDEAS}/p/{arch}/{series}/{pid}.html")
-                    ftitle, _ = _paper_meta(html)
+                    ftitle, _, _ = _paper_meta(html)  # title-only match: date unused
                     cands = extract_pdf_candidates(html, bank_home)
                     nft = normalize_title(ftitle) if ftitle else ""
                     for c in cands:
@@ -430,7 +430,7 @@ def _walk_entries(bank: str, fetcher: Fetcher, idx: dict, bank_home: str):
                 # (matched against pdf_url/alt_urls) or its canonical title.
                 try:
                     html = fetcher.get_text(ideas_url)
-                    fetched_title, _ = _paper_meta(html)
+                    fetched_title, _, _ = _paper_meta(html)  # never dates (reconcile)
                     cands = extract_pdf_candidates(html, bank_home)
                 except Exception:
                     fetched_title, cands = "", []

@@ -296,11 +296,12 @@ def test_repec_paper_meta_extracts_title_and_date():
             '<meta name="date" content="2007-02-02">'
             '<meta name="citation_year" content="2007">'
             '</head><body><h1>fallback h1</h1></body></html>')
-    title, d = _paper_meta(html)
+    title, d, prec = _paper_meta(html)
     assert title == "Shocks and frictions"
     assert (d.year, d.month, d.day) == (2007, 1, 1)        # date meta ignored
+    assert prec == "year"                                  # 1 Jan is a placeholder
     # Year-only fallback + <h1> title fallback.
-    t2, d2 = _paper_meta('<meta name="citation_year" content="2015"><h1>Only H1</h1>')
+    t2, d2, _ = _paper_meta('<meta name="citation_year" content="2015"><h1>Only H1</h1>')
     assert t2 == "Only H1" and d2 == date(2015, 1, 1)
     # No date metadata -> None (caller stores undated rather than crashing).
     assert _paper_meta("<html><h1>x</h1></html>")[1] is None
@@ -462,11 +463,12 @@ def test_repec_paper_meta_uses_publication_date_not_record_date():
             '<meta name="citation_year" content="2007">'
             '<meta name="citation_title" content="A paper">'
             '</head></html>')
-    title, d = _paper_meta(html)
+    title, d, prec = _paper_meta(html)
     assert title == "A paper"
     assert d.isoformat() == "2007-09-01"          # Sept 2007, NOT 2 Feb
+    assert prec == "month"
     # year-only fallback must not fall back to the 02-02 record date
-    _, d2 = _paper_meta('<meta name="citation_year" content="2010">'
+    _, d2, _ = _paper_meta('<meta name="citation_year" content="2010">'
                         '<meta name="date" content="2010-02-02">')
     assert d2.isoformat() == "2010-01-01"
 

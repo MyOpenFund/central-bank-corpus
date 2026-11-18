@@ -236,6 +236,55 @@ def test_refresh_metadata_ideas_page_without_date():
     assert (d, prec, src) == (None, None, None)
 
 
+# ---- integrity wave (issue #23 a): RePEc year-only fallback is `year` --------
+
+_YEAR_ONLY = ('<html><head><meta name="citation_title" content="Y">'
+              '<meta name="date" content="2015-02-02">'
+              '<meta name="citation_year" content="2015"></head></html>')
+
+
+@pytest.mark.parametrize("html,expected", [
+    ('<meta name="citation_publication_date" content="2019/04">'
+     '<meta name="citation_year" content="2019">', (date(2019, 4, 1), "month")),
+    (_YEAR_ONLY, (date(2015, 1, 1), "year")),
+    # a citation date that only names the year is a year, not a fictitious January
+    ('<meta name="citation_publication_date" content="2011">', (date(2011, 1, 1), "year")),
+    # unparseable citation date -> the citation_year fallback, honestly `year`
+    ('<meta name="citation_publication_date" content="n.d.">'
+     '<meta name="citation_year" content="2012">', (date(2012, 1, 1), "year")),
+    ("<html><h1>x</h1></html>", (None, None)),
+])
+def test_paper_meta_returns_the_precision_of_its_date(html, expected):
+    from cb_corpus.sources.repec import _paper_meta
+    _title, d, prec = _paper_meta(html)
+    assert (d, prec) == expected
+
+
+def test_repec_discovery_year_only_paper_is_year_precision(monkeypatch):
+    from tests.test_repec_incremental import (BASE, SERIES_HANDLE, _mk, _paper_html,
+                                              _paper_url, _series_html)
+    from cb_corpus.sources import repec as R
+    monkeypatch.setitem(R.SERIES, "se", [(SERIES_HANDLE, DocType.D1)])
+    year_only = _paper_html("0001").replace(
+        "<head>", '<head><meta name="citation_year" content="2018">')
+    d = _mk({f"{BASE}.html": _series_html(["0001"]), _paper_url("0001"): year_only})
+    [rec] = list(d.discover_bank("se"))
+    assert rec.date == date(2018, 1, 1)
+    assert (rec.date_precision, rec.date_source) == ("year", "repec")
+
+
+def test_refresh_metadata_year_only_ideas_page_is_year_precision():
+    from cb_corpus.recover import _refresh_metadata
+
+    class F:
+        def get_text(self, url):
+            return _YEAR_ONLY
+    _title, d, prec, src, _ = _refresh_metadata(
+        F(), {"title": "audit", "bank_code": "fr",
+              "source_url": "https://ideas.repec.org/p/bfr/banfra/1.html"})
+    assert (d, prec, src) == (date(2015, 1, 1), "year", "repec")
+
+
 def test_candidates_pass_undated_record_has_no_precision(tmp_path, monkeypatch):
     """recover.py candidates pass, `elif rec_date is None` branch."""
     from tests.test_recover_candidates import (_NullFetcher, _entry, _make_local_pdf,
