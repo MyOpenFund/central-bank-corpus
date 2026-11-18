@@ -190,7 +190,9 @@ def main(argv: list[str] | None = None) -> int:
     pd.add_argument("--allow-moves", action="store_true",
                     help="also apply evidence that moves a date OUT of the period its "
                          "stored value asserts (default: such rows are reported as "
-                         "`mismatch` and left alone)")
+                         "`mismatch` and left alone). Needs --banks and/or --types. "
+                         "Files are never moved: a date moved to another year leaves "
+                         "local_path under the old year folder")
 
     rc = sub.add_parser("repec-check",
                         help="WP v3 phase 2: audit RePEc/IDEAS coverage vs the manifest "
@@ -368,6 +370,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "policy-dates":
         from .policy_dates import run_policy_dates
         types = [c.strip() for c in args.types.split(",") if c.strip()] or None
+        if args.allow_moves and not (banks or types):
+            pd.error("--allow-moves needs an explicit scope: --banks and/or --types")
         run_policy_dates(bank_codes=banks, doc_types=types, write=args.write,
                          csv_path=args.csv or None, refine_only=not args.allow_moves)
         return 0

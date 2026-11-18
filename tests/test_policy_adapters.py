@@ -109,8 +109,9 @@ def _boc():
 
 def test_sitemap_reads_a_month_from_the_url():
     recs = {r.pdf_url[len(BOC):]: r for r in _boc()._discover_native(DocType.E1, None)}
+    # a day in the URL is the day the report was released
     assert _dated(recs["/publications/mpr/mpr-2026-10-28/tariff-assumptions/"]) == (
-        "2026-10-28", "day", "period")
+        "2026-10-28", "day", "publication")
     assert _dated(recs["/publications/mpr/mpr-2024-07/global-economy/"]) == (
         "2024-07-01", "month", "period")
     # the bank's own URL beats the sitemap's last-modified day for a policy series
@@ -122,6 +123,33 @@ def test_sitemap_reads_a_month_from_the_url():
         row = recs[path].to_row()
         assert (row["date"], row["date_precision"]) == (None, None) and "date_kind" not in row
     assert_backfill_agrees(list(recs.values()))
+
+
+def test_sitemap_last_modified_day_and_index_pages_carry_no_kind():
+    """A <lastmod> is neither an event nor an issue, and an index page is not
+    a report: neither gets the series' kind -- exactly as in the backfill."""
+    xml = f"""<?xml version="1.0"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>{BOC}/publications/mpr/</loc><lastmod>2024-08-19</lastmod></url>
+  <url><loc>{BOC}/publications/mpr/qualitative-research-on-the-mpr/</loc>
+       <lastmod>2023-05-02</lastmod></url>
+  <url><loc>{BOC}/core-functions/monetary-policy/summary-deliberations-x/</loc>
+       <lastmod>2025-06-18</lastmod></url>
+</urlset>"""
+    ad = GenericSitemapAdapter(get_bank("ca"), _Pages({"": xml}),
+                               sitemap_url=f"{BOC}/wp-sitemap.xml",
+                               patterns={DocType.E1: r"/publications/mpr/.*",
+                                         DocType.A3: r"/core-functions/monetary-policy/.*"})
+    recs = (list(ad._discover_native(DocType.E1, None))
+            + list(ad._discover_native(DocType.A3, None)))
+    assert len(recs) == 3
+    for rec in recs:
+        row = rec.to_row()
+        assert row["date"] and row["date_source"] == "sitemap_lastmod"
+        assert "date_kind" not in row
+    assert [plan_row(r.to_row()).action for r in recs] == [
+        "not-a-report", "not-a-report", "no-evidence"]
+    assert_backfill_agrees(recs)
 
 
 def test_sitemap_month_fallback_for_a_bank_without_a_rule():
@@ -158,7 +186,7 @@ def test_sitemap_since_filter_uses_the_month_date():
 # ---- listing crawler (Bank of Japan minutes) --------------------------
 
 BOJ_HTML = """<html><body>
-<a href="/en/mopo/mpmsche_minu/minu_2026/g260123.pdf">Meeting on January 22 and 23, 2026 [PDF 292KB]</a>
+<a href="/en/mopo/mpmsche_minu/minu_2026/g260123.pdf">Minutes [PDF 292KB]</a>
 <a href="/en/mopo/mpmsche_minu/minu_2026/g260501.pdf">Meeting on April 30 and May 1, 2026 [PDF 300KB]</a>
 <a href="/en/mopo/mpmsche_minu/minu_2026/other.pdf">skip</a>
 </body></html>"""
@@ -197,7 +225,8 @@ def test_listing_date_pattern_then_generic_date_then_title():
 def test_parse_links_keeps_its_three_fields():
     rows = parse_links(BOJ_HTML, "https://www.boj.or.jp/x/", re.compile(r"g\d{6}\.pdf$"))
     assert [len(r) for r in rows] == [3, 3]
-    assert rows[0][0] == date(2026, 1, 23)       # title date when no pattern is given
+    assert rows[0][0] is None                    # no pattern given, no date in the text
+    assert rows[1][0] == date(2026, 5, 1)        # the link text names the day
 
 
 # ---- Bank of England recovery -----------------------------------------
@@ -292,8 +321,9 @@ def test_ecb_projections_are_a_month_whatever_the_hash(tmp_path, monkeypatch, ca
     import cb_corpus.sources.ecb_pub as ecb_pub
     urls = ["https://www.ecb.europa.eu/press/projections/html/"
             "ecb.projections202603_eurosystemstaff~da4f97a747.en.html",
-            # a hash made of digits must not be read as a date
-            "https://www.ecb.europa.eu/press/projections/html/"
+            # neither a digit-only hash nor a dated folder before the file
+            # name may be read as the date: only `projections<YYYYMM>` is
+            "https://www.ecb.europa.eu/press/projections/200712/html/"
             "ecb.projections202509_ecbstaff~2012041588.en.html"]
     monkeypatch.setattr(ecb_pub, "section_include_docs",
                         lambda f, section, year, exts=None: urls if year == 2026 else [])
@@ -356,7 +386,7 @@ def test_sync_after_the_backfill_leaves_known_rows_alone(tmp_path):
     from cb_corpus.policy_dates import run_policy_dates
     url = "https://www.boj.or.jp/en/mopo/mpmsche_minu/minu_2026/g260123.pdf"
     row = {"bank_code": "jp", "doc_type": "A3",
-           "title": "Meeting on January 22 and 23, 2026 [PDF 292KB]", "pdf_url": url,
+           "title": "Minutes [PDF 292KB]", "pdf_url": url,
            "source_url": "https://www.boj.or.jp/en/mopo/mpmsche_minu/minu_2026/index.htm",
            "date": None, "language": "en", "provenance": "bank_site",
            "mime_type": "application/pdf", "sha256": "aa" * 32,

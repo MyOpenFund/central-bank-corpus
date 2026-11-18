@@ -108,10 +108,102 @@ POLICY_DATE_KIND: dict[tuple[str, str], str] = {
 
 
 def date_kind_for(bank_code: str, doc_type) -> Optional[str]:
-    """What `date` is for this bank and document type (a DocType or its
-    code), from POLICY_DATE_KIND; None when the table does not say."""
+    """The SERIES' kind for this bank and document type (a DocType or its
+    code), from POLICY_DATE_KIND; None when the table does not say. The kind
+    of one ROW is policy_date_kind: the series' kind minus its exceptions."""
     code = getattr(doc_type, "code", doc_type)
     return POLICY_DATE_KIND.get((bank_code, code))
+
+
+#: RBA rate decisions (au A1). Until December 2007 the decision was announced
+#: at 9.30 am on the morning AFTER the board meeting (a Wednesday); from the
+#: meeting of 5 February 2008 it is announced at 2.30 pm on the meeting day.
+#: The stored date is the day of the media release in both periods: a
+#: publication day before this date, the meeting day from it.
+RBA_SAME_DAY_ANNOUNCEMENT_FROM = date(2008, 2, 5)
+
+#: Federal Reserve individual projections (us F1): `FOMC<date>SEPcompilation.pdf`
+#: is dated at its meeting like the projection tables, but is RELEASED ABOUT
+#: FIVE YEARS LATER. Its kind stays `meeting` (what the date holds); the
+#: pattern is exposed so a consumer can tell these files apart and never
+#: treat them as available on their date.
+FED_SEP_COMPILATION_URL = r"/FOMC\d{8}SEPcompilation\.pdf$"
+
+#: Bank of England rows catalogued as MPC minutes (gb A3) whose file or title
+#: shows another document: an Inflation Report / Monetary Policy Report PDF
+#: picked on a minutes page, a press-conference transcript. Nothing is guessed
+#: about what their date is: they are dated like their page and get NO kind.
+BOE_NOT_MINUTES = r"inflation-report|monetary-policy-report|press[- ](?:conference|briefing)"
+
+#: A date taken from one of these sources is no kind of policy date: a
+#: sitemap <lastmod> is the page's last modification day, neither an event
+#: nor an issue.
+KINDLESS_DATE_SOURCES = ("sitemap_lastmod",)
+
+
+@dataclass(frozen=True)
+class KindException:
+    """A documented exception to a series' kind: rows whose date is before
+    `before` and/or whose precision is `precision` have `kind` instead."""
+    kind: str
+    why: str
+    before: Optional[date] = None
+    precision: Optional[str] = None
+
+
+#: (bank_code, doc type code) -> exceptions to POLICY_DATE_KIND, first match
+#: wins. Rules on the row's own date and precision, never lists of rows.
+POLICY_DATE_KIND_EXCEPTIONS: dict[tuple[str, str], tuple[KindException, ...]] = {
+    ("au", "A1"): (KindException(
+        KIND_PUBLICATION, before=RBA_SAME_DAY_ANNOUNCEMENT_FROM,
+        why="announced the morning after the board meeting until December 2007"),),
+    ("ca", "E1"): (KindException(
+        KIND_PUBLICATION, precision="day",
+        why="a day read from /mpr-YYYY-MM-DD/ is the day the report was released; "
+            "an issue known to the month only stays a period"),),
+}
+
+
+def is_misfiled(bank_code: str, doc_type, *, title: Optional[str] = "",
+                pdf_url: Optional[str] = "", rules: Optional[dict] = None) -> bool:
+    """Is this row filed in a series it does not belong to (the series' rule
+    has a `misfiled_pattern` that its title or document URL matches)?"""
+    code = getattr(doc_type, "code", doc_type)
+    rule = (POLICY_DATE_RULES if rules is None else rules).get((bank_code, code))
+    if rule is None or not rule.misfiled_pattern:
+        return False
+    return any(re.search(rule.misfiled_pattern, text or "", re.I) for text in (title, pdf_url))
+
+
+def policy_date_kind(bank_code: str, doc_type, *, date: Optional[date],
+                     precision: Optional[str] = None, date_source: Optional[str] = None,
+                     title: Optional[str] = "", pdf_url: Optional[str] = "") -> Optional[str]:
+    """What the date of ONE row is, or None when nothing may be claimed.
+
+    The series' kind (POLICY_DATE_KIND), except:
+      - no date, or a series outside the table: None;
+      - a date from a KINDLESS_DATE_SOURCES source (a sitemap <lastmod>): None;
+      - a URL that is not a document of the series (the rule's
+        `report_pattern`, e.g. an index page): None;
+      - a row filed in the wrong series (`misfiled_pattern`): None;
+      - a documented exception (POLICY_DATE_KIND_EXCEPTIONS): its kind.
+    Used for new rows (DocRecord.to_row) and by the `policy-dates` backfill,
+    with the date and precision the row will hold."""
+    code = getattr(doc_type, "code", doc_type)
+    kind = POLICY_DATE_KIND.get((bank_code, code))
+    if date is None or kind is None or date_source in KINDLESS_DATE_SOURCES:
+        return None
+    rule = POLICY_DATE_RULES.get((bank_code, code))
+    if rule is not None and rule.report_pattern and not re.search(
+            rule.report_pattern, pdf_url or "", re.I):
+        return None
+    if is_misfiled(bank_code, code, title=title, pdf_url=pdf_url):
+        return None
+    for exc in POLICY_DATE_KIND_EXCEPTIONS.get((bank_code, code), ()):
+        if ((exc.before is None or date < exc.before)
+                and (exc.precision is None or precision == exc.precision)):
+            return exc.kind
+    return kind
 
 
 _MONTH_NAMES = ("january", "february", "march", "april", "may", "june", "july",
@@ -369,9 +461,13 @@ class PolicyDateRule:
     and the first that finds a date wins; a later step that finds a date in
     another period is a conflict (nothing is inferred). `report_pattern`,
     when set, must match the document URL: a row that does not match is not
-    a document of the series at all (an index page) and is never dated."""
+    a document of the series at all (an index page) and is never dated.
+    `misfiled_pattern`, when set, is matched against the title and the
+    document URL: a row that matches is another kind of document filed in
+    this series; it is still dated by the steps but never given a kind."""
     steps: tuple[DateStep, ...]
     report_pattern: Optional[str] = None
+    misfiled_pattern: Optional[str] = None
 
 
 def _url(pattern: str, name: str = "pdf_url") -> DateStep:
@@ -382,11 +478,11 @@ _FED_URL = PolicyDateRule(steps=(_url(URL_YYYYMMDD),))
 # Bank of England: the title names the day the meeting ended ("held on 3 and
 # 4 February 1999" -> the 4th) or only a month ("... - June 2021"); when the
 # title names nothing, the page URL then the file URL give the month.
-_BOE_TITLE_THEN_URLS = PolicyDateRule(steps=(
+_BOE_STEPS = (
     DateStep(name="title", field="title", pick=PICK_LAST),
     DateStep(name="source_url", field="source_url", pattern=URL_MONTH_NAME_YEAR),
     DateStep(name="pdf_url", field="pdf_url", pattern=URL_MONTH_NAME_YEAR),
-))
+)
 
 #: (bank_code, doc type code) -> where the date of the series is read from.
 #: Same keys as POLICY_DATE_KIND. Used by the `policy-dates` backfill for
@@ -403,8 +499,8 @@ POLICY_DATE_RULES: dict[tuple[str, str], PolicyDateRule] = {
     ("ecb", "A3"): PolicyDateRule(steps=(_url(ECB_ACCOUNT_URL),)),
     ("ecb", "B1"): PolicyDateRule(steps=(_url(ECB_PRESS_CONFERENCE_URL),)),
     ("ecb", "E1"): PolicyDateRule(steps=(_url(ECB_PROJECTIONS_URL),)),
-    ("gb", "A3"): _BOE_TITLE_THEN_URLS,
-    ("gb", "E1"): _BOE_TITLE_THEN_URLS,
+    ("gb", "A3"): PolicyDateRule(steps=_BOE_STEPS, misfiled_pattern=BOE_NOT_MINUTES),
+    ("gb", "E1"): PolicyDateRule(steps=_BOE_STEPS),
     ("au", "A1"): PolicyDateRule(steps=(
         DateStep(name="title:iso-day", field="title", pattern=RBA_DECISION_TITLE),)),
     ("au", "A3"): PolicyDateRule(steps=(

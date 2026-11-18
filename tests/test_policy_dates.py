@@ -223,11 +223,40 @@ def test_a_meeting_that_really_ended_on_the_first_becomes_that_day():
 ])
 def test_a_real_first_of_the_month_is_never_repaired(r):
     """The day number proves nothing: the URL or title names the 1st, so the
-    date stays, keeps its (unwritten) day label and only gains its kind."""
+    date stays. The day is now a verified fact and is labelled as one."""
     p = plan_row(r)
-    assert p.action == "kind-only"
-    assert set(p.updates) == {"date_kind"}
+    assert p.action == "day-confirmed"
+    assert set(p.updates) == {"date_precision", "date_source", "date_kind"}
+    assert "date" not in p.updates and "year" not in p.updates
+    assert p.updates["date_precision"] == "day" and p.updates["date_source"] == "bank_site"
     assert p.new_date == r["date"] and p.new_precision == "day"
+
+
+def test_a_confirmed_day_already_labelled_only_gains_its_kind():
+    r = row("us", "A2", "FOMC statement 2018-08-01",
+            f"{FED}/newsevents/pressreleases/monetary20180801a.htm", "2018-08-01",
+            date_precision="day", date_source="bank_site")
+    p = plan_row(r)
+    assert p.action == "kind-only" and p.updates == {"date_kind": "meeting"}
+    assert p.new_precision == "day"
+
+
+def test_what_the_csv_says_is_what_the_row_will_hold():
+    """`new_date` / `new_precision` are the row after the write, key for key."""
+    rows = [
+        row("us", "A2", "x", f"{FED}/newsevents/pressreleases/monetary20180801a.htm",
+            "2018-08-01"),
+        gb_minutes("Minutes of the MPC Meeting held on 3 and 4 February 1999"),
+        gb_minutes("Bank Rate maintained at 0.1% - June 2021", stored="2021-06-24",
+                   slug="june-2021"),
+        row("ca", "E1", "", f"{BOC}/publications/mpr/", None, date_precision="day"),
+    ]
+    for r in rows:
+        p = plan_row(r)
+        after = dict(r)
+        p.apply(after)
+        assert (after.get("date"), after.get("date_precision")) == (p.new_date, p.new_precision)
+        assert after.get("date_kind", "") == p.kind
 
 
 def test_month_only_titles_get_month_precision():
@@ -349,6 +378,136 @@ def test_a_stored_day_inside_the_evidence_month_is_kept():
     assert (p.new_date, p.new_precision) == ("2021-06-24", "day")
 
 
+def test_an_unconfirmed_day_stays_unlabelled():
+    """The title only names the month: the stored day is plausible, not
+    verified. No label is written and the CSV shows none."""
+    r = row("gb", "A3", "Bank Rate maintained at 0.1% - June 2021", f"{BOE}/x.pdf", "2021-06-24")
+    p = plan_row(r)
+    assert p.action == "kind-only" and p.updates == {"date_kind": "meeting"}
+    assert (p.new_date, p.new_precision) == ("2021-06-24", None)
+
+
+# ---- an explicit label says what the stored date asserts --------------
+
+JP = "https://www.boj.or.jp/en/mopo/mpmsche_minu/minu_2016"
+
+
+def test_a_first_of_month_labelled_day_is_not_refined():
+    r = row("jp", "A3", "x", f"{JP}/g161119.pdf", "2016-11-01",
+            date_precision="day", date_source="bank_site")
+    p = plan_row(r)
+    assert p.action == "mismatch" and p.updates == {}
+    p = plan_row(r, refine_only=False)
+    assert (p.action, p.updates["date"]) == ("to-day", "2016-11-19")
+
+
+def test_a_first_of_january_labelled_day_is_not_refined_either():
+    r = gb_minutes("Minutes of the MPC Meeting held on 3 and 4 February 1999",
+                   date_precision="day", date_source="bank_site")
+    assert plan_row(r).action == "mismatch"
+
+
+def test_an_unlabelled_or_month_labelled_first_of_month_is_refined():
+    for extra in ({}, {"date_precision": "month", "date_source": "bank_site"}):
+        r = row("jp", "A3", "x", f"{JP}/g161119.pdf", "2016-11-01", **extra)
+        p = plan_row(r)
+        assert (p.action, p.updates["date"], p.updates["date_precision"]) == (
+            "to-day", "2016-11-19", "day")
+
+
+def test_a_label_bounds_the_period_a_placeholder_stands_for():
+    # 1 January labelled `month` asserts January: June is a move, not a refinement
+    r = gb_minutes("Bank Rate maintained at 0.1% - June 2021", stored="2021-01-01",
+                   slug="june-2021", date_precision="month", date_source="bank_site")
+    assert plan_row(r).action == "mismatch"
+    # labelled `year` (as the Bank of England recovery writes it): anywhere in the year
+    r = gb_minutes("Bank Rate maintained at 0.1% - June 2021", stored="2021-01-01",
+                   slug="june-2021", date_precision="year", date_source="bank_site")
+    p = plan_row(r)
+    assert (p.action, p.updates["date"], p.updates["date_precision"]) == (
+        "to-month", "2021-06-01", "month")
+
+
+def test_a_day_label_on_a_month_only_date_is_still_corrected():
+    r = row("au", "E1", "x", "https://www.rba.gov.au/publications/smp/2026/aug/", "2026-08-01",
+            date_precision="day", date_source="bank_site")
+    assert plan_row(r).updates == {"date_precision": "month", "date_kind": "period"}
+
+
+# ---- date_kind is true row by row --------------------------------------
+
+def test_rba_decision_before_2008_is_a_release_day():
+    r = row("au", "A1", "RBA monetary policy decision 2007-12-05",
+            "https://www.rba.gov.au/media-releases/2007/mr-07-21.html", "2007-12-05")
+    p = plan_row(r)
+    assert (p.action, p.kind, p.updates["date_kind"]) == (
+        "day-confirmed", "publication", "publication")
+    r = row("au", "A1", "RBA monetary policy decision 2008-02-05",
+            "https://www.rba.gov.au/media-releases/2008/mr-08-02.html", "2008-02-05")
+    assert plan_row(r).kind == "meeting"
+
+
+def test_boc_report_day_is_a_release_day_and_a_month_a_period():
+    r = row("ca", "E1", "", f"{BOC}/publications/mpr/mpr-2026-10-28/tariff-assumptions/",
+            "2026-10-28", date_precision="day", date_source="bank_site")
+    p = plan_row(r)
+    assert p.action == "kind-only" and p.updates == {"date_kind": "publication"}
+    r = row("ca", "E1", "", f"{BOC}/publications/mpr/mpr-2024-07/in-focus-1/", None,
+            date_precision="day", date_source="bank_site")
+    assert plan_row(r).updates["date_kind"] == "period"
+
+
+BOE_FILES = f"{BOE}/-/media/boe/files"
+
+
+def test_a_row_filed_as_minutes_that_is_not_minutes_is_dated_but_gets_no_kind():
+    r = row("gb", "A3", "Bank Rate maintained at 0.75% - August 2019",
+            f"{BOE_FILES}/inflation-report/2019/august/inflation-report-august-2019.pdf",
+            "2019-01-01", source_url=f"{BOE}/monetary-policy-summary-and-minutes/2019/august-2019")
+    p = plan_row(r)
+    assert p.action == "misfiled" and p.kind == ""
+    assert p.updates == {"date": "2019-08-01", "date_precision": "month",
+                         "date_source": "bank_site"}
+    assert "misfiled" in p.note
+    r.update(p.updates)
+    again = plan_row(r)
+    assert again.action == "misfiled" and again.updates == {}    # reported on every run
+
+
+def test_a_kind_the_rules_no_longer_give_is_removed_not_nulled():
+    r = row("gb", "A3", "Bank Rate maintained at 0.75% - August 2019",
+            f"{BOE_FILES}/inflation-report/2019/august/inflation-report-august-2019.pdf",
+            "2019-08-01", date_precision="month", date_source="bank_site", date_kind="meeting")
+    p = plan_row(r)
+    assert p.action == "misfiled" and p.updates == {} and p.removals == ("date_kind",)
+    p.apply(r)
+    assert "date_kind" not in r
+    assert plan_row(r).removals == ()
+    r = row("au", "A1", "RBA monetary policy decision 2007-12-05",
+            "https://www.rba.gov.au/media-releases/2007/mr-07-21.html", "2007-12-05",
+            date_precision="day", date_source="bank_site", date_kind="meeting")
+    assert plan_row(r).updates == {"date_kind": "publication"}
+
+
+def test_fed_individual_projections_keep_the_meeting_kind_with_a_note():
+    r = row("us", "F1", "Summary of Economic Projections 2015-06-17",
+            f"{FED}/monetarypolicy/files/FOMC20150617SEPcompilation.pdf", "2015-06-17")
+    p = plan_row(r)
+    assert p.kind == "meeting" and "released about five years" in p.note
+    r = row("us", "F1", "x", f"{FED}/monetarypolicy/files/fomcprojtabl20210922.pdf", "2021-09-22")
+    assert plan_row(r).note == ""
+
+
+def test_a_page_captured_before_publication_is_noted_as_a_stub():
+    r = row("gb", "E1", "Monetary Policy Report - July 2026 (to be published at 12pm)",
+            f"{BOE}/monetary-policy-report/2026/july-2026", "2026-01-01",
+            source_url=f"{BOE}/monetary-policy-report/2026/july-2026")
+    p = plan_row(r)
+    assert p.action == "to-month" and "stub" in p.note
+    assert plan_row(gb_minutes("Bank Rate maintained at 0.1% - June 2021", stored="2021-01-01",
+                               slug="june-2021")).note == ""
+
+
 def test_a_dated_row_whose_precision_was_not_stated_gets_its_label():
     """Key present and null = a producer that stated nothing: unlike a row
     written before labels existed, it is labelled even for a confirmed day."""
@@ -356,7 +515,7 @@ def test_a_dated_row_whose_precision_was_not_stated_gets_its_label():
             f"{FED}/newsevents/pressreleases/monetary20180801a.htm", "2018-08-01",
             date_precision=None, date_source="bank_site")
     p = plan_row(r)
-    assert p.action == "to-day"
+    assert p.action == "day-confirmed"
     assert p.updates == {"date_precision": "day", "date_kind": "meeting"}
 
 
@@ -424,12 +583,12 @@ def test_dry_run_writes_a_csv_and_no_manifest(tmp_path):
     out = tmp_path / "plan.csv"
     counts = run_policy_dates(config=cfg, csv_path=str(out))
     assert _bytes(cfg) == before
-    assert counts == {"to-day": 1, "to-month": 2, "kind-only": 1, "conflict": 1,
+    assert counts == {"to-day": 1, "to-month": 2, "day-confirmed": 1, "conflict": 1,
                       "not-a-report": 1, "rows": 6, "written": 0}
     lines = list(csv.DictReader(out.open()))
     assert list(lines[0]) == ["doc_id", "bank", "doc_type", "old_date", "old_precision",
                               "new_date", "new_precision", "kind", "action", "rule",
-                              "evidence", "fields_changed", "title", "pdf_url"]
+                              "evidence", "fields_changed", "note", "title", "pdf_url"]
     assert len(lines) == 6                       # every row in scope, nothing else
     assert {ln["bank"] for ln in lines} == {"gb", "us", "ca"}
     assert {ln["doc_type"] for ln in lines} <= set(POLICY_DOC_TYPES)
@@ -441,6 +600,9 @@ def test_dry_run_writes_a_csv_and_no_manifest(tmp_path):
         "date date_precision date_source date_kind")
     assert by_action["conflict"]["fields_changed"] == ""
     assert by_action["not-a-report"]["new_date"] == ""
+    c = by_action["day-confirmed"]
+    assert (c["old_precision"], c["new_precision"], c["fields_changed"]) == (
+        "", "day", "date_precision date_source date_kind")
 
 
 def test_default_csv_lands_in_the_reports_directory(tmp_path):
@@ -455,7 +617,7 @@ def test_write_changes_only_date_keys_of_rows_in_scope_and_is_idempotent(tmp_pat
     before = {r["doc_id"]: r for r in iter_manifest_rows(cfg)}
 
     counts = run_policy_dates(config=cfg, write=True, csv_path=str(tmp_path / "a.csv"))
-    assert counts["written"] == 5                # 1 day, 2 month, 1 kind, 1 label
+    assert counts["written"] == 5                # 1 day, 2 month, 1 confirmed, 1 label
     after_bytes = _bytes(cfg)
     assert after_bytes["ch.jsonl"] == before_bytes["ch.jsonl"]       # bank out of scope
     after = {r["doc_id"]: r for r in iter_manifest_rows(cfg)}
@@ -495,8 +657,8 @@ def test_written_rows_have_the_expected_dates(tmp_path):
     assert (gb[2]["date"], gb[2].get("date_precision"), gb[2].get("date_kind")) == (
         "2013-01-01", None, None)                 # the conflict: nothing written
     [us] = [r for r in rows if r["bank_code"] == "us"]
-    assert (us["date"], us.get("date_precision"), us["date_kind"]) == (
-        "2018-08-01", None, "meeting")
+    assert (us["date"], us["date_precision"], us["date_source"], us["date_kind"]) == (
+        "2018-08-01", "day", "bank_site", "meeting")
     ca = [r for r in rows if r["bank_code"] == "ca"]
     assert (ca[0]["date"], ca[0]["date_precision"], ca[0].get("date_kind")) == (None, None, None)
     assert (ca[1]["date"], ca[1]["year"], ca[1]["date_precision"], ca[1]["date_kind"]) == (
@@ -551,7 +713,25 @@ def test_cli_policy_dates_dry_run_then_write(tmp_path, monkeypatch, capsys):
     assert _bytes(cfg) == before
     out = capsys.readouterr().out
     assert "to-day" in out and "gb" in out and "A3" in out
+    # moving a date out of its period is a deliberate, scoped action
+    with pytest.raises(SystemExit):
+        main(["policy-dates", "--allow-moves", "--csv", str(tmp_path / "x.csv")])
+    assert "--allow-moves" in capsys.readouterr().err
+    assert _bytes(cfg) == before
+    assert main(["policy-dates", "--allow-moves", "--types", "A3",
+                 "--csv", str(tmp_path / "x.csv")]) == 0
     assert main(["policy-dates", "--banks", "gb", "--types", "A3", "--write",
                  "--csv", str(tmp_path / "w.csv")]) == 0
     assert _bytes(cfg)["gb.jsonl"] != before["gb.jsonl"]
     assert _bytes(cfg)["us.jsonl"] == before["us.jsonl"]
+
+
+def test_moving_dates_needs_an_explicit_scope(tmp_path):
+    cfg = _corpus(tmp_path)
+    before = _bytes(cfg)
+    with pytest.raises(ValueError, match="explicit scope"):
+        run_policy_dates(config=cfg, write=True, refine_only=False,
+                         csv_path=str(tmp_path / "a.csv"))
+    assert _bytes(cfg) == before
+    run_policy_dates(bank_codes=["gb"], config=cfg, refine_only=False,
+                     csv_path=str(tmp_path / "b.csv"))

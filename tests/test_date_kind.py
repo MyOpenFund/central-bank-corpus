@@ -12,8 +12,11 @@ import gen_corpus
 from cb_corpus.cadence import compute_series
 from cb_corpus.completeness import actual_counts
 from cb_corpus.config import Config
-from cb_corpus.dates import (DATE_KINDS, KIND_MEETING, KIND_PERIOD, KIND_PUBLICATION,
-                             POLICY_DATE_KIND, date_kind_for)
+from cb_corpus.dates import (BOE_NOT_MINUTES, DATE_KINDS, FED_SEP_COMPILATION_URL,
+                             KIND_MEETING, KIND_PERIOD, KIND_PUBLICATION, KINDLESS_DATE_SOURCES,
+                             POLICY_DATE_KIND, POLICY_DATE_KIND_EXCEPTIONS,
+                             RBA_SAME_DAY_ANNOUNCEMENT_FROM, date_kind_for, is_misfiled,
+                             policy_date_kind)
 from cb_corpus.models import DocRecord
 from cb_corpus.storage import Storage, apply_row_updates, iter_manifest_rows
 from cb_corpus.taxonomy import DocType
@@ -43,6 +46,142 @@ def test_no_kind_outside_the_table():
     assert date_kind_for("us", "D1") is None       # working papers: not policy core
     assert date_kind_for("ch", "A2") is None       # a bank outside the policy core
     assert date_kind_for("gb", "A1") is None       # no such series today: nothing claimed
+
+
+# ---- the kind of ONE row: the series' kind, minus documented exceptions --
+
+def test_exceptions_are_documented_rules_on_known_series():
+    assert set(POLICY_DATE_KIND_EXCEPTIONS) <= set(POLICY_DATE_KIND)
+    for excs in POLICY_DATE_KIND_EXCEPTIONS.values():
+        for e in excs:
+            assert e.kind in DATE_KINDS and e.why
+            assert e.before is not None or e.precision is not None    # a rule, not a row list
+
+
+def test_no_date_no_kind():
+    assert policy_date_kind("us", "A3", date=None) is None
+    assert policy_date_kind("us", "D1", date=date(2020, 1, 1)) is None
+
+
+def test_rba_decisions_before_same_day_announcements_are_release_days():
+    """Until December 2007 the decision was announced at 9.30 am the morning
+    AFTER the board meeting; from the February 2008 meeting, at 2.30 pm on the
+    meeting day. The stored date is the release day in both periods."""
+    assert RBA_SAME_DAY_ANNOUNCEMENT_FROM == date(2008, 2, 5)
+    k = lambda d: policy_date_kind("au", "A1", date=d, precision="day")   # noqa: E731
+    assert k(date(2007, 12, 5)) == KIND_PUBLICATION       # Wednesday, meeting on the 4th
+    assert k(date(1997, 7, 30)) == KIND_PUBLICATION
+    assert k(date(2008, 2, 5)) == KIND_MEETING            # Tuesday, the meeting day
+    assert k(date(2026, 11, 3)) == KIND_MEETING
+    # the minutes are dated at the meeting in every period
+    assert policy_date_kind("au", "A3", date=date(2006, 12, 5), precision="day") == KIND_MEETING
+
+
+def test_boc_report_dated_to_the_day_is_a_release_day():
+    url = "https://www.bankofcanada.ca/publications/mpr/mpr-2026-10-28/in-focus-6/"
+    assert policy_date_kind("ca", "E1", date=date(2026, 10, 28), precision="day",
+                            pdf_url=url) == KIND_PUBLICATION
+    url = "https://www.bankofcanada.ca/publications/mpr/mpr-2016-04/"
+    assert policy_date_kind("ca", "E1", date=date(2016, 4, 1), precision="month",
+                            pdf_url=url) == KIND_PERIOD
+    # a first of the month that is a month stays a period
+    assert policy_date_kind("ca", "E1", date=date(2025, 1, 1), precision="month",
+                            pdf_url=url) == KIND_PERIOD
+
+
+def test_boc_index_page_has_no_kind_even_when_dated():
+    for url in ("https://www.bankofcanada.ca/publications/mpr/",
+                "https://www.bankofcanada.ca/publications/mpr/qualitative-research-on-the-mpr/"):
+        assert policy_date_kind("ca", "E1", date=date(2024, 8, 19), precision="day",
+                                pdf_url=url) is None
+
+
+def test_a_sitemap_last_modified_day_is_no_kind_of_date():
+    assert KINDLESS_DATE_SOURCES == ("sitemap_lastmod",)
+    url = "https://www.bankofcanada.ca/publications/mpr/mpr-2024-07/"
+    assert policy_date_kind("ca", "E1", date=date(2024, 8, 19), precision="day",
+                            date_source="sitemap_lastmod", pdf_url=url) is None
+    assert policy_date_kind("ca", "E1", date=date(2024, 7, 1), precision="month",
+                            date_source="bank_site", pdf_url=url) == KIND_PERIOD
+
+
+BOE_FILES = "https://www.bankofengland.co.uk/-/media/boe/files"
+
+
+@pytest.mark.parametrize("title,pdf_url", [
+    ("Bank Rate maintained at 0.75% - August 2019",
+     f"{BOE_FILES}/inflation-report/2019/august/inflation-report-august-2019.pdf"),
+    ("Bank Rate maintained at 0.75% - January 2020",
+     f"{BOE_FILES}/monetary-policy-report/2020/january/monetary-policy-report-january-2020.pdf"),
+    ("transcript-june-2020-mpc-decision-press-briefing.pdf",
+     f"{BOE_FILES}/monetary-policy-summary-and-minutes/2020/"
+     "transcript-june-2020-mpc-decision-press-briefing.pdf"),
+    ("MPC press conference - May 2021", f"{BOE_FILES}/x/2021/may-2021.pdf"),
+])
+def test_boe_rows_filed_as_minutes_that_are_not_minutes_get_no_kind(title, pdf_url):
+    assert is_misfiled("gb", "A3", title=title, pdf_url=pdf_url)
+    assert policy_date_kind("gb", "A3", date=date(2019, 8, 1), precision="month",
+                            title=title, pdf_url=pdf_url) is None
+
+
+@pytest.mark.parametrize("title,pdf_url", [
+    ("Minutes of the MPC Meeting held on 3 and 4 February 1999",
+     f"{BOE_FILES}/minutes/1999/minutes-february-1999.pdf"),
+    ("Bank Rate reduced to 3.75% - December 2025 Monetary Policy Summary and Minutes",
+     f"{BOE_FILES}/monetary-policy-summary-and-minutes/2025/"
+     "monetary-policy-summary-and-minutes-december-2025.pdf"),
+    ("Monetary policy summary and minutes - September 2017",
+     f"{BOE_FILES}/monetary-policy-summary-and-minutes/2017/september-2017.pdf"),
+])
+def test_real_boe_minutes_are_not_misfiled(title, pdf_url):
+    assert not is_misfiled("gb", "A3", title=title, pdf_url=pdf_url)
+    assert policy_date_kind("gb", "A3", date=date(2017, 9, 1), precision="month",
+                            title=title, pdf_url=pdf_url) == KIND_MEETING
+
+
+def test_misfiled_is_a_rule_of_the_minutes_series_only():
+    import re
+    assert re.search(BOE_NOT_MINUTES, "monetary-policy-report-november-2025.pdf")
+    # the Monetary Policy Report series is of course made of such files
+    assert not is_misfiled("gb", "E1", title="Monetary Policy Report - November 2025",
+                           pdf_url=f"{BOE_FILES}/monetary-policy-report/2025/november/"
+                           "monetary-policy-report-november-2025.pdf")
+    assert not is_misfiled("us", "A3", title="press conference", pdf_url="x")
+
+
+def test_fed_individual_projections_are_recognisable_and_stay_meeting_dated():
+    """SEPcompilation files are released about five years after the meeting
+    they are dated at: the kind stays `meeting` (what the date holds); the
+    pattern is exposed so a consumer, or a later change, can tell them apart."""
+    import re
+    comp = "https://www.federalreserve.gov/monetarypolicy/files/FOMC20150617SEPcompilation.pdf"
+    table = "https://www.federalreserve.gov/monetarypolicy/files/fomcprojtabl20210922.pdf"
+    assert re.search(FED_SEP_COMPILATION_URL, comp) and not re.search(FED_SEP_COMPILATION_URL, table)
+    for url in (comp, table):
+        assert policy_date_kind("us", "F1", date=date(2015, 6, 17), precision="day",
+                                pdf_url=url) == KIND_MEETING
+
+
+def test_new_rows_use_the_row_rules():
+    old = DocRecord(bank_code="au", doc_type=DocType.A1, title="RBA monetary policy decision "
+                    "2007-12-05", pdf_url="https://www.rba.gov.au/media-releases/2007/mr-07-21.html",
+                    date=date(2007, 12, 5), date_precision="day")
+    assert old.to_row()["date_kind"] == "publication"
+    day = DocRecord(bank_code="ca", doc_type=DocType.E1, title="",
+                    pdf_url="https://www.bankofcanada.ca/publications/mpr/mpr-2026-10-28/x/",
+                    date=date(2026, 10, 28), date_precision="day")
+    assert day.to_row()["date_kind"] == "publication"
+    lastmod = DocRecord(bank_code="ca", doc_type=DocType.E1, title="",
+                        pdf_url="https://www.bankofcanada.ca/publications/mpr/",
+                        date=date(2024, 8, 19), date_precision="day",
+                        date_source="sitemap_lastmod")
+    assert "date_kind" not in lastmod.to_row()
+    misfiled = DocRecord(bank_code="gb", doc_type=DocType.A3,
+                         title="Bank Rate maintained at 0.75% - August 2019",
+                         pdf_url=f"{BOE_FILES}/inflation-report/2019/august/"
+                         "inflation-report-august-2019.pdf",
+                         date=date(2019, 8, 1), date_precision="month")
+    assert "date_kind" not in misfiled.to_row()
 
 
 def _rec(bank="us", dt=DocType.A3, d=date(2024, 1, 31), **kw):

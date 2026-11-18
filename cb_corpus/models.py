@@ -6,7 +6,7 @@ from dataclasses import dataclass, field, asdict
 from datetime import date
 from typing import Optional, Union
 
-from .dates import date_kind_for
+from .dates import policy_date_kind
 from .taxonomy import DocType
 
 
@@ -53,9 +53,9 @@ class DocRecord:
     # None for undated records, e.g. RePEc/IDEAS pages without a date.
     date_source: Optional[str] = "bank_site"  # bank_site | repec | wayback | pdf_meta | nep_bound | llm_crawl | sitemap_lastmod
     # What `date` IS: meeting | publication | period (cb_corpus.dates.DATE_KINDS).
-    # Leave it None: `to_row` takes it from the per-bank table
-    # (dates.POLICY_DATE_KIND) for the policy core. A producer sets it only to
-    # say something the table does not. Optional manifest key: written only
+    # Leave it None: `to_row` takes it from dates.policy_date_kind (the
+    # series' kind and its documented row-level exceptions) for the policy
+    # core. A producer sets it only to say something those rules do not. Optional manifest key: written only
     # when there is a date AND a kind, absent otherwise. Never part of doc_id.
     date_kind: Optional[str] = None
     # RePEc handle (e.g. "RePEc:ecb:ecbwps:20253117"), stamped by repec-check /
@@ -95,7 +95,9 @@ class DocRecord:
         d["date"] = self.date.isoformat() if self.date else None
         if self.date is None:
             d["date_precision"] = None      # no date -> no precision
-        kind = self.date_kind or date_kind_for(self.bank_code, self.doc_type)
+        kind = self.date_kind or policy_date_kind(
+            self.bank_code, self.doc_type, date=self.date, precision=self.date_precision,
+            date_source=self.date_source, title=self.title, pdf_url=self.pdf_url)
         if self.date is not None and kind:
             d["date_kind"] = kind
         else:
