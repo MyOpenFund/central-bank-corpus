@@ -8,6 +8,9 @@
 #   - Backslashes must be escaped (TOML strings): use \\d not \d.
 #   - URL templates may contain {year}; the listing adapter then iterates over
 #     `year_range` (defaults to 2000..current).
+#   - A listing may say how a doc type's date is written in its links:
+#     [<code>.listing.date_patterns]  A3 = "/g(?P<yy>\\d{2})(?P<m>\\d{2})(?P<d>\\d{2})\\.pdf$"
+#     (named groups y|yy, m|mon, d -- see cb_corpus/dates.py find_url_date).
 #
 # Patterns are STARTING POINTS — verify each bank/url on first crawl. Selectors
 # tend to drift when sites are redesigned.

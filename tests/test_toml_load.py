@@ -132,3 +132,18 @@ def test_both_sitemap_and_listing_warned(tmp_path, registry):
     assert rep.ambiguous == ["ch"]
     assert any("both sitemap and listing" in w and "ch" in w for w in rep.warnings())
     assert set(registry) == {"ch", "ca"}
+
+
+def test_listing_date_patterns_reach_the_adapter(tmp_path, registry):
+    from cb_corpus.banks import get_bank
+    from cb_corpus.taxonomy import DocType
+    text = ('[ca.listing]\n[ca.listing.entries]\nA3 = [["https://b/l", "/a3/"]]\n'
+            '[ca.listing.date_patterns]\n'
+            'A3 = "/g(?P<yy>\\\\d{2})(?P<m>\\\\d{2})(?P<d>\\\\d{2})\\\\.pdf$"\n')
+    rep = declarative.load_toml(_write(tmp_path, text))
+    assert rep.loaded == ["ca"] and rep.warnings() == []
+    ad = registry["ca"](get_bank("ca"), object())
+    assert ad.date_patterns == {DocType.A3: r"/g(?P<yy>\d{2})(?P<m>\d{2})(?P<d>\d{2})\.pdf$"}
+    # a listing without the table keeps working
+    rep = declarative.load_toml(_write(tmp_path, GOOD))
+    assert registry["ca"](get_bank("ca"), object()).date_patterns == {}

@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Iterator, Optional
 
+from ..dates import BOJ_MINUTES_URL
 from ..models import DocRecord
 from ..taxonomy import DocType
 from .base import register
@@ -22,9 +23,12 @@ _MINUTES = ("https://www.boj.or.jp/en/mopo/mpmsche_minu/minu_{year}/index.htm",
 @register("jp")
 class BoJAdapter(ListingCrawlerAdapter):
     def __init__(self, bank, fetcher=None):
+        # Minutes are dated by their file name, gYYMMDD.pdf = the last day of
+        # the meeting (the generic YYYYMMDD reading finds nothing in it).
         super().__init__(bank, fetcher,
                          entries={DocType.A3: [_MINUTES]},
-                         year_range=(2015, date.today().year))
+                         year_range=(2015, date.today().year),
+                         date_patterns={DocType.A3: BOJ_MINUTES_URL})
         # D1 = Working Paper Series, native (exact day inline in the year tables).
         self.native_types = self.native_types + (DocType.D1,)
 
