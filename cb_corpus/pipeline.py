@@ -395,6 +395,8 @@ def reindex_bis_from_disk(only_banks: Optional[set[str]] = None,
                         title=title or meta.pdf_url, pdf_url=meta.pdf_url,
                         source_url=meta.detail_url, date=meta.date,
                         provenance="bis_index", mime_type="application/pdf",
+                        # r<YYMMDD> in the BIS review slug
+                        date_precision="day" if meta.date else None,
                     )
                     status = storage.reindex(rec, hit[1], dry_run=dry_run).split(":")[0]
                     counts[status] = counts.get(status, 0) + 1
@@ -624,6 +626,7 @@ def run_listing_pdf_recovery(bank_code: str, doc_type: DocType, listing_urls,
                     bank_code=bank_code, doc_type=doc_type,
                     title=f"{title} {d.isoformat()}", pdf_url=url, date=d,
                     provenance="bank_site", mime_type=mime,
+                    date_precision="day",    # `path_regex` captures a YYYYMMDD
                 )
 
     return storage.save_many(_recs(), dry_run=dry_run, label=f"{bank_code}:{doc_type.code}")

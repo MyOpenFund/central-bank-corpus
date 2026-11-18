@@ -958,11 +958,13 @@ def test_ecb_c2_native_and_reached_by_discover_all(monkeypatch):
         DocRecord(bank_code="ecb", doc_type=DocType.C2, title="Interview A",
                   pdf_url="https://www.ecb.europa.eu/press/inter/date/2024/html/"
                           "ecb.in240103~aa.en.html",
-                  date=date(2024, 1, 3), provenance="bank_site", mime_type="text/html"),
+                  date=date(2024, 1, 3), provenance="bank_site", mime_type="text/html",
+                  date_precision="day"),   # as the foedb source states it
         DocRecord(bank_code="ecb", doc_type=DocType.C2, title="Interview B",
                   pdf_url="https://www.ecb.europa.eu/press/inter/date/2024/html/"
                           "ecb.in240319~bb.en.html",
-                  date=date(2024, 3, 19), provenance="bank_site", mime_type="text/html"),
+                  date=date(2024, 3, 19), provenance="bank_site", mime_type="text/html",
+                  date_precision="day"),
     ]
     monkeypatch.setattr(ecb_foedb, "discover_ecb_interviews",
                         lambda fetcher, since=None: iter(recs))

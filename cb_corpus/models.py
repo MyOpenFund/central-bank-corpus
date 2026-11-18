@@ -35,17 +35,20 @@ class DocRecord:
     sha256: Optional[str] = None       # filled after download
     local_path: Optional[str] = None   # filled after download — the canonical artifact (PDF preferred)
     html_path: Optional[str] = None    # set when source was HTML — the original HTML sibling file
-    # Date-quality metadata (WP v3). `date_precision` is how precise `date` is;
-    # `date_source` is where that date came from. Defaults describe the common
-    # case — a native bank-site listing with an exact day. Producers that yield a
-    # coarser/different date MUST set these explicitly (e.g. RePEc → month/repec,
-    # a year-only listing → year). This makes date quality auditable per row.
-    # `date_precision` is None when there is no date at all (`date` is None);
-    # a producer with no date may also leave `date_source` None (e.g. an
-    # IDEAS page without a date) rather than claim a source for nothing.
+    # Date-quality metadata. `date_precision` is how precise `date` is;
+    # `date_source` is where that date came from. A month- or year-precision
+    # date is stored as the FIRST DAY of the period (see cb_corpus/dates.py).
+    # The default precision is None = "not stated": a producer that reads a
+    # day, a month or a year MUST say so explicitly (a native listing with an
+    # exact day -> "day", RePEc -> "month", a year-only listing -> "year").
+    # A producer that says nothing no longer claims a day it may not have.
+    # An undated record (`date` is None) never has a precision: `to_row`
+    # writes null whatever the producer set. A producer with no date may also
+    # leave `date_source` None (e.g. an IDEAS page without a date) rather
+    # than claim a source for nothing.
     # `sitemap_lastmod` = a sitemap <lastmod> (last modification day, not a
     # publication date) used for lack of anything better.
-    date_precision: Optional[str] = "day"  # day | month | year | None (undated)
+    date_precision: Optional[str] = None  # day | month | year | None (not stated / undated)
     # None for undated records, e.g. RePEc/IDEAS pages without a date.
     date_source: Optional[str] = "bank_site"  # bank_site | repec | wayback | pdf_meta | nep_bound | llm_crawl | sitemap_lastmod
     # RePEc handle (e.g. "RePEc:ecb:ecbwps:20253117"), stamped by repec-check /
@@ -83,6 +86,8 @@ class DocRecord:
         d = asdict(self)
         d["doc_type"] = self.doc_type.code
         d["date"] = self.date.isoformat() if self.date else None
+        if self.date is None:
+            d["date_precision"] = None      # no date -> no precision
         d["doc_id"] = self.doc_id
         d["year"] = self.year
         return d

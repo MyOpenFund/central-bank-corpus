@@ -109,6 +109,7 @@ class RBAAdapter(BankAdapter):
             bank_code="au", doc_type=dt, title=f"{label} {d.isoformat()}",
             pdf_url=url, source_url=src, date=d,
             provenance="bank_site", mime_type="text/html",  # rendered to PDF by Storage
+            date_precision="day",
         )
 
     def _walk_years(self, tmpl, parse_fn, dt, label, since, start) -> Iterator[DocRecord]:

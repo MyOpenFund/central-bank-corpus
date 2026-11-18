@@ -95,4 +95,6 @@ class ListingCrawlerAdapter(BankAdapter):
                         bank_code=self.bank.code, doc_type=doc_type,
                         title=title, pdf_url=abs_url, source_url=url,
                         date=d, provenance="bank_site", mime_type=mime,
+                        # _DATE_RE reads a full YYYYMMDD; no date, no precision
+                        date_precision="day" if d else None,
                     )

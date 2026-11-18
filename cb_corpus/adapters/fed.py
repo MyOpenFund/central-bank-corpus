@@ -150,4 +150,6 @@ class FedAdapter(BankAdapter):
                     pdf_url=link, source_url=url, date=d,
                     provenance="bank_site",
                     mime_type=mime,
+                    # every parser reads the full YYYYMMDD of the document URL
+                    date_precision="day",
                 )

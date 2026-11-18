@@ -330,6 +330,7 @@ class ECBAdapter(BankAdapter):
                     title=f"{title_prefix} {d.isoformat()}",
                     pdf_url=url, source_url=year_url, date=d,
                     provenance="bank_site",
+                    date_precision="day",    # YYMMDD in the document file name
                 )
 
     def _discover_accounts(self, since: Optional[date]) -> Iterator[DocRecord]:
@@ -352,6 +353,7 @@ class ECBAdapter(BankAdapter):
                     source_url=year_url,
                     date=d,
                     provenance="bank_site",
+                    date_precision="day",    # YYMMDD in the document file name
                     # Source page is HTML-only; Storage will render to PDF
                     # via headless Chrome when cfg.html_to_pdf is True.
                 )
@@ -413,4 +415,5 @@ class ECBAdapter(BankAdapter):
                 date=d,
                 provenance="bank_site",
                 mime_type="text/html",
+                date_precision="day",        # as labelled since the series began
             )
