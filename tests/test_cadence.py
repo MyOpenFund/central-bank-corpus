@@ -407,19 +407,38 @@ def _day_series(start: date, n: int, step: int) -> list[date]:
     return [start + timedelta(days=step * i) for i in range(n)]
 
 
-def test_month_and_year_rows_are_dropped_before_the_median_and_last(tmp_path):
-    """A day-precision series (every 30 days) with RePEc-style month rows and a
-    year-only Jan-1 placeholder mixed in. Kept, the placeholders would drag the
-    median down and a later-year Jan-1 would become `last`; dropped, the series
-    reads exactly as its day rows."""
-    cfg = _mk_cfg(tmp_path)
+def _mixed_series(cfg):
+    """A day-precision series (every 30 days) with RePEc-style month rows on the
+    1st and a year-only Jan-1 placeholder that sorts AFTER the last real day."""
     days = _day_series(date(2024, 2, 10), 10, 30)
     recs = [_rec("us", DocType.D1, d, _i=i) for i, d in enumerate(days)]
     recs += [_rec("us", DocType.D1, date(2024, m, 1), date_precision="month", _i=100 + m)
              for m in range(3, 12)]
     recs.append(_rec("us", DocType.D1, date(2025, 1, 1), date_precision="year", _i=999))
     _write(cfg, recs)
+    return days
 
+
+def test_year_placeholder_is_dropped_by_default_month_rows_are_kept(tmp_path):
+    """Default (`year`): the later-year Jan-1 placeholder would become `last`
+    and push `next_expected` off a date that is no release; it is dropped. The
+    month rows carry the cadence at monthly granularity and are kept."""
+    cfg = _mk_cfg(tmp_path)
+    days = _mixed_series(cfg)
+    today = days[-1] + timedelta(days=5)
+    dropped: dict = {}
+    [e] = compute_series(cfg, today=today, dropped=dropped)
+    assert e["last"] == days[-1].isoformat()          # not 2025-01-01
+    assert e["n_3y"] == 19                            # 10 day + 9 month rows
+    assert dropped == {("us", "D1"): 1}
+
+
+def test_month_and_year_rows_are_dropped_when_configured(tmp_path, monkeypatch):
+    """`CADENCE_DROP_PRECISIONS=month,year`: the series reads exactly as its day
+    rows (the month rows on the 1st no longer drag the median)."""
+    monkeypatch.setenv("CADENCE_DROP_PRECISIONS", "month,year")
+    cfg = _mk_cfg(tmp_path)
+    days = _mixed_series(cfg)
     today = days[-1] + timedelta(days=5)
     dropped: dict = {}
     entries = compute_series(cfg, today=today, dropped=dropped)
@@ -460,7 +479,7 @@ def test_all_year_precision_series_is_not_judged_and_reported(tmp_path, capsys):
     assert [(e["bank_code"], e["doc_type"]) for e in entries] == [("us", "D1")]
     out, err = capsys.readouterr()
     assert any(ln.split()[:2] == ["ecb", "E4"] and "32" in ln for ln in out.splitlines())
-    assert "cadence: ecb E4: 32 month/year-precision row(s) dropped" in err
+    assert "cadence: ecb E4: 32 year-precision row(s) dropped" in err
     assert "series not judged" in err
 
 
@@ -511,20 +530,22 @@ def _quarterly_period_series(cfg):
 
 
 def test_drop_precisions_env_override(tmp_path, monkeypatch):
-    """`CADENCE_DROP_PRECISIONS=year` keeps judging month-precision series;
-    `none` drops nothing; garbage falls back to the default (never a crash)."""
+    """Default `year` keeps judging month-precision series (a quarterly report
+    dated by its period); `month,year` drops them too (unjudged); `none` drops
+    nothing; garbage falls back to the default (never a crash)."""
     cfg = _mk_cfg(tmp_path)
     _quarterly_period_series(cfg)
     today = date(2026, 1, 10)
 
     dropped: dict = {}
-    assert compute_series(cfg, today=today, dropped=dropped) == []      # default
-    assert dropped == {("gb", "E1"): 9}
-
-    monkeypatch.setenv("CADENCE_DROP_PRECISIONS", "year")
-    dropped = {}
-    [e] = compute_series(cfg, today=today, dropped=dropped)
+    [e] = compute_series(cfg, today=today, dropped=dropped)               # default
     assert e["n_3y"] == 8 and e["last"] == "2025-11-01" and dropped == {("gb", "E1"): 1}
+    default = e
+
+    monkeypatch.setenv("CADENCE_DROP_PRECISIONS", "month,year")
+    dropped = {}
+    assert compute_series(cfg, today=today, dropped=dropped) == []
+    assert dropped == {("gb", "E1"): 9}
 
     monkeypatch.setenv("CADENCE_DROP_PRECISIONS", "none")
     dropped = {}
@@ -534,28 +555,31 @@ def test_drop_precisions_env_override(tmp_path, monkeypatch):
     for bad in ("day", "month,daily", ",", "MONTH;YEAR"):
         monkeypatch.setenv("CADENCE_DROP_PRECISIONS", bad)
         dropped = {}
-        assert compute_series(cfg, today=today, dropped=dropped) == [], bad
-        assert dropped == {("gb", "E1"): 9}
+        assert compute_series(cfg, today=today, dropped=dropped) == [default], bad
+        assert dropped == {("gb", "E1"): 1}
 
 
-def test_stderr_label_follows_the_override(tmp_path, monkeypatch, capsys):
+def test_stderr_label_follows_the_setting(tmp_path, monkeypatch, capsys):
     cfg = _mk_cfg(tmp_path)
     _quarterly_period_series(cfg)
-    monkeypatch.setenv("CADENCE_DROP_PRECISIONS", "year")
     run_cadence_watch(cfg, write=False, today=date(2026, 1, 10))
     assert "cadence: gb E1: 1 year-precision row(s) dropped" in capsys.readouterr().err
+    monkeypatch.setenv("CADENCE_DROP_PRECISIONS", "month,year")
+    run_cadence_watch(cfg, write=False, today=date(2026, 1, 10))
+    err = capsys.readouterr().err
+    assert "cadence: gb E1: 9 month/year-precision row(s) dropped; series not judged" in err
 
 
 def test_dropped_count_shown_in_the_table_row(tmp_path, capsys):
     cfg = _mk_cfg(tmp_path)
     days = _day_series(date(2025, 1, 5), 8, 20)
     recs = [_rec("fr", DocType.D1, d, _i=i) for i, d in enumerate(days)]
-    recs += [_rec("fr", DocType.D1, date(2025, m, 1), date_precision="month", _i=60 + m)
-             for m in (2, 4, 6)]
+    recs += [_rec("fr", DocType.D1, date(2025, 1, 1), date_precision="year", _i=60 + i)
+             for i in range(3)]
     _write(cfg, recs)
     run_cadence_watch(cfg, write=False, today=days[-1])
     out, err = capsys.readouterr()
     header, row = out.splitlines()[:2]
     assert header.rstrip().endswith("coarse")
     assert row.split()[0] == "fr" and row.split()[-1] == "3"
-    assert "cadence: fr D1: 3 month/year-precision row(s) dropped" in err
+    assert "cadence: fr D1: 3 year-precision row(s) dropped" in err

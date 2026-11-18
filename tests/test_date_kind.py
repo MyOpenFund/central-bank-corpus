@@ -249,11 +249,12 @@ def test_manifest_readers_and_writers_tolerate_date_kind(tmp_path):
     assert st.is_known_url("https://boe/m3.pdf")
     assert actual_counts(st)[("gb", "A3", 2024)] == 8   # completeness matrix
     assert "| Documents | **8** |" in gen_corpus.build_corpus_md(cfg)
-    # cadence reads every row; these are month precision, so they are counted as
-    # dropped placeholders (issue #23) rather than judged
+    # cadence reads every row; month precision is kept by default (only year
+    # placeholders are dropped, issue #23)
     dropped: dict = {}
-    assert compute_series(cfg, today=date(2024, 9, 1), dropped=dropped) == []
-    assert dropped == {("gb", "A3"): 8}
+    assert any(e["bank_code"] == "gb"
+               for e in compute_series(cfg, today=date(2024, 9, 1), dropped=dropped))
+    assert dropped == {}
 
     # a keyed rewrite of ONE row keeps the others byte-identical, new keys included
     changed = dict(rows[2], title="Minutes three")

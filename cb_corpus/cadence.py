@@ -47,15 +47,19 @@ _DEFAULT_LOOKBACK_YEARS = 3
 
 _STATUS_ORDER = {"overdue": 0, "soon": 1, "on-track": 2}
 
-# `date_precision` values whose `date` is a placeholder, not a release day
-# (issue #23): a month-precision row sits on the 1st of its month, a
-# year-precision row on 1 January (ECB E4 bulletins, RePEc year-only
-# fallbacks). Fed into the median they collapse real releases onto one fake
-# date per month/year and can become `last`, so they are dropped before the
-# window. A row without the key (or with null) predates the field and is kept
-# as it always was. This is the DEFAULT; `coarse_precisions()` reads the
-# operator override.
-COARSE_PRECISIONS: frozenset[str] = frozenset({"month", "year"})
+# `date_precision` values dropped before the window (issue #23). A
+# year-precision row sits on 1 January (ECB E4 bulletins, RePEc year-only
+# fallbacks): fed into the median it collapses a year of real releases onto
+# one fake date and can become `last`, so it is dropped by DEFAULT. A
+# month-precision row sits on the 1st of its month but still carries the
+# cadence at monthly granularity -- for a quarterly report dated by its period
+# (E1) or monthly-dated minutes the month IS the information; dropping them
+# left au E1, ca A3, ecb E1, gb A3 and gb E1 unjudged on the committed
+# manifests (2026-11-18), so they are kept by default (`month,year` via
+# `CADENCE_DROP_PRECISIONS` drops them too). A row without the key (or with
+# null) predates the field and is kept as it always was. `coarse_precisions()`
+# reads the operator override.
+COARSE_PRECISIONS: frozenset[str] = frozenset({"year"})
 _PRECISION_VALUES = frozenset({"day", "month", "year"})
 
 
@@ -90,10 +94,10 @@ def lookback_years() -> int:
 
 def coarse_precisions() -> frozenset[str]:
     """`date_precision` values dropped before the median: env
-    `CADENCE_DROP_PRECISIONS`, a comma list of `month` / `year` (e.g. `year`
-    to keep judging month-precision series such as quarterly reports dated
-    by their period), or `none` to drop nothing. Unset, empty or containing
-    an unknown value -> the default `COARSE_PRECISIONS` (month, year): a typo
+    `CADENCE_DROP_PRECISIONS`, a comma list of `month` / `year` (e.g.
+    `month,year` to judge only day-precision rows, at the cost of leaving
+    month-dated series unjudged), or `none` to drop nothing. Unset, empty or
+    containing an unknown value -> the default `COARSE_PRECISIONS` (year): a typo
     never crashes the weekly job, same discipline as the thresholds above.
     `day` is never dropped (it would empty every series)."""
     raw = os.environ.get("CADENCE_DROP_PRECISIONS", "").strip().lower()
@@ -127,9 +131,11 @@ def compute_series(cfg: Config, *, today: Optional[date] = None,
     enough recent history to judge, straight from `iter_manifest_rows` (no
     network, no state file involved).
 
-    Rows whose `date_precision` is in `coarse_precisions()` (default month,
-    year; env `CADENCE_DROP_PRECISIONS`) are dropped FIRST, before the window, the median and `last` (issue #23): their
-    date is a placeholder (the 1st of the month, 1 January), not a release day.
+    Rows whose `date_precision` is in `coarse_precisions()` (default `year`;
+    env `CADENCE_DROP_PRECISIONS`) are dropped FIRST, before the window, the
+    median and `last` (issue #23): a year-precision date is a 1 January
+    placeholder, not a release day. Month-precision rows are kept by default
+    (see `COARSE_PRECISIONS`).
     When `dropped` is a dict, it receives `(bank_code, doc_type) -> number of
     dropped rows` (all years, dated rows only) for every series that lost at
     least one, including series that end up not judged -- the CLI prints it.
@@ -144,9 +150,10 @@ def compute_series(cfg: Config, *, today: Optional[date] = None,
     is silently UNMONITORED -- no entry, no status, never overdue. That covers
     the sparsest series (a yearly report, a bank with fewer than `min_docs()`
     releases in the window) and, since the precision filter, any series whose
-    rows are all month/year precision (ECB E4: every bulletin sits on
-    1 January). The watchdog is the backstop the discovery-failure alerts rely
-    on, so for those series a silent discovery failure is caught only by the
+    recent rows are all of a dropped precision (by default year: ECB E4
+    bulletins sit on 1 January; with `month,year`, every month-dated series).
+    The watchdog is the backstop the discovery-failure alerts rely on, so for
+    those series a silent discovery failure is caught only by the
     completeness report or a human. The CLI lists such series with their
     dropped count ("not judged") so the gap is at least visible.
 
@@ -401,7 +408,7 @@ def apply_state(state: CadenceState, entries: Iterable[dict], *,
 
 # -- CLI entry point --------------------------------------------------------
 def _format_table(entries: list[dict], dropped: Optional[dict] = None) -> str:
-    """The human table. `coarse` = month/year-precision rows dropped from the
+    """The human table. `coarse` = coarse-precision rows dropped from the
     series (see `compute_series`); series that lost rows and were then not
     judged at all are listed after the judged ones as `unjudged`, so a series
     the precision filter silenced does not just vanish from the report."""
@@ -453,7 +460,7 @@ def run_cadence_watch(cfg: Config, *, write: bool = False,
     `data/cadence_state.jsonl` (new-overdue/recovery alerting). Dry-run
     (default) is read-only: no jsonl, no state mutation, no alert lines --
     it just shows the table (CLI contract per spec design decision 4).
-    In both modes the month/year-precision rows dropped per series are shown
+    In both modes the coarse-precision rows dropped per series are shown
     in the table and reported on stderr (one line per series; a report, not
     an alert: it lands in the job's stderr log, not the ntfy push)."""
     dropped: dict = {}
