@@ -31,15 +31,37 @@ Same-night repeats (a URL retried more than once within one nightly run,
 before Quarantine.record_failure is even in the picture) must count as ONE
 failing night — otherwise a single bad night with internal retries could
 quarantine a URL that has actually only failed once.
+
+Several writers (issue #25, integrity wave 2026-11). The real invariant is
+NOT a single writer: the nightly job runs up to `DISCOVER_WORKERS` (6)
+parallel per-bank discover processes (deploy/run-job.sh), each with its own
+Storage -> Quarantine on this one file, plus recover-downloads. With
+last-line-wins replay, a writer appending from its stale startup state
+could regress another writer's night count or resurrect a released URL.
+So every write (record_failure, record_success, seed) happens under ONE
+exclusive sidecar flock (`.download_quarantine.jsonl.lock`,
+filelock.locked_sidecar -- the manifests' discipline) and, inside it, first
+REPLAYS the lines other processes appended since this instance last read
+the file (it keeps its byte offset), then computes its row from that fresh
+state and appends it. The startup load takes the same lock (only when the
+file exists), so it never sees a half-written line from a live writer.
+
+Reads do not take the lock: `is_quarantined` decides from the state loaded
+at startup plus whatever this instance replayed while writing -- one read
+per run, by design (a URL another worker quarantines during the run is
+skipped from the next run on). Limit: `flock` is advisory, and its
+guarantees on a network filesystem (NFS/SMB) depend on the server and the
+mount; on the NAS's local disk it is exact.
 """
 from __future__ import annotations
 
 import json
 import os
 import sys
-from typing import Optional
+from typing import Callable, Optional
 
 from .config import Config
+from .filelock import locked_sidecar
 
 _DEFAULT_THRESHOLD = 5
 
@@ -70,25 +92,59 @@ class Quarantine:
         # readability only, recomputed fresh against the CURRENT threshold.
         self._state: dict[str, dict] = {}
         self._skipped = 0
+        # How far this instance has replayed the file: byte offset, inode
+        # (a rewrite or deletion means "replay from the start") and whether
+        # the bytes read so far end with a newline (a torn tail left by a
+        # killed writer must not swallow our next row). See _catch_up.
+        self._offset = 0
+        self._ino: Optional[int] = None
+        self._ends_nl = True
         self._load()
 
     # -- state file IO ---------------------------------------------------
     def _load(self) -> None:
+        """Startup read, under the sidecar lock when the file exists (a
+        missing file is read lock-free: reading must create nothing)."""
         if not self._path.exists():
             return
-        raw = self._path.read_bytes()
+        with locked_sidecar(self._path):
+            self._catch_up()
+
+    def _catch_up(self) -> None:
+        """Replay the bytes appended since this instance's last read. MUST be
+        called under the sidecar lock: every writer holds it for its whole
+        append, so the tail read here is complete -- except a fragment left
+        by a writer killed mid-write, which is skipped as corrupt (and
+        terminated by the next _write). If the file was replaced (new inode)
+        or shrank below our offset, or vanished, the state is rebuilt from
+        the file's current content (disk is the truth)."""
+        try:
+            fh = self._path.open("rb")
+        except FileNotFoundError:
+            if self._ino is not None:
+                self._state, self._offset, self._ino, self._ends_nl = {}, 0, None, True
+            return
+        with fh:
+            st = os.fstat(fh.fileno())
+            if st.st_ino != self._ino or st.st_size < self._offset:
+                self._state, self._offset, self._ends_nl = {}, 0, True
+            fh.seek(self._offset)
+            data = fh.read()
+        self._ino = st.st_ino
+        self._replay(data)
+        self._offset += len(data)
+        if data:
+            self._ends_nl = data.endswith(b"\n")
+
+    def _replay(self, data: bytes) -> None:
         warned = False
-        for ln in raw.splitlines():
+        for ln in data.splitlines():
             if not ln.strip():
                 continue
             try:
                 row = json.loads(ln.decode("utf-8"))
             except (json.JSONDecodeError, UnicodeDecodeError):
-                if not warned:
-                    print(f"[quarantine] WARNING: corrupt line(s) in {self._path}, "
-                          f"skipped", file=sys.stderr, flush=True)
-                    warned = True
-                continue
+                row = None
             url = row.get("url") if isinstance(row, dict) else None
             if not url:
                 if not warned:
@@ -107,15 +163,46 @@ class Quarantine:
                 continue
             self._state[url] = {"nights": list(row.get("nights") or [])}
 
-    def _append(self, row: dict) -> None:
-        """Append a single JSON row. Each row is a single small write() call on
-        an O_APPEND handle (effectively atomic on POSIX). Unlike storage.py's
-        _append, no flock is taken because quarantine writes happen from the
-        serialized sync loop, not parallel workers — callers must keep it that
-        way."""
+    def _update(self, compute: Callable[[], Optional[dict]]) -> None:
+        """The one write path: under the sidecar lock, catch up on other
+        writers' lines, then let `compute` decide from that fresh state (it
+        mutates self._state and returns the row to append, or None for no
+        write)."""
         self.cfg.data_dir.mkdir(parents=True, exist_ok=True)
-        with self._path.open("a") as fh:
-            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+        with locked_sidecar(self._path):
+            self._catch_up()
+            row = compute()
+            if row is not None:
+                self._write(row)
+
+    def _write(self, row: dict) -> None:
+        """Append one JSON row with a single write() on an O_APPEND fd (under
+        the lock held by _update). A torn tail from a killed writer is first
+        terminated with a newline, so it stays one corrupt line instead of
+        merging with this row."""
+        line = (json.dumps(row, ensure_ascii=False) + "\n").encode("utf-8")
+        if not self._ends_nl:
+            line = b"\n" + line
+        fd = os.open(self._path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        try:
+            view = memoryview(line)
+            while view:
+                view = view[os.write(fd, view):]
+            self._ino = os.fstat(fd).st_ino
+        finally:
+            os.close(fd)
+        self._offset += len(line)
+        self._ends_nl = True
+
+    def _unchanged_since_last_read(self) -> bool:
+        """Cheap lock-free probe: True when nobody has written the file since
+        this instance last read or wrote it (same inode, same size) -- or it
+        does not exist and we never saw it."""
+        try:
+            st = self._path.stat()
+        except FileNotFoundError:
+            return self._ino is None
+        return st.st_ino == self._ino and st.st_size == self._offset
 
     # -- public API --------------------------------------------------------
     def is_quarantined(self, url: str) -> bool:
@@ -157,19 +244,25 @@ class Quarantine:
         bounded Mon-Sat sync start re-hammering the URL again before it
         re-accumulates `QUARANTINE_AFTER_NIGHTS` worth of failures. A seeded
         row stays quarantined until an explicit `record_success()` release.
+
+        Decided under the sidecar lock on the state AFTER replaying other
+        writers' lines (see the module docstring): a night another process
+        recorded for this url is continued, not overwritten.
         """
-        existing = self._state.get(url)
-        if existing and existing.get("seeded"):
-            return
-        state = self._state.setdefault(url, {"nights": []})
-        nights = state["nights"]
-        if not nights or nights[-1] != night:
-            nights.append(night)
-        threshold = _threshold()
-        if len(nights) > threshold:
-            del nights[: len(nights) - threshold]
-        quarantined = len(nights) >= threshold
-        self._append({"url": url, "nights": list(nights), "quarantined": quarantined})
+        def compute() -> Optional[dict]:
+            existing = self._state.get(url)
+            if existing and existing.get("seeded"):
+                return None
+            state = self._state.setdefault(url, {"nights": []})
+            nights = state["nights"]
+            if not nights or nights[-1] != night:
+                nights.append(night)
+            threshold = _threshold()
+            if len(nights) > threshold:
+                del nights[: len(nights) - threshold]
+            quarantined = len(nights) >= threshold
+            return {"url": url, "nights": list(nights), "quarantined": quarantined}
+        self._update(compute)
 
     def record_success(self, url: str) -> None:
         """Release `url`: append a `released` tombstone and clear in-memory
@@ -178,11 +271,23 @@ class Quarantine:
 
         No-op if `url` has no active state (not in the in-memory dict) — a
         guard against unbounded growth if callers fire this on every successful
-        download without checking quarantine status first."""
-        if url not in self._state:
+        download without checking quarantine status first.
+
+        "No active state" is judged on the fresh state (after replaying other
+        writers' lines under the lock), so a URL another process started
+        failing during this run is released too. Called on every successful
+        save, so the common case stays lock-free: when the url is unknown
+        here AND the file is unchanged since this instance last read it
+        (same inode and size), there is nothing to release."""
+        if url not in self._state and self._unchanged_since_last_read():
             return
-        self._state.pop(url, None)
-        self._append({"url": url, "released": True})
+
+        def compute() -> Optional[dict]:
+            if url not in self._state:
+                return None
+            self._state.pop(url, None)
+            return {"url": url, "released": True}
+        self._update(compute)
 
     def seed(self, url: str, reason: str = "") -> None:
         """Seed `url` as ALREADY quarantined, for a document confirmed
@@ -197,8 +302,10 @@ class Quarantine:
         is unconditionally quarantined (independent of the night-count
         threshold, so raising QUARANTINE_AFTER_NIGHTS later never
         un-quarantines it) until a `record_success` release."""
-        self._state[url] = {"nights": [], "seeded": True}
-        self._append({"url": url, "seeded": reason, "quarantined": True})
+        def compute() -> dict:
+            self._state[url] = {"nights": [], "seeded": True}
+            return {"url": url, "seeded": reason, "quarantined": True}
+        self._update(compute)
 
     def skipped_count(self) -> int:
         """Number of is_quarantined() calls since the counter was last reset

@@ -577,9 +577,10 @@ class Storage:
         self.cfg.reports_dir.mkdir(parents=True, exist_ok=True)
         # Dead-letter state for the nightly sync loop (recover-quarantine
         # design §3): consulted at the top of save() before any fetch, fed
-        # from _record_download_error() and save()'s success path. Quarantine
-        # writes must only ever happen from THIS serialized loop (never
-        # parallel workers) — see quarantine.py's _append docstring.
+        # from _record_download_error() and save()'s success path. Parallel
+        # discover workers each hold their own Quarantine on the one shared
+        # file; its writes are serialized by a sidecar flock with catch-up
+        # replay (issue #25) — see quarantine.py's module docstring.
         self.quarantine = Quarantine(self.cfg)
         # The quarantine "night" of this run (B7, grit wave 2026-11): the
         # LOCAL date (TZ=Europe/Paris in the stack), computed ONCE here so a
