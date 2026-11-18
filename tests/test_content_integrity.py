@@ -233,7 +233,8 @@ def test_save_many_counts_records_and_shows_bad_content(tmp_path, capsys):
     st = _storage(tmp_path, {U: (CONSENT_PAGE, "text/html"),
                              good: (make_pdf("good"), "application/pdf")})
     counts = st.save_many([_rec(U), _rec(good)], label="xx:C1")
-    assert counts == {"error": 1, "saved": 1}
+    # "bad-content" is a sub-count of "error", not a status of its own.
+    assert counts == {"error": 1, "saved": 1, "bad-content": 1}
     err = capsys.readouterr().err
     assert "[xx:C1] bad-content: 1" in err
     [line] = (tmp_path / "download_errors.jsonl").read_text().splitlines()

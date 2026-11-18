@@ -1096,19 +1096,19 @@ class Storage:
         expected_mime = rec.mime_type
         content = None
         mime = ""
-        failures: list[str] = []
+        failures: list[tuple[str, str]] = []   # (url, short reason)
         rejected = False
         for url in [rec.pdf_url, *(rec.alt_urls or [])]:
             try:
                 body, served = self.fetcher.get_bytes(url)
             except Exception as exc:
-                failures.append(f"{url}: fetch failed ({type(exc).__name__})")
+                failures.append((url, f"fetch failed ({type(exc).__name__})"))
                 continue
             served = self._sniffed_mime(body, served)
             problem = self._content_problem(body, served, expected_mime)
             if problem:
                 rejected = True
-                failures.append(f"{url}: {problem}")
+                failures.append((url, problem))
                 print(f"[storage] content check rejected {url}: {problem}",
                       file=sys.stderr, flush=True)
                 continue
@@ -1118,9 +1118,13 @@ class Storage:
             n = 1 + len(rec.alt_urls or [])
             if rejected:
                 self.content_rejected += 1
+                # The distinct short reasons FIRST, the per-URL detail after:
+                # download_errors.jsonl cuts `error` at 500 characters, and
+                # a few long URLs must not push the reasons out of it.
+                reasons = " | ".join(dict.fromkeys(r for _, r in failures))
                 raise ContentCheckFailed(
-                    f"content check failed for {rec.pdf_url} ({n} candidate URL(s)): "
-                    + "; ".join(failures))
+                    f"content check failed: {reasons} -- {n} candidate URL(s): "
+                    + "; ".join(f"{u}: {r}" for u, r in failures))
             raise RuntimeError(f"all {n} candidate URL(s) failed for {rec.pdf_url}")
         if mime:
             rec.mime_type = mime
@@ -1308,7 +1312,10 @@ class Storage:
         download -- it is one (download_errors.jsonl, quarantine, a failed
         document in the run-report) -- and counted again on the
         `bad-content` line so a host serving error pages with 200 is visible
-        as such, not lost among dead URLs."""
+        as such, not lost among dead URLs. The returned counts then also
+        carry a "bad-content" key (a SUB-count of "error", present only when
+        > 0), which RunReport's record_saved_counts folds into the report's
+        `bad_content` counter without counting those records twice."""
         counts: dict[str, int] = {}
         total = 0
         refused_before = self.render_refused
@@ -1341,6 +1348,7 @@ class Storage:
                   file=sys.stderr, flush=True)
         rejected = self.content_rejected - rejected_before
         if rejected:
+            counts["bad-content"] = rejected
             prefix = f"[{label}] " if label else ""
             print(f"{prefix}bad-content: {rejected} (every candidate URL failed the "
                   f"content check; recorded in download_errors.jsonl)",

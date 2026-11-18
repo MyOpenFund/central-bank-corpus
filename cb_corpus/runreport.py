@@ -36,6 +36,11 @@ class SourceStats:
     docs_new: int = 0
     docs_failed: int = 0
     fetch_errors: int = 0
+    # Documents among docs_failed whose every candidate URL answered with
+    # the wrong bytes (storage.ContentCheckFailed: an HTML wall or error page
+    # for a PDF, a stub, a truncated PDF), as opposed to a dead URL. A
+    # sub-count of docs_failed, visibility only: finish() ignores it.
+    bad_content: int = 0
     truncated: bool = False
     error_samples: list = field(default_factory=list)
     # Items deliberately passed over, tallied by reason (e.g. a RePEc paper
@@ -61,10 +66,14 @@ class SourceStats:
             samples.append(str(sample)[:300])
 
     def record_saved_counts(self, counts: dict) -> None:
-        """Fold a storage.save_many-style {status: count} dict into the stats."""
+        """Fold a storage.save_many-style {status: count} dict into the stats.
+
+        Its "bad-content" key is a sub-count of "error" (save_many), so it
+        feeds `bad_content` and is left out of docs_seen."""
         self.docs_new += counts.get("saved", 0)
         self.docs_failed += counts.get("error", 0)
-        self.docs_seen += sum(counts.values())
+        self.bad_content += counts.get("bad-content", 0)
+        self.docs_seen += sum(v for k, v in counts.items() if k != "bad-content")
 
     def to_dict(self) -> dict:
         return {
@@ -73,6 +82,7 @@ class SourceStats:
             "docs_new": self.docs_new,
             "docs_failed": self.docs_failed,
             "fetch_errors": self.fetch_errors,
+            "bad_content": self.bad_content,
             "truncated": self.truncated,
             "error_samples": list(self.error_samples),
             "skipped": dict(self.skipped),
@@ -128,6 +138,7 @@ class RunReport:
                 "docs_seen": sum(s.docs_seen for s in self._sources.values()),
                 "docs_new": sum(s.docs_new for s in self._sources.values()),
                 "docs_failed": sum(s.docs_failed for s in self._sources.values()),
+                "bad_content": sum(s.bad_content for s in self._sources.values()),
             },
             "sources": [s.to_dict() for s in self._sources.values()],
         }
