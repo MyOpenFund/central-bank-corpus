@@ -256,7 +256,9 @@ def run_wp_dates(bank_codes: Optional[Iterable[str]] = None,
     Every index hit is month-checked against the row before it is applied
     (`lookup_index`); a rejected hit is counted in `index_rejected` and the row
     goes on to fresh recovery like a miss (in `apply_only`, it stays
-    unresolved). Returns the counts dict."""
+    unresolved). Year-precision rows are skipped before the lookup and any
+    recovery (they can never pass `month_ok`) and counted in `year_skipped`,
+    outside `candidates`. Returns the counts dict."""
     cfg = config or Config()
     fetcher = Fetcher(cfg)
     storage = Storage(cfg, fetcher)
@@ -270,13 +272,19 @@ def run_wp_dates(bank_codes: Optional[Iterable[str]] = None,
 
     by_id: dict[str, dict] = {}          # doc_id -> {date, date_source} to apply
     new_count = 0
-    counts = {"candidates": 0, "from_index": 0, "index_rejected": 0,
+    counts = {"candidates": 0, "year_skipped": 0, "from_index": 0, "index_rejected": 0,
               "pdf_meta": 0, "wayback": 0, "unresolved": 0}
 
     try:
         for row in storage.iter_manifest():
             if (row.get("bank_code") not in codes or row.get("doc_type") not in ("D1", "D2")
                     or row.get("date_precision") == "day"):
+                continue
+            if row.get("date_precision") == "year":
+                # never passes month_ok (no asserted month): skip before the
+                # index lookup and any PDF read / Wayback call -- counted, not a
+                # candidate, not a rejection, not unresolved.
+                counts["year_skipped"] += 1
                 continue
             counts["candidates"] += 1
             key = row_key(row)

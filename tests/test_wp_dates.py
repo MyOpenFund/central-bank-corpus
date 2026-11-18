@@ -171,9 +171,28 @@ def test_year_precision_row_never_passes_the_month_constraint(tmp_path):
     assert month_ok(date(2015, 1, 20), dict(row, date_precision="month")) is True
     cfg = _setup(tmp_path, [row], [_entry(row_key(row), "2015-01-20")])
     counts = wp_dates.run_wp_dates(bank_codes=["us"], write=True, apply_only=True, config=cfg)
-    assert counts["index_rejected"] == 1
+    # skipped before the index lookup: not a rejection, not a candidate
+    assert counts["year_skipped"] == 1 and counts["index_rejected"] == 0
+    assert counts["candidates"] == 0 and counts["unresolved"] == 0
     after = _manifest(cfg, "us")["y1"]
     assert after["date"] == "2015-01-01" and after["date_precision"] == "year"
+
+
+def test_year_precision_rows_are_skipped_before_any_recovery(tmp_path, monkeypatch):
+    """Recovery mode: a year row can never pass `month_ok`, so querying Wayback
+    (or reading its PDF) for it is wasted work -- no CDX call is made."""
+    calls: list[str] = []
+    monkeypatch.setattr(wp_dates, "first_capture", lambda f, u: calls.append(u))
+    monkeypatch.setattr(wp_dates, "pdf_creation_date", lambda p: calls.append(p))
+    year_row = _row("y1", "us", "2015-01-01", date_precision="year", title="Year only")
+    month_row = _row("m1", "us", "2015-03-01", title="Month row")
+    cfg = _setup(tmp_path, [year_row, month_row], [])
+    counts = wp_dates.run_wp_dates(bank_codes=["us"], write=True, since_year=1900,
+                                   config=cfg)
+    assert counts["year_skipped"] == 1 and counts["candidates"] == 1
+    assert all("y1" not in str(c) for c in calls)            # only the month row tried
+    assert any("m1" in str(c) for c in calls)
+    assert index_path(cfg).read_text() == ""
 
 
 def test_rejected_own_key_recovery_is_written_under_a_doc_key_and_rebuilds_stable(
