@@ -173,6 +173,25 @@ def main(argv: list[str] | None = None) -> int:
                     help="replay the committed index onto the manifest (no recovery, "
                          "no network) — what a fresh clone runs to materialise dates")
 
+    pd = sub.add_parser("policy-dates",
+                        help="Backfill the policy core (default A1,A2,A3,B1,E1,F1 of "
+                             "ecb,us,gb,au,ca,jp): the best date each row's own title or "
+                             "URL carries, an honest date_precision and a date_kind. "
+                             "No network. Default dry-run (CSV to read); --write applies "
+                             "(date keys only; doc_id/sha256/local_path untouched).")
+    pd.add_argument("--banks", default="",
+                    help="restrict to bank codes (default: ecb,us,gb,au,ca,jp)")
+    pd.add_argument("--types", default="",
+                    help="restrict to doc types (default: A1,A2,A3,B1,E1,F1)")
+    pd.add_argument("--csv", default="",
+                    help="CSV output path (default data/reports/policy_dates.csv)")
+    pd.add_argument("--write", action="store_true",
+                    help="apply the plan to the manifest (idempotent)")
+    pd.add_argument("--allow-moves", action="store_true",
+                    help="also apply evidence that moves a date OUT of the period its "
+                         "stored value asserts (default: such rows are reported as "
+                         "`mismatch` and left alone)")
+
     rc = sub.add_parser("repec-check",
                         help="WP v3 phase 2: audit RePEc/IDEAS coverage vs the manifest "
                              "(missing papers per bank). Never downloads.")
@@ -344,6 +363,13 @@ def main(argv: list[str] | None = None) -> int:
         from .wp_dates import run_wp_dates
         run_wp_dates(bank_codes=banks, csv_path=args.csv or None, write=args.write,
                      use_wayback=not args.no_wayback, apply_only=args.apply_only)
+        return 0
+
+    if args.cmd == "policy-dates":
+        from .policy_dates import run_policy_dates
+        types = [c.strip() for c in args.types.split(",") if c.strip()] or None
+        run_policy_dates(bank_codes=banks, doc_types=types, write=args.write,
+                         csv_path=args.csv or None, refine_only=not args.allow_moves)
         return 0
 
     if args.cmd == "repec-check":

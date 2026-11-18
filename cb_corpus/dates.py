@@ -21,8 +21,10 @@ read from, for audit CSVs):
                                   "June 2021")
   parse_url_date(url, pattern)    a regex with named groups for the date parts
 
-The module also owns the `date_kind` table: what the date of a policy
-document IS (meeting, publication, period), per bank and document type.
+The module also owns the two policy-core tables, per bank and document type:
+`POLICY_DATE_KIND` (what the date IS: meeting, publication, period) and
+`POLICY_DATE_RULES` (where the date is read from), with `infer_policy_date`
+to apply the rules to one document.
 """
 from __future__ import annotations
 
@@ -281,3 +283,175 @@ def parse_url_date(url: Optional[str], pattern) -> tuple[Optional[date], Optiona
     finds none. See find_url_date."""
     m = find_url_date(url, pattern)
     return (m.date, m.precision) if m else (None, None)
+
+
+# ---------------------------------------------------------------------------
+# Policy core: where each series' date is read from
+# ---------------------------------------------------------------------------
+
+#: `<month name>-<year>` in a URL path ("mpc-october-2015", "13march-2020").
+URL_MONTH_NAME_YEAR = (r"(?<![a-z])(?P<mon>" + "|".join(_MONTH_NAMES)
+                       + r")-(?P<y>(?:19|20)\d{2})(?!\d)")
+#: A full YYYYMMDD run of digits ("monetary20180801a", "/19990518/").
+URL_YYYYMMDD = r"(?<!\d)(?P<y>(?:19|20)\d{2})(?P<m>[01]\d)(?P<d>[0-3]\d)(?!\d)"
+#: ECB document file names: `<prefix>YYMMDD`, with or without the `ecb.` stem.
+ECB_DECISION_URL = r"/(?:ecb\.)?(?:pr|mp)(?P<yy>\d{2})(?P<m>\d{2})(?P<d>\d{2})(?!\d)"
+ECB_STATEMENT_URL = r"/(?:ecb\.)?is(?P<yy>\d{2})(?P<m>\d{2})(?P<d>\d{2})(?!\d)"
+ECB_ACCOUNT_URL = r"/(?:ecb\.)?mg(?P<yy>\d{2})(?P<m>\d{2})(?P<d>\d{2})(?!\d)"
+ECB_PRESS_CONFERENCE_URL = r"/ecb\.ds(?P<yy>\d{2})(?P<m>\d{2})(?P<d>\d{2})(?!\d)"
+#: ECB staff projections: `...projections...YYYYMM` -- an issue, no day.
+ECB_PROJECTIONS_URL = r"projections[a-z]*(?P<y>(?:19|20)\d{2})(?P<m>0[1-9]|1[0-2])(?!\d)"
+#: RBA board minutes, two conventions: YYYY-MM-DD.html (2015+), DDMMYYYY.html.
+RBA_MINUTES_URL_ISO = r"/rba-board-minutes/\d{4}/(?P<y>\d{4})-(?P<m>\d{2})-(?P<d>\d{2})\.html$"
+RBA_MINUTES_URL_DMY = r"/rba-board-minutes/\d{4}/(?P<d>\d{2})(?P<m>\d{2})(?P<y>\d{4})\.html$"
+#: RBA Statement on Monetary Policy: /smp/<year>/<feb|may|aug|nov>/ -- an issue.
+RBA_SMP_URL = r"/publications/smp/(?P<y>\d{4})/(?P<mon>feb|may|aug|nov)/?$"
+#: RBA rate decisions: the URL (mr-11-01.html) carries no date. The adapter
+#: reads the day from the listing's link text ("1 February 2011") and writes
+#: it at the end of the title it builds.
+RBA_DECISION_TITLE = r"(?P<y>\d{4})-(?P<m>\d{2})-(?P<d>\d{2})$"
+#: Bank of Canada Monetary Policy Report: /mpr/mpr-YYYY-MM[-DD]/[sub-page/].
+BOC_MPR_URL = r"/publications/mpr/mpr-(?P<y>\d{4})-(?P<m>\d{2})(?:-(?P<d>\d{2}))?(?:/|$)"
+#: A Bank of Canada MPR document sits under an issue slug; anything else under
+#: /publications/mpr/ is an index or a side page, not a report.
+BOC_MPR_REPORT_URL = r"/publications/mpr/mpr-\d{4}-\d{2}"
+#: Bank of Canada summary of deliberations: /<YYYY>/<MM>/<slug> = the month it
+#: was PUBLISHED. (The slug also names the decision day; it is not used: the
+#: date of this series has always been its publication month.)
+BOC_DELIBERATIONS_URL = r"bankofcanada\.ca/(?P<y>\d{4})/(?P<m>\d{2})/"
+#: Bank of Japan minutes: gYYMMDD.pdf = the last day of the meeting.
+BOJ_MINUTES_URL = r"/g(?P<yy>\d{2})(?P<m>\d{2})(?P<d>\d{2})\.pdf$"
+
+#: Row fields a rule step may read.
+EVIDENCE_FIELDS = ("title", "pdf_url", "source_url")
+
+
+@dataclass(frozen=True)
+class DateStep:
+    """One place to look for a date. `field` is the row field read; `pattern`
+    a find_url_date pattern, or None to read natural language
+    (find_title_date, with `pick`). `name` is what audit CSVs call the step."""
+    name: str
+    field: str
+    pattern: Optional[str] = None
+    pick: str = PICK_LAST
+
+
+@dataclass(frozen=True)
+class PolicyDateRule:
+    """How one series (bank x doc type) is dated. `steps` are tried in order
+    and the first that finds a date wins; a later step that finds a date in
+    another period is a conflict (nothing is inferred). `report_pattern`,
+    when set, must match the document URL: a row that does not match is not
+    a document of the series at all (an index page) and is never dated."""
+    steps: tuple[DateStep, ...]
+    report_pattern: Optional[str] = None
+
+
+def _url(pattern: str, name: str = "pdf_url") -> DateStep:
+    return DateStep(name=name, field="pdf_url", pattern=pattern)
+
+
+_FED_URL = PolicyDateRule(steps=(_url(URL_YYYYMMDD),))
+# Bank of England: the title names the day the meeting ended ("held on 3 and
+# 4 February 1999" -> the 4th) or only a month ("... - June 2021"); when the
+# title names nothing, the page URL then the file URL give the month.
+_BOE_TITLE_THEN_URLS = PolicyDateRule(steps=(
+    DateStep(name="title", field="title", pick=PICK_LAST),
+    DateStep(name="source_url", field="source_url", pattern=URL_MONTH_NAME_YEAR),
+    DateStep(name="pdf_url", field="pdf_url", pattern=URL_MONTH_NAME_YEAR),
+))
+
+#: (bank_code, doc type code) -> where the date of the series is read from.
+#: Same keys as POLICY_DATE_KIND. Used by the `policy-dates` backfill for
+#: existing rows and by the producers of new rows, so both agree by
+#: construction. A series that is not listed is never dated by inference.
+POLICY_DATE_RULES: dict[tuple[str, str], PolicyDateRule] = {
+    ("us", "A2"): _FED_URL,
+    ("us", "A3"): _FED_URL,
+    ("us", "B1"): _FED_URL,
+    ("us", "E1"): _FED_URL,
+    ("us", "F1"): _FED_URL,
+    ("ecb", "A1"): PolicyDateRule(steps=(_url(ECB_DECISION_URL),)),
+    ("ecb", "A2"): PolicyDateRule(steps=(_url(ECB_STATEMENT_URL),)),
+    ("ecb", "A3"): PolicyDateRule(steps=(_url(ECB_ACCOUNT_URL),)),
+    ("ecb", "B1"): PolicyDateRule(steps=(_url(ECB_PRESS_CONFERENCE_URL),)),
+    ("ecb", "E1"): PolicyDateRule(steps=(_url(ECB_PROJECTIONS_URL),)),
+    ("gb", "A3"): _BOE_TITLE_THEN_URLS,
+    ("gb", "E1"): _BOE_TITLE_THEN_URLS,
+    ("au", "A1"): PolicyDateRule(steps=(
+        DateStep(name="title:iso-day", field="title", pattern=RBA_DECISION_TITLE),)),
+    ("au", "A3"): PolicyDateRule(steps=(
+        _url(RBA_MINUTES_URL_ISO, "pdf_url:iso"), _url(RBA_MINUTES_URL_DMY, "pdf_url:ddmmyyyy"))),
+    ("au", "E1"): PolicyDateRule(steps=(_url(RBA_SMP_URL),)),
+    ("ca", "A3"): PolicyDateRule(steps=(_url(BOC_DELIBERATIONS_URL),)),
+    ("ca", "E1"): PolicyDateRule(steps=(_url(BOC_MPR_URL),), report_pattern=BOC_MPR_REPORT_URL),
+    ("jp", "A3"): PolicyDateRule(steps=(_url(BOJ_MINUTES_URL),)),
+}
+
+STATUS_DATED = "dated"
+STATUS_NO_RULE = "no-rule"
+STATUS_NOT_A_REPORT = "not-a-report"
+STATUS_NO_EVIDENCE = "no-evidence"
+STATUS_CONFLICT = "conflict"
+
+
+@dataclass(frozen=True)
+class Inference:
+    """Outcome of infer_policy_date. `match` and `rule` (the winning step's
+    name) are set when `status` is "dated"; `detail` explains a conflict."""
+    status: str
+    match: Optional[DateMatch] = None
+    rule: str = ""
+    detail: str = ""
+
+
+def same_period(a: DateMatch, b: DateMatch) -> bool:
+    """Do two dates agree, each as far as it goes? Compared at the coarser of
+    the two precisions: a day agrees with its own month, two days must be
+    equal."""
+    coarsest = max(PRECISIONS.index(a.precision), PRECISIONS.index(b.precision))
+    if a.date.year != b.date.year:
+        return False
+    if coarsest >= PRECISIONS.index(PRECISION_YEAR):
+        return True
+    if a.date.month != b.date.month:
+        return False
+    return coarsest >= PRECISIONS.index(PRECISION_MONTH) or a.date == b.date
+
+
+def infer_policy_date(bank_code: str, doc_type, *, title: Optional[str] = "",
+                      pdf_url: Optional[str] = "", source_url: Optional[str] = "",
+                      rules: Optional[dict] = None) -> Inference:
+    """The date of one policy document, from its own title and URLs only.
+
+    Applies the series' rule (`rules`, default POLICY_DATE_RULES): "no-rule"
+    when the series has none, "not-a-report" when the URL is not a document
+    of the series, "no-evidence" when no step finds a date, "conflict" when
+    two steps find dates in different periods, else "dated" with the first
+    step's match. Never reads the stored date: what is inferred does not
+    depend on what the row holds today."""
+    code = getattr(doc_type, "code", doc_type)
+    rule = (POLICY_DATE_RULES if rules is None else rules).get((bank_code, code))
+    if rule is None:
+        return Inference(STATUS_NO_RULE)
+    if rule.report_pattern and not re.search(rule.report_pattern, pdf_url or "", re.I):
+        return Inference(STATUS_NOT_A_REPORT)
+    fields = {"title": title, "pdf_url": pdf_url, "source_url": source_url}
+    found: list[tuple[DateStep, DateMatch]] = []
+    for step in rule.steps:
+        text = fields[step.field]
+        m = (find_title_date(text, step.pick) if step.pattern is None
+             else find_url_date(text, step.pattern))
+        if m is not None:
+            found.append((step, m))
+    if not found:
+        return Inference(STATUS_NO_EVIDENCE)
+    step, best = found[0]
+    for other_step, other in found[1:]:
+        if not same_period(best, other):
+            return Inference(
+                STATUS_CONFLICT, rule=step.name,
+                detail=f"{step.name} says {best.evidence!r}, "
+                       f"{other_step.name} says {other.evidence!r}")
+    return Inference(STATUS_DATED, match=best, rule=step.name)
