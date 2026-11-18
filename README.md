@@ -27,7 +27,8 @@ no machine-translated or model-generated text.
 - **RePEc / IDEAS discovery** (`sources/repec.py`) → working papers (D1/D2) for every bank in
   `SERIES` (13), including those with a native source (second source, deduped).
   **Paginates** the full series back-catalogue and reads the publication month
-  from the IDEAS `citation_*` metadata (RePEc is month-only → `date_precision="month"`).
+  from the IDEAS `citation_*` metadata (RePEc is month-only → `date_precision="month"`;
+  a page with only `citation_year` is dated 1 January with `date_precision="year"`).
 - **Working Papers v3 — native bank-site discovery** (the 5 big banks: ecb, us, jp, gb, de;
   fr and se added 2026-08). Each gets a native scraper with the **exact publication day** from
   the bank's own site (`sources/{ecb_foedb,fed_wp,boj_wp,boe_wp,buba_wp,bdf_wp,riksbank_wp}.py`),
@@ -60,6 +61,8 @@ no machine-translated or model-generated text.
   dead URLs. Generic over any BoE sitemap section (reports/FSR are a one-line addition).
 - **Wayback recovery** (`sources/wayback.py`) → official PDFs a bank has taken offline, fetched
   from archive.org's raw snapshot (`provenance="wayback"`, fully audited). Used for the Riksbank.
+  CDX queries carry the target URL percent-encoded, so query strings (`?la=en&hash=…` on every
+  Bank of England media URL) and fragments reach archive.org intact.
 - **HTML→PDF** (`htmlpdf.py`) → HTML-only documents (e.g. ECB monetary-policy accounts) are
   rendered to PDF via headless Chrome; the **raw HTML is also kept** (`html_path`). Chrome runs
   with `--no-sandbox`, so **every** launch (Storage, `convert-html`, `retry-html`) goes through one
@@ -306,7 +309,13 @@ run(dry_run=False, max_rounds=3)    # native A/B/E/F per bank (converges)
 **Completeness** (`report`) — status per (bank × type × year): `ok` (downloaded ≥ expected),
 `partial` (0 < got < expected → re-crawl that bank/type/year), `missing` (expected but 0 → fix the
 adapter/selector), `unknown` (no expected count). Add `expected_per_year` to an adapter (from the
-bank's published meeting calendar) to turn `unknown` cells into real checks.
+bank's published meeting calendar) to turn `unknown` cells into real checks. A value is an int
+(every year) or, when the cadence changed, eras `[(from_year, count), ...]`: the count of the
+last era started on or before the year applies, `None` means no expectation, and a year before
+the first era has none (`unknown`, not `missing`). The ECB tables follow the Governing Council's
+switch to six-weekly meetings in 2015 (A1 20 / 11 / 8 from 1999 / 2002 / 2015), the RBA's the
+move to eight meetings in 2024. `banks_sources.toml` takes the same form (`"none"` for no
+expectation, TOML having no null).
 
 ## Reproducibility & reliability
 
@@ -326,7 +335,7 @@ from cb_corpus.taxonomy import DocType
 @register("gb")                       # overrides GenericAdapter for the Bank of England
 class BoEAdapter(BankAdapter):
     native_types = (DocType.A3, DocType.E1, DocType.E2)
-    expected_per_year = {DocType.A3: 8}          # MPC minutes/yr
+    expected_per_year = {DocType.A3: 8}          # MPC minutes/yr (or [(1997, 12), (2016, 8)])
     def _discover_native(self, doc_type, since):
         # fetch the bank's listing page(s) via self._fetch_text (records failures),
         # parse with a pure parse_* function, yield DocRecord(...)

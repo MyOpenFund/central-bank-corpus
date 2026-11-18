@@ -109,13 +109,24 @@ listings (`bank_site`) are **never** indexed — they are cheaply
 re-derivable by the native scrapers and would bloat the file.
 
 - **`key`** = the RePEc handle (stable, universal join key). For records that
-  never had a handle, the key is the normalized title prefixed `t:` (as built,
-  `wp_dates.row_key`); `title_norm` is stored alongside. `evidence_url` is a
+  never had a handle, the key is the normalized title scoped by bank,
+  `t:<bank_code>:<title>` (`wp_dates.row_key`, since the 2026-11 integrity
+  wave: a global title key let one bank's day land on another bank's paper
+  with the same generic title). Entries written earlier under the global
+  `t:<title>` form are still read as a fallback; the committed index is never
+  rewritten. `title_norm` is stored alongside. `evidence_url` is a
   `file://` path to the on-disk PDF for `pdf_meta` hits.
 - **`evidence_url`** records *where* the date was found, so any entry can be
   re-audited by a human.
 - `wp-dates` consults the index **first**: a keyed entry short-circuits the
   whole waterfall (zero network). Fresh resolutions are appended to the index.
+- A replayed entry passes the **same month constraint** against the row it
+  is applied to (bank-scoped key first, then the legacy title key). One that
+  fails is counted `index_rejected` and the row goes on to fresh recovery
+  like a miss (in `--apply-only`, it stays as it is). On the committed
+  manifests (2026-11-18) this rejects exactly one replay: a Fed FEDS
+  revision (`2025-101r1`, row dated 2026-06) whose handle entry holds the
+  original paper's 2025-11 day.
 - Result: the expensive crawl runs once; every re-build of the corpus from
   scratch (new machine, CI, collaborator) replays dates instantly and
   identically — even if Wayback/bank pages have since changed or died.
