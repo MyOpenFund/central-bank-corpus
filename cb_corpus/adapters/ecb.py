@@ -374,7 +374,11 @@ class ECBAdapter(BankAdapter):
         if html is None:
             return
         for d, title, pdf in parse_bulletin_pdfs(html):
-            if since and d and d < since:
+            # `d` is a year placeholder (1 January, precision "year"): compare
+            # YEARS against `since` (issue #23). Comparing the placeholder date
+            # dropped every current-year bulletin as soon as `since` passed
+            # 1 January, e.g. a --since in March skipped last week's issue.
+            if since and d and d.year < since.year:
                 continue
             yield DocRecord(
                 bank_code="ecb", doc_type=DocType.E4,

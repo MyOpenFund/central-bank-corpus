@@ -168,7 +168,22 @@ def _record_to_doc(rec: dict) -> Optional[DocRecord]:
         title=title or f"ECB {doc_type.name} {number}",
         pdf_url=pdf_url, source_url=FOEDB_DB, date=d,
         provenance="bank_site", mime_type="application/pdf",
-        date_precision="day", date_source="bank_site",
+        # A missing/garbage pub_timestamp gives no date: then no precision
+        # either (issue #23 c) -- the label says what the source asserts, it
+        # is not left to DocRecord.to_row to correct on the way to disk.
+        date_precision="day" if d else None, date_source="bank_site",
+    )
+
+
+def _interview_to_doc(title: str, d: Optional[date], url: str) -> DocRecord:
+    """C2 record from an interview's (title, date, EN url). Day precision only
+    when the record carries a date (same rule as `_record_to_doc`)."""
+    return DocRecord(
+        bank_code="ecb", doc_type=DocType.C2,
+        title=title or f"ECB interview {d or ''}".strip(),
+        pdf_url=url, source_url=FOEDB_DB, date=d,
+        provenance="bank_site", mime_type="text/html",
+        date_precision="day" if d else None, date_source="bank_site",
     )
 
 
@@ -268,13 +283,7 @@ def discover_ecb_interviews(fetcher: Fetcher,
                 if got is None:
                     continue
                 title, d, url = got
-                yield DocRecord(
-                    bank_code="ecb", doc_type=DocType.C2,
-                    title=title or f"ECB interview {d or ''}".strip(),
-                    pdf_url=url, source_url=FOEDB_DB, date=d,
-                    provenance="bank_site", mime_type="text/html",
-                    date_precision="day", date_source="bank_site",
-                )
+                yield _interview_to_doc(title, d, url)
     finally:
         if skipped_non_en:
             print(f"[ecb-c2] {skipped_non_en} non-English-only interview(s) excluded"
