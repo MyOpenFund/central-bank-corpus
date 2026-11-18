@@ -29,17 +29,21 @@ def test_foedb_wp_without_a_date_has_no_precision():
     for ts in (None, "garbage", ""):
         rec = _record_to_doc(_wp_rec(ts))
         assert rec.date is None and rec.date_precision is None, ts
+        assert rec.date_source is None, ts           # no date -> no source either
 
 
 def test_foedb_wp_with_a_date_stays_day():
     rec = _record_to_doc(_wp_rec(1579042800))
     assert rec.date is not None and rec.date_precision == "day"
+    assert rec.date_source == "bank_site"
 
 
 def test_foedb_interview_precision_follows_the_date():
-    assert _interview_to_doc("I", None, "https://x/i.en.html").date_precision is None
+    undated = _interview_to_doc("I", None, "https://x/i.en.html")
+    assert (undated.date_precision, undated.date_source) == (None, None)
     rec = _interview_to_doc("I", date(2024, 3, 5), "https://x/i.en.html")
-    assert (rec.doc_type, rec.date_precision) == (DocType.C2, "day")
+    assert (rec.doc_type, rec.date_precision, rec.date_source) == (DocType.C2, "day",
+                                                                   "bank_site")
     assert _interview_to_doc("", None, "https://x/i.en.html").title == "ECB interview"
 
 
