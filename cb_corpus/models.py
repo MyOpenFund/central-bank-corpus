@@ -86,6 +86,21 @@ class DocRecord:
         it into the id used to mean a date fix changed the id, creating a
         duplicate + a file rename. With the date out, enriching a date is a pure
         metadata update (no id churn). The url already uniquely identifies a doc.
+
+        Residual risk (issue #21): the id hashes the RAW `pdf_url`, while the
+        known-URL dedup index normalises it (storage.normalize_url collapses
+        duplicate slashes). Two spellings of one URL therefore give two
+        doc_ids. For a PDF the sha256 dedup still catches the second copy
+        (`skip:duplicate-content`), but an HTML page can serve different
+        bytes on every fetch, so nothing stops a second row -- this happened
+        once (15 ECB D3 rows under a double-slash variant, fixed by hand with
+        `alt_urls`). Hence a rule for every NEW discovery path: call the
+        storage skip hooks (`Storage.is_known_url` / `is_known_source_url`,
+        wired as an adapter's `_skip_known_url` or a source's `skip_url`
+        argument, see pipeline.py) BEFORE building a DocRecord, so a
+        URL variant is recognised as known and never mints a second id.
+        Normalising inside the id is not an option: every file name and
+        manifest key on disk derives from the current formula.
         """
         return compute_doc_id(self.bank_code, self.doc_type, self.pdf_url)
 
