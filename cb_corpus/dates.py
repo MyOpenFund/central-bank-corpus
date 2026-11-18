@@ -142,6 +142,26 @@ _MDY_RE = re.compile(
 _MY_RE = re.compile(rf"(?P<m>{_MON})[\s,_\-]+(?P<y>{_YEAR})", re.I)
 
 
+#: A date introduced by one of these words is when the document CAME OUT
+#: ("..., published 22 July 2015"), not the date it is about: such a date is
+#: passed over whenever the title names another one. The word must stand
+#: between the previous date (or the start of the title) and the date.
+PUBLICATION_INTRO = r"\bpubli(?:shed|cation)\b"
+_PUBLICATION_INTRO_RE = re.compile(PUBLICATION_INTRO, re.I)
+
+
+def _not_publication(title: str, spans: list[tuple[int, int]]) -> list[int]:
+    """Indexes of the dated phrases (`spans` = their (start, end), in order)
+    that are not introduced as a publication date; all of them when every
+    phrase is (a title that names only its publication date keeps it)."""
+    keep, prev_end = [], 0
+    for i, (start, end) in enumerate(spans):
+        if not _PUBLICATION_INTRO_RE.search(title[prev_end:start]):
+            keep.append(i)
+        prev_end = end
+    return keep or list(range(len(spans)))
+
+
 @dataclass(frozen=True)
 class DateMatch:
     """A date read from a text: the date (first day of the period for a month
@@ -202,25 +222,31 @@ def find_title_date(title: Optional[str], rule: str = PICK_LAST) -> Optional[Dat
     """The date a title names, with its precision and the matching fragment.
 
     A phrase naming a day always wins over a month-only phrase, wherever it
-    stands (it is more precise). Among several candidates of the same
-    precision `rule` decides: PICK_LAST keeps the last day of the last
-    phrase, PICK_FIRST the first day of the first phrase. None when the title
-    names no date. Month names are English, full or abbreviated."""
+    stands (it is more precise). A date introduced as a publication date
+    (PUBLICATION_INTRO) is passed over when the title names another one.
+    Among the remaining candidates of the same precision `rule` decides:
+    PICK_LAST keeps the last day of the last phrase, PICK_FIRST the first day
+    of the first phrase. None when the title names no date. Month names are
+    English, full or abbreviated."""
     if rule not in TITLE_RULES:
         raise ValueError(f"unknown title rule {rule!r} (expected one of {TITLE_RULES})")
     if not title:
         return None
     days = _day_candidates(title)
     if days:
-        _pos, first, last, frag = days[-1] if rule == PICK_LAST else days[0]
+        keep = _not_publication(title, [(c[0], c[0] + len(c[3])) for c in days])
+        _pos, first, last, frag = days[keep[-1] if rule == PICK_LAST else keep[0]]
         return DateMatch(last if rule == PICK_LAST else first, PRECISION_DAY, frag)
     months: list[DateMatch] = []
+    spans: list[tuple[int, int]] = []
     for m in _MY_RE.finditer(title):
         d = _safe_date(int(m["y"]), _month(m["m"]), 1)
         if d is not None:
             months.append(DateMatch(d, PRECISION_MONTH, m.group(0)))
+            spans.append(m.span())
     if months:
-        return months[-1] if rule == PICK_LAST else months[0]
+        keep = _not_publication(title, spans)
+        return months[keep[-1] if rule == PICK_LAST else keep[0]]
     return None
 
 

@@ -71,12 +71,33 @@ def test_title_rule_first_takes_the_first_day_named():
 
 
 def test_title_rule_applies_across_several_dated_phrases():
-    t = "Minutes of 5 May 2010, published 19 May 2010"
+    t = "Minutes of the meetings of 5 May 2010 and of 19 May 2010"
     assert parse_title_date(t, PICK_LAST) == (date(2010, 5, 19), "day")
     assert parse_title_date(t, PICK_FIRST) == (date(2010, 5, 5), "day")
     t = "Inflation Report - February 2019 and May 2019"
     assert parse_title_date(t, PICK_LAST) == (date(2019, 5, 1), "month")
     assert parse_title_date(t, PICK_FIRST) == (date(2019, 2, 1), "month")
+
+
+@pytest.mark.parametrize("title,expected", [
+    # the last date is when the document came out, not what it is about
+    ("Minutes of the meeting ending 8 July 2015, published 22 July 2015", (date(2015, 7, 8), "day")),
+    ("Minutes of 5 May 2010 (date of publication: 19 May 2010)", (date(2010, 5, 5), "day")),
+    ("Monetary Policy Report - May 2021, published June 2021", (date(2021, 5, 1), "month")),
+    # a title that names ONLY its publication date keeps it
+    ("Inflation Report, published 12 August 2015", (date(2015, 8, 12), "day")),
+    # "to be published" AFTER the date says nothing about the date
+    ("Monetary Policy Report - July 2026 (to be published at 12pm)", (date(2026, 7, 1), "month")),
+])
+def test_a_date_announced_as_the_publication_date_is_not_the_document_date(title, expected):
+    assert parse_title_date(title) == expected
+    assert parse_title_date(title, PICK_FIRST) == expected
+
+
+def test_publication_date_is_passed_over_under_both_title_rules():
+    t = "Minutes of 3 and 4 February 1999 - Published on 17 February 1999"
+    assert parse_title_date(t, PICK_LAST) == (date(1999, 2, 4), "day")
+    assert parse_title_date(t, PICK_FIRST) == (date(1999, 2, 3), "day")
 
 
 def test_a_day_beats_a_month_wherever_it_stands():
