@@ -75,7 +75,9 @@ def test_every_hand_written_table_is_well_formed():
     (DocType.A1, 1998, None), (DocType.A1, 1999, 20), (DocType.A1, 2001, 20),
     (DocType.A1, 2002, 11), (DocType.A1, 2014, 11), (DocType.A1, 2015, 8),
     (DocType.A2, 1999, 11), (DocType.A2, 2014, 11), (DocType.A2, 2015, 8),
-    (DocType.A3, 2003, 8), (DocType.A3, 2025, 8),
+    # accounts exist from 2015: earlier years are unknown, not missing
+    (DocType.A3, 2003, None), (DocType.A3, 2014, None), (DocType.A3, 2015, 8),
+    (DocType.A3, 2025, 8),
     (DocType.E4, 1999, 12), (DocType.E4, 2014, 12), (DocType.E4, 2015, 8),
 ])
 def test_ecb_eras(dt, year, exp):
