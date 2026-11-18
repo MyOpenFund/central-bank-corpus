@@ -11,7 +11,9 @@ path applies before bytes become a PDF artifact:
   - Storage.save(), per candidate URL, BEFORE the sha256 dedup (an error
     page must never become a dedup owner);
   - Storage.reindex(), on a `.pdf` file found on disk;
-  - the headless-Chrome render output in Storage.save();
+  - every headless-Chrome render output (storage.render_pdf_checked:
+    Storage.save(), convert-html, retry-html), and a PDF retry-html finds
+    already on disk before adopting it;
   - recover._verify_local_pdf(), for the magic part only (its own 20 KB
     floor judges externally hunted candidates, a different question).
 

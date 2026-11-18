@@ -215,3 +215,141 @@ def test_env_knobs_reach_storage(clean_knob_env, tmp_path):
     st = Storage(Config(data_dir=tmp_path, html_to_pdf=False),
                  FakeFetcher({U: (b"%PDF-1.4 tiny", "application/pdf")}))
     assert st.save(_rec(U)) == "saved"
+
+
+# -- S3: convert-html and retry-html render through the checked helper ----
+
+import json as _json                                                # noqa: E402
+import subprocess                                                   # noqa: E402
+
+
+def _seed_html_row(tmp_path, code="a"):
+    """One text/html manifest row with its HTML file on disk."""
+    cfg = Config(data_dir=tmp_path)
+    html = tmp_path / "raw" / "ecb" / "A3" / "2024" / f"{code}.html"
+    html.parent.mkdir(parents=True, exist_ok=True)
+    html.write_bytes(b"<html>seed</html>")
+    cfg.manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    with cfg.manifest_path.open("a") as fh:
+        fh.write(_json.dumps({
+            "bank_code": "ecb", "doc_type": "A3", "title": "x",
+            "pdf_url": f"https://e.test/{code}.en.html", "date": "2024-01-01",
+            "year": 2024, "doc_id": code, "mime_type": "text/html",
+            "local_path": str(html), "sha256": None, "language": "en"}) + "\n")
+    return cfg, html
+
+
+def _row(cfg, code="a"):
+    from cb_corpus.storage import iter_manifest_rows
+    return next(r for r in iter_manifest_rows(cfg) if r["doc_id"] == code)
+
+
+def _dir_names(p: Path) -> list[str]:
+    return sorted(x.name for x in p.iterdir())
+
+
+def test_convert_renders_to_a_temp_then_moves_into_place(tmp_path, monkeypatch):
+    from cb_corpus import convert as convert_mod
+    cfg, html = _seed_html_row(tmp_path)
+    monkeypatch.setattr(convert_mod, "find_chrome", lambda: "/fake/chrome")
+    outputs = []
+
+    def fake_render(url, output, **kw):
+        outputs.append(output)
+        output.write_bytes(make_pdf("ok"))
+    monkeypatch.setattr(convert_mod, "render_url_to_pdf", fake_render)
+    counts = convert_mod.convert_existing(cfg, resolver=public_resolver)
+    assert counts == {"converted": 1, "refused": 0}
+    pdf = html.with_suffix(".pdf")
+    [out] = outputs
+    assert out != pdf and out.parent == pdf.parent
+    assert _dir_names(html.parent) == ["a.html", "a.pdf"]
+
+
+@pytest.mark.parametrize("partial", [b"%PDF-1.4\n" + b"x" * 5000, b"<html>err</html>"])
+def test_convert_rejects_bad_render_output(tmp_path, monkeypatch, partial, capsys):
+    from cb_corpus import convert as convert_mod
+    cfg, html = _seed_html_row(tmp_path)
+    monkeypatch.setattr(convert_mod, "find_chrome", lambda: "/fake/chrome")
+    monkeypatch.setattr(convert_mod, "render_url_to_pdf",
+                        lambda url, output, **kw: output.write_bytes(partial))
+    counts = convert_mod.convert_existing(cfg, resolver=public_resolver)
+    assert counts.get("error") == 1 and "converted" not in counts
+    assert _dir_names(html.parent) == ["a.html"]          # no .pdf, no temp
+    assert _row(cfg)["mime_type"] == "text/html"
+    assert "render output rejected" in capsys.readouterr().err
+
+
+def test_convert_killed_render_leaves_no_partial_pdf(tmp_path, monkeypatch):
+    from cb_corpus import convert as convert_mod
+    cfg, html = _seed_html_row(tmp_path)
+    monkeypatch.setattr(convert_mod, "find_chrome", lambda: "/fake/chrome")
+
+    def dies(url, output, **kw):
+        output.write_bytes(b"%PDF-1.4 half")
+        raise RuntimeError("Chrome timed out")
+    monkeypatch.setattr(convert_mod, "render_url_to_pdf", dies)
+    assert convert_mod.convert_existing(cfg, resolver=public_resolver).get("error") == 1
+    assert _dir_names(html.parent) == ["a.html"]
+
+
+def _strategy(tmp_path, monkeypatch, behaviour):
+    """Run retry_html._try_strategy with a fake chrome_print_to_pdf."""
+    from cb_corpus import retry_html as retry_mod
+    seen = []
+
+    def fake_print(chrome, url, output, udd, timeout, **kw):
+        seen.append(output)
+        behaviour(output)
+    monkeypatch.setattr(retry_mod, "chrome_print_to_pdf", fake_print)
+    final = tmp_path / "d" / "a.pdf"
+    final.parent.mkdir()
+    ok = retry_mod._try_strategy("/fake/chrome", U, final, timeout=1,
+                                 virtual_time_budget_ms=None, user_data_dir="x",
+                                 cfg=Config(data_dir=tmp_path))
+    return ok, final, seen
+
+
+def test_retry_strategy_success_goes_through_a_temp(tmp_path, monkeypatch):
+    ok, final, [out] = _strategy(tmp_path, monkeypatch,
+                                 lambda o: o.write_bytes(make_pdf("ok")))
+    assert ok and out != final and final.read_bytes() == make_pdf("ok")
+    assert _dir_names(final.parent) == ["a.pdf"]
+
+
+def test_retry_strategy_rejects_bad_output(tmp_path, monkeypatch):
+    ok, final, _ = _strategy(tmp_path, monkeypatch,
+                             lambda o: o.write_bytes(b"%PDF-1.4\n" + b"x" * 5000))
+    assert not ok and _dir_names(final.parent) == []
+
+
+def test_retry_strategy_timeout_leaves_no_partial_pdf(tmp_path, monkeypatch):
+    def half_then_timeout(o):
+        o.write_bytes(b"%PDF-1.4 half")
+        raise subprocess.TimeoutExpired("chrome", 1)
+    ok, final, _ = _strategy(tmp_path, monkeypatch, half_then_timeout)
+    assert not ok and _dir_names(final.parent) == []
+
+
+def test_retry_does_not_adopt_a_partial_pdf_left_on_disk(tmp_path, monkeypatch, capsys):
+    from cb_corpus import retry_html as retry_mod
+    cfg, html = _seed_html_row(tmp_path)
+    partial = html.with_suffix(".pdf")
+    partial.write_bytes(b"%PDF-1.4 half")               # left by a killed run
+    monkeypatch.setattr(retry_mod, "find_chrome", lambda: "/fake/chrome")
+    monkeypatch.setattr(retry_mod, "chrome_print_to_pdf",
+                        lambda chrome, url, output, *a, **kw: output.write_bytes(make_pdf("new")))
+    counts = retry_mod.retry_failed(cfg, parallelism=1, resolver=public_resolver)
+    assert counts.get("recovered") == 1 and "already-pdf" not in counts
+    assert partial.read_bytes() == make_pdf("new")
+    assert _row(cfg)["mime_type"] == "application/pdf"
+    assert "not adopted" in capsys.readouterr().err
+
+
+def test_retry_still_adopts_a_valid_pdf_left_on_disk(tmp_path, monkeypatch):
+    from cb_corpus import retry_html as retry_mod
+    cfg, html = _seed_html_row(tmp_path)
+    html.with_suffix(".pdf").write_bytes(make_pdf("done"))
+    monkeypatch.setattr(retry_mod, "find_chrome", lambda: "/fake/chrome")
+    counts = retry_mod.retry_failed(cfg, parallelism=1, resolver=public_resolver)
+    assert counts.get("already-pdf") == 1

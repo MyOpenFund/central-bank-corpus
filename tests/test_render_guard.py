@@ -350,7 +350,8 @@ def test_retry_html_passes_resolver_to_the_chrome_choke_point(tmp_path, monkeypa
 
     def fake_run(cmd, **k):
         out = next(a for a in cmd if a.startswith("--print-to-pdf="))
-        Path(out.split("=", 1)[1]).write_bytes(b"%PDF-1.4 x")
+        from tests.conftest import pdf_body      # passes the PDF check (#21)
+        Path(out.split("=", 1)[1]).write_bytes(pdf_body(b"%PDF-1.4 x"))
     monkeypatch.setattr(htmlpdf.subprocess, "run", fake_run)
     counts = retry_mod.retry_failed(Config(data_dir=tmp_path), parallelism=1,
                                     resolver=_resolver({"pub.example": [PUBLIC_V4]}))

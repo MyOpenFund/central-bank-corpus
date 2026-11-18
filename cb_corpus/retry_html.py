@@ -23,7 +23,8 @@ from typing import Optional
 
 from .config import Config
 from .htmlpdf import RenderRefused, chrome_print_to_pdf, find_chrome, render_allowed
-from .storage import iter_manifest_rows, apply_row_updates
+from .storage import (apply_row_updates, iter_manifest_rows, pdf_file_problem,
+                      render_pdf_checked)
 
 
 def _try_strategy(chrome: str, url: str, output: Path,
@@ -34,15 +35,25 @@ def _try_strategy(chrome: str, url: str, output: Path,
     """One Chrome attempt through the shared guarded launcher
     (htmlpdf.chrome_print_to_pdf): a private-network URL raises
     RenderRefused, Chrome is never started. `resolver`: the same name
-    resolver as retry_failed's pre-check (None = getaddrinfo)."""
+    resolver as retry_failed's pre-check (None = getaddrinfo).
+
+    Rendered through storage.render_pdf_checked (issue #21): Chrome writes a
+    temp sibling of `output`, which replaces `output` only once it passes
+    the PDF check; a timed-out, failed or rejected attempt returns False
+    and leaves no partial PDF behind."""
     extra = ((f"--virtual-time-budget={virtual_time_budget_ms}",)
              if virtual_time_budget_ms is not None else ())
     try:
-        chrome_print_to_pdf(chrome, url, output, user_data_dir, timeout,
-                            extra_args=extra, cfg=cfg, resolver=resolver)
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        render_pdf_checked(
+            output, cfg or Config(),
+            lambda tmp: chrome_print_to_pdf(chrome, url, tmp, user_data_dir, timeout,
+                                            extra_args=extra, cfg=cfg, resolver=resolver),
+            url=url, label="retry-html")
+    except RenderRefused:
+        raise
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, RuntimeError):
         return False
-    return output.exists() and output.stat().st_size > 0
+    return True
 
 
 def _try_all_strategies(chrome: str, url: str, pdf_path: Path,
@@ -118,11 +129,19 @@ def retry_failed(config: Optional[Config] = None,
         pdf_path = html_path.with_suffix(".pdf")
         # Reconcile: if a previously-killed retry already produced the PDF,
         # just update the manifest. Avoids redoing 4+ minutes of Chrome work.
-        if pdf_path.exists() and pdf_path.stat().st_size > 0:
-            updates[row["doc_id"]] = ("application/pdf", str(pdf_path),
-                                      str(html_path) if html_path.exists() else None)
-            counts["already-pdf"] = counts.get("already-pdf", 0) + 1
-            continue
+        # Only a PDF that passes the content check is adopted (issue #21):
+        # older code rendered straight to this path, so a killed run could
+        # leave a partial file there. A bad one is rendered again (and
+        # atomically replaced on success).
+        if pdf_path.exists():
+            problem = pdf_file_problem(pdf_path, cfg)
+            if problem is None:
+                updates[row["doc_id"]] = ("application/pdf", str(pdf_path),
+                                          str(html_path) if html_path.exists() else None)
+                counts["already-pdf"] = counts.get("already-pdf", 0) + 1
+                continue
+            print(f"[retry-html] existing {pdf_path} not adopted: {problem} "
+                  f"(rendering again)", file=sys.stderr, flush=True)
         reason = render_allowed(url, cfg, resolver=resolver)
         if reason:
             counts["refused"] += 1

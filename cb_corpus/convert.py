@@ -15,7 +15,7 @@ from typing import Optional
 
 from .config import Config
 from .htmlpdf import RenderRefused, find_chrome, render_allowed, render_url_to_pdf
-from .storage import iter_manifest_rows, apply_row_updates
+from .storage import apply_row_updates, iter_manifest_rows, render_pdf_checked
 
 
 def _ext_swap(path: Path, new_ext: str) -> Path:
@@ -31,7 +31,8 @@ def convert_existing(config: Optional[Config] = None,
       skip-not-html - entry mime != text/html (nothing to do).
       skip-missing  - on-disk file no longer exists.
       skip-already  - already a .pdf next to the manifest entry.
-      error         - Chrome conversion failed.
+      error         - Chrome conversion failed, or its output failed the
+                      PDF check (no .pdf is left behind either way).
       refused       - URL refused by the render guard (htmlpdf.render_allowed:
                       private network, non-http scheme, ...); Chrome never
                       launched, row untouched. Always present (also in dry run).
@@ -95,18 +96,23 @@ def _convert_one(row: dict, *, dry_run: bool,
         return "refused"
     if dry_run:
         return "converted"  # would-be
+    # Through the checked helper (issue #21): Chrome writes a temp sibling,
+    # the output must pass the PDF check before it replaces pdf_path, so a
+    # killed or failed render never leaves a partial .pdf behind.
     try:
-        render_url_to_pdf(row["pdf_url"], pdf_path, user_data_dir=user_data_dir,
-                          cfg=cfg, resolver=resolver)
+        render_pdf_checked(
+            pdf_path, cfg,
+            lambda tmp: render_url_to_pdf(row["pdf_url"], tmp,
+                                          user_data_dir=user_data_dir,
+                                          cfg=cfg, resolver=resolver),
+            url=row["pdf_url"], label="convert-html")
     except RenderRefused:
         return "refused"
     except Exception:
         return "error"
-    if pdf_path.exists() and pdf_path.stat().st_size > 0:
-        # Keep the source HTML alongside the rendered PDF.
-        row["mime_type"] = "application/pdf"
-        row["local_path"] = str(pdf_path)
-        if html_path.exists():
-            row["html_path"] = str(html_path)
-        return "converted"
-    return "error"
+    # Keep the source HTML alongside the rendered PDF.
+    row["mime_type"] = "application/pdf"
+    row["local_path"] = str(pdf_path)
+    if html_path.exists():
+        row["html_path"] = str(html_path)
+    return "converted"

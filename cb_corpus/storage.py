@@ -32,7 +32,7 @@ import secrets
 import shutil
 import sys
 from pathlib import Path
-from typing import Iterable, Iterator, Mapping, Optional
+from typing import Callable, Iterable, Iterator, Mapping, Optional
 
 from .config import Config
 from .filelock import locked_sidecar
@@ -103,6 +103,53 @@ def _atomic_write_bytes(path: Path, data: bytes) -> None:
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+
+
+def pdf_file_problem(path: Path, cfg: Config) -> Optional[str]:
+    """Why the on-disk file `path` is not an acceptable PDF (the same check
+    as a download: pdfcheck.check_pdf_bytes with Config.min_pdf_bytes /
+    pdf_require_eof), or None when it is. A missing or unreadable file is a
+    problem too, never an exception."""
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        return f"unreadable ({type(exc).__name__})"
+    return check_pdf_bytes(data, min_bytes=cfg.min_pdf_bytes,
+                           require_eof=cfg.pdf_require_eof)
+
+
+def render_pdf_checked(pdf_path: Path, cfg: Config,
+                       render: Callable[[Path], None], *, url: str,
+                       label: str = "storage") -> None:
+    """Produce `pdf_path` with `render` (one headless-Chrome run writing the
+    path it is given), atomically and checked (issue #21, A3). The one
+    render path of Storage.save(), convert-html and retry-html.
+
+    `render` writes a temp sibling of `pdf_path` (_temp_sibling), never the
+    final path: a Chrome killed or timed out mid-print used to leave a
+    partial PDF there, which a later run then adopted. The output must pass
+    the same PDF check as a download (pdfcheck.check_pdf_bytes with
+    Config.min_pdf_bytes / pdf_require_eof -- a complete Chrome PDF ends
+    with %%EOF) before it is fsync'ed and moved into place. Otherwise one
+    `[<label>] render output rejected` line goes to stderr and a
+    RuntimeError is raised. Whatever `render` raises (RenderRefused,
+    subprocess errors, ...) propagates unchanged. The temp file is removed
+    on every path."""
+    pdf_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _temp_sibling(pdf_path)
+    try:
+        render(tmp)
+        problem = check_pdf_bytes(tmp.read_bytes(), min_bytes=cfg.min_pdf_bytes,
+                                  require_eof=cfg.pdf_require_eof)
+        if problem:
+            print(f"[{label}] render output rejected for {url}: {problem} "
+                  f"(HTML kept as the artifact)", file=sys.stderr, flush=True)
+            raise RuntimeError(f"render output rejected for {url}: {problem}")
+        with tmp.open("rb") as fh:
+            os.fsync(fh.fileno())
+        os.replace(tmp, pdf_path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 # Storage.reindex() status for an on-disk .pdf that fails the PDF check
@@ -1024,33 +1071,17 @@ class Storage:
         return None
 
     def _render_pdf(self, url: str, pdf_path: Path) -> None:
-        """Render `url` with headless Chrome into `pdf_path`, atomically and
-        checked (issue #21, A3).
-
-        Chrome writes to a temp sibling of `pdf_path` (_temp_sibling), never
-        to the final path: a Chrome killed or timed out mid-print used to
-        leave a partial PDF there. The output must then pass the same PDF
-        check as a download (pdfcheck.check_pdf_bytes with
-        Config.min_pdf_bytes / pdf_require_eof -- a complete Chrome PDF ends
-        with %%EOF) before it is fsync'ed and moved into place. Otherwise
-        the temp file is removed and a RuntimeError raised, so the caller
-        keeps the HTML as the artifact (the existing fallback). RenderRefused
-        (the private-network guard) propagates unchanged."""
-        tmp = _temp_sibling(pdf_path)
-        try:
-            render_url_to_pdf(url, tmp, user_data_dir=str(self._chrome_profile),
-                              cfg=self.cfg, resolver=self.render_resolver)
-            problem = check_pdf_bytes(tmp.read_bytes(), min_bytes=self.cfg.min_pdf_bytes,
-                                      require_eof=self.cfg.pdf_require_eof)
-            if problem:
-                print(f"[storage] render output rejected for {url}: {problem} "
-                      f"(HTML kept as the artifact)", file=sys.stderr, flush=True)
-                raise RuntimeError(f"render output rejected for {url}: {problem}")
-            with tmp.open("rb") as fh:
-                os.fsync(fh.fileno())
-            os.replace(tmp, pdf_path)
-        finally:
-            tmp.unlink(missing_ok=True)
+        """Render `url` with headless Chrome into `pdf_path` through
+        render_pdf_checked (temp sibling, PDF check, atomic move; issue #21,
+        A3). A rejected or failed render raises, so the caller keeps the
+        HTML as the artifact (the existing fallback). RenderRefused (the
+        private-network guard) propagates unchanged."""
+        render_pdf_checked(
+            pdf_path, self.cfg,
+            lambda tmp: render_url_to_pdf(url, tmp,
+                                          user_data_dir=str(self._chrome_profile),
+                                          cfg=self.cfg, resolver=self.render_resolver),
+            url=url)
 
     # -- download --------------------------------------------------------
     def save(self, rec: DocRecord, *, dry_run: bool = False,
