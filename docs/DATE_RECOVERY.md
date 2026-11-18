@@ -130,6 +130,15 @@ re-derivable by the native scrapers and would bloat the file.
   manifests (2026-11-18) this rejects exactly one replay: a Fed FEDS
   revision (`2025-101r1`, row dated 2026-06) whose handle entry holds the
   original paper's 2025-11 day.
+- When a row's own key already holds an entry for another paper (it failed
+  the month check here), the row's fresh resolution is written under
+  `<key>#<doc_id>` (`wp_dates.doc_key`), which is looked up first for that
+  row. Writing it under the shared key would shadow the other paper's entry
+  (last line wins) and flip-flop on every rebuild; with the doc key, both
+  papers keep their own day and a re-run appends nothing.
+- Rows with `date_precision="year"` are skipped before the index lookup and
+  any recovery (they can never pass the month constraint) and counted as
+  `year_skipped`.
 - Result: the expensive crawl runs once; every re-build of the corpus from
   scratch (new machine, CI, collaborator) replays dates instantly and
   identically — even if Wayback/bank pages have since changed or died.

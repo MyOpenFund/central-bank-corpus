@@ -62,7 +62,8 @@ no machine-translated or model-generated text.
 - **Wayback recovery** (`sources/wayback.py`) → official PDFs a bank has taken offline, fetched
   from archive.org's raw snapshot (`provenance="wayback"`, fully audited). Used for the Riksbank.
   CDX queries carry the target URL percent-encoded, so query strings (`?la=en&hash=…` on every
-  Bank of England media URL) and fragments reach archive.org intact.
+  Bank of England media URL) reach archive.org intact; a `#fragment` is dropped from the CDX
+  query (archive.org indexes URLs without it).
 - **HTML→PDF** (`htmlpdf.py`) → HTML-only documents (e.g. ECB monetary-policy accounts) are
   rendered to PDF via headless Chrome; the **raw HTML is also kept** (`html_path`). Chrome runs
   with `--no-sandbox`, so **every** launch (Storage, `convert-html`, `retry-html`) goes through one
@@ -313,8 +314,8 @@ bank's published meeting calendar) to turn `unknown` cells into real checks. A v
 (every year) or, when the cadence changed, eras `[(from_year, count), ...]`: the count of the
 last era started on or before the year applies, `None` means no expectation, and a year before
 the first era has none (`unknown`, not `missing`). The ECB tables follow the Governing Council's
-switch to six-weekly meetings in 2015 (A1 20 / 11 / 8 from 1999 / 2002 / 2015), the RBA's the
-move to eight meetings in 2024. `banks_sources.toml` takes the same form (`"none"` for no
+switch to six-weekly meetings in 2015 (A1 20 / 11 / 8 from 1999 / 2002 / 2015; accounts A3 from
+2015 only), the RBA's the move to eight meetings in 2024. `banks_sources.toml` takes the same form (`"none"` for no
 expectation, TOML having no null).
 
 ## Reproducibility & reliability
