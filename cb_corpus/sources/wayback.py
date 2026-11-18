@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 from typing import Optional
-from urllib.parse import quote
+from urllib.parse import quote, urldefrag
 
 from ..http import Fetcher
 from .recovery import Source
@@ -20,15 +20,19 @@ CDX = "http://web.archive.org/cdx/search/cdx"
 
 
 def _cdx_target(url: str) -> str:
-    """The target URL as a CDX `url=` query value: fully percent-encoded
-    (`safe=""`, so `/`, `:`, `?`, `&`, `#`, `%` and spaces are all escaped).
+    """The target URL as a CDX `url=` query value: its fragment dropped, then
+    fully percent-encoded (`safe=""`, so `/`, `:`, `?`, `&`, `%` and spaces
+    are all escaped).
 
     Interpolated raw (issue #24), a target's own `&` split it into extra
     top-level CDX parameters (every Bank of England media URL ends in
     `?la=en&hash=...`), a `#` cut the request at the fragment, and the callers'
     blanket `except` reported the garbled query as "not archived". The Fetcher
-    sends a built query as given, so the encoding has to happen here."""
-    return quote(url, safe="")
+    sends a built query as given, so the encoding has to happen here. The
+    fragment (`#toc3` on an ECB row) is client-side: never sent to a server,
+    so archive.org indexes the URL without it, and an encoded `%23toc3` would
+    only make the exact-URL match miss. `raw_url` keeps the original URL."""
+    return quote(urldefrag(url).url, safe="")
 
 
 def cdx_pdfs(fetcher: Fetcher, url_prefix: str,

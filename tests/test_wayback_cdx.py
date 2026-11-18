@@ -11,7 +11,7 @@ parameter. No network: the fetcher records queries and returns canned JSON.
 from __future__ import annotations
 
 import json
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urldefrag, urlsplit
 
 import pytest
 
@@ -51,7 +51,7 @@ def test_first_capture_sends_the_exact_target(target):
     f = _Rec([["timestamp"], ["20190101000000"]])
     assert first_capture(f, target) == "20190101000000"
     p = _params(f.queries[0])
-    assert p["url"] == [target]
+    assert p["url"] == [urldefrag(target).url]      # fragment never sent
     assert set(p) == {"url", "filter", "output", "fl", "limit"}
     assert p["limit"] == ["1"] and p["filter"] == ["statuscode:200"]
 
@@ -61,7 +61,7 @@ def test_latest_capture_sends_the_exact_target(target):
     f = _Rec([["timestamp"], ["20230515000000"]])
     assert latest_capture(f, target) == "20230515000000"
     p = _params(f.queries[0])
-    assert p["url"] == [target]
+    assert p["url"] == [urldefrag(target).url]      # fragment never sent
     assert set(p) == {"url", "filter", "output", "fl", "limit"}
     assert p["filter"] == ["statuscode:200", "mimetype:application/pdf"]
     assert "matchType" not in p
@@ -72,7 +72,7 @@ def test_cdx_pdfs_sends_the_exact_prefix_as_a_parameter(target):
     f = _Rec([["original", "timestamp"], [target, "2017"]])
     assert cdx_pdfs(f, target, mimetype="text/html") == [(target, "2017")]
     p = _params(f.queries[0])
-    assert p["url"] == [target]
+    assert p["url"] == [urldefrag(target).url]      # fragment never sent
     assert p["matchType"] == ["prefix"]
     assert p["filter"] == ["statuscode:200", "mimetype:text/html"]
     assert p["collapse"] == ["urlkey"]
@@ -94,3 +94,22 @@ def test_wayback_for_url_keeps_the_original_url_in_the_raw_snapshot():
     f = _Rec([["timestamp"], ["20170811213710"]])
     assert wayback_for_url(f, TARGETS[0]) == (
         "https://web.archive.org/web/20170811213710id_/" + TARGETS[0])
+
+
+def test_fragment_is_stripped_from_the_cdx_target_only():
+    """A fragment is client-side: archive.org indexes the URL without it, so
+    `#toc3` would only make the exact-URL match miss. It is dropped from the
+    CDX query (a `#` or `%23` never reaches it); the raw-snapshot URL keeps the
+    original as given."""
+    target = "https://www.ecb.europa.eu/pub/pdf/other/ecb.report.en.pdf#toc3"
+    for fn in (first_capture, latest_capture):
+        f = _Rec([["timestamp"], ["20200101000000"]])
+        fn(f, target)
+        q = f.queries[0]
+        assert "toc3" not in q and "%23" not in q
+        assert _params(q)["url"] == ["https://www.ecb.europa.eu/pub/pdf/other/ecb.report.en.pdf"]
+    f = _Rec([["original", "timestamp"]])
+    cdx_pdfs(f, "https://x.example/dir/#frag")
+    assert _params(f.queries[0])["url"] == ["https://x.example/dir/"]
+    f = _Rec([["timestamp"], ["20200101000000"]])
+    assert wayback_for_url(f, target).endswith("id_/" + target)
