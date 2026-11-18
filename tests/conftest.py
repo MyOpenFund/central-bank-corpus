@@ -116,6 +116,15 @@ def _isolated_cb_data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("CB_DATA_DIR", str(tmp_path / "cb_data"))
 
 
+@pytest.fixture(autouse=True)
+def _default_content_check_env(monkeypatch):
+    """Config reads the content-check knobs from CB_MIN_PDF_BYTES,
+    CB_PDF_REQUIRE_EOF and CB_PDF_URL_SERVED_HTML; a developer's shell
+    exporting one must not change what the suite tests."""
+    for name in ("CB_MIN_PDF_BYTES", "CB_PDF_REQUIRE_EOF", "CB_PDF_URL_SERVED_HTML"):
+        monkeypatch.delenv(name, raising=False)
+
+
 def read_fixture(*parts: str) -> str:
     """Read a recorded page, e.g. `read_fixture("boj", "wps_2026.html")`.
 

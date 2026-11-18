@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -29,6 +30,69 @@ def check_max_pages(value: object, name: str = "repec_max_pages") -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ValueError(f"{name} must be an int >= 1, got {value!r}")
     return value
+
+
+# -- content-check knobs from the environment (issue #21) ------------------
+# The CLI builds Config() with its defaults, so an operator tunes these three
+# fields through the environment (Dockge compose `environment:`), read when a
+# Config is built without an explicit value. An invalid value must never
+# crash a night: it prints one loud WARNING on stderr (once per process and
+# variable value, not once per Config) and the default applies. An empty or
+# unset variable means the default, silently.
+_DEFAULT_MIN_PDF_BYTES = 1024
+_DEFAULT_PDF_REQUIRE_EOF = True
+_DEFAULT_PDF_URL_SERVED_HTML = "reject"
+_TRUE_WORDS = ("1", "true", "yes", "on")
+_FALSE_WORDS = ("0", "false", "no", "off")
+_ENV_WARNED: set[tuple[str, str]] = set()
+
+
+def _env_warn(name: str, raw: str, expected: str, default: object) -> None:
+    if (name, raw) in _ENV_WARNED:
+        return
+    _ENV_WARNED.add((name, raw))
+    print(f"[config] WARNING: invalid {name}={raw!r} (expected {expected}); "
+          f"using the default {default!r}", file=sys.stderr, flush=True)
+
+
+def _env_min_pdf_bytes() -> int:
+    raw = os.environ.get("CB_MIN_PDF_BYTES", "")
+    if not raw.strip():
+        return _DEFAULT_MIN_PDF_BYTES
+    try:
+        n = int(raw.strip())
+    except ValueError:
+        n = -1
+    if n < 0:
+        _env_warn("CB_MIN_PDF_BYTES", raw, "an int >= 0", _DEFAULT_MIN_PDF_BYTES)
+        return _DEFAULT_MIN_PDF_BYTES
+    return n
+
+
+def _env_pdf_require_eof() -> bool:
+    raw = os.environ.get("CB_PDF_REQUIRE_EOF", "")
+    word = raw.strip().lower()
+    if not word:
+        return _DEFAULT_PDF_REQUIRE_EOF
+    if word in _TRUE_WORDS:
+        return True
+    if word in _FALSE_WORDS:
+        return False
+    _env_warn("CB_PDF_REQUIRE_EOF", raw, "1/0, true/false, yes/no or on/off",
+              _DEFAULT_PDF_REQUIRE_EOF)
+    return _DEFAULT_PDF_REQUIRE_EOF
+
+
+def _env_pdf_url_served_html() -> str:
+    raw = os.environ.get("CB_PDF_URL_SERVED_HTML", "")
+    word = raw.strip().lower()
+    if not word:
+        return _DEFAULT_PDF_URL_SERVED_HTML
+    if word in PDF_URL_SERVED_HTML_MODES:
+        return word
+    _env_warn("CB_PDF_URL_SERVED_HTML", raw,
+              " or ".join(PDF_URL_SERVED_HTML_MODES), _DEFAULT_PDF_URL_SERVED_HTML)
+    return _DEFAULT_PDF_URL_SERVED_HTML
 
 
 def _user_agent() -> str:
@@ -87,8 +151,12 @@ class Config:
     # dedup (an error page must never become a dedup owner), by
     # Storage.reindex() to an on-disk .pdf (`skip:bad-content`) and to the
     # headless-Chrome render output. 0 / False relax the respective rule.
-    min_pdf_bytes: int = 1024
-    pdf_require_eof: bool = True
+    # Defaults from the environment when not passed: CB_MIN_PDF_BYTES (an
+    # int >= 0) and CB_PDF_REQUIRE_EOF (1/0, true/false, yes/no, on/off);
+    # an invalid value warns on stderr and keeps the default (see
+    # _env_min_pdf_bytes). An explicit argument is validated strictly.
+    min_pdf_bytes: int = field(default_factory=_env_min_pdf_bytes)
+    pdf_require_eof: bool = field(default_factory=_env_pdf_require_eof)
     # A producer that EXPECTS a PDF (DocRecord.mime_type application/pdf)
     # but gets an HTML response (consent wall, error or "moved" page served
     # with 200): "reject" (default) skips that candidate URL and tries the
@@ -102,8 +170,9 @@ class Config:
     # a producer sets mime_type text/html (or leaves it empty), and an HTML
     # producer's response is never judged by this setting. This one only
     # governs the case where the producer said "PDF" and the server
-    # answered HTML.
-    pdf_url_served_html: str = "reject"
+    # answered HTML. Default from CB_PDF_URL_SERVED_HTML (reject / accept)
+    # when not passed; an invalid value warns and keeps "reject".
+    pdf_url_served_html: str = field(default_factory=_env_pdf_url_served_html)
     # Networks headless Chrome (run with --no-sandbox) must never be pointed
     # at: htmlpdf.render_allowed refuses a render when the URL's host is, or
     # resolves to, an address in one of these (the HTML then stays the
