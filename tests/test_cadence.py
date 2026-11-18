@@ -583,3 +583,78 @@ def test_dropped_count_shown_in_the_table_row(tmp_path, capsys):
     assert header.rstrip().endswith("coarse")
     assert row.split()[0] == "fr" and row.split()[-1] == "3"
     assert "cadence: fr D1: 3 year-precision row(s) dropped" in err
+
+
+# -- unlabelled 1 January rows in a series that has coarse rows -------------
+
+def _unlabelled(bank, dtype, d, i):
+    r = _rec(bank, dtype, d, _i=i).to_row()
+    r.pop("date_precision", None)
+    if i % 2:
+        r["date_precision"] = None          # null counts as unlabelled too
+    return r
+
+
+def _ecb_e4_rows():
+    """The committed ecb E4 shape: legacy bulletins on 1 January with no
+    `date_precision` (2024: 8, 2025: 8, 2026: 3) and new rows labelled `year`
+    (2026: 4, then the 2027 issues)."""
+    rows = [_unlabelled("ecb", DocType.E4, date(y, 1, 1), y * 100 + i)
+            for y, n in ((2024, 8), (2025, 8), (2026, 3)) for i in range(n)]
+    rows += [_rec("ecb", DocType.E4, date(y, 1, 1), date_precision="year", _i=y * 1000 + i)
+             .to_row() for y, n in ((2026, 4), (2027, 2)) for i in range(n)]
+    return rows
+
+
+def test_e4_with_labelled_and_legacy_placeholders_is_unjudged_not_overdue(tmp_path, capsys):
+    """Without the rule, the labelled 2027 rows are dropped while the legacy
+    unlabelled 1 January rows are kept: `last` freezes on 2026-01-01 and on
+    2027-03-10 the series reads ~70 days overdue for a bulletin published six
+    weeks ago. With it, the unlabelled 1 January rows are recognised as the
+    same placeholders and dropped too: the series is unjudged."""
+    cfg = _mk_cfg(tmp_path)
+    _write_per_bank_unlocked(cfg, _ecb_e4_rows())
+    today = date(2027, 3, 10)
+    dropped: dict = {}
+    assert compute_series(cfg, today=today, dropped=dropped) == []
+    assert dropped == {("ecb", "E4"): 25}
+    run_cadence_watch(cfg, write=False, today=today)
+    err = capsys.readouterr().err
+    assert "cadence: ecb E4: 25 year-precision row(s) dropped; series not judged" in err
+
+
+def test_unlabelled_rows_are_kept_when_the_series_has_no_coarse_row(tmp_path):
+    """No coarse row in the series: an unlabelled 1 January row is an ordinary
+    (legacy) row, kept as before."""
+    cfg = _mk_cfg(tmp_path)
+    rows = [_unlabelled("jp", DocType.E2, date(y, 1, 1), y * 10 + i)
+            for y in range(2023, 2027) for i in range(2)]
+    _write_per_bank_unlocked(cfg, rows)
+    dropped: dict = {}
+    [e] = compute_series(cfg, today=date(2026, 6, 1), dropped=dropped)
+    assert e["last"] == "2026-01-01" and dropped == {}
+
+
+def test_only_unlabelled_first_of_january_rows_go_with_the_coarse_ones(tmp_path):
+    """In a series with a coarse row: unlabelled rows on other days and
+    day-labelled 1 January rows are real dates, kept."""
+    cfg = _mk_cfg(tmp_path)
+    days = _day_series(date(2025, 1, 10), 8, 20)
+    rows = [_unlabelled("us", DocType.D1, d, i) for i, d in enumerate(days)]
+    rows.append(_rec("us", DocType.D1, date(2025, 1, 1), date_precision="day", _i=50).to_row())
+    rows.append(_unlabelled("us", DocType.D1, date(2025, 1, 1), 60))
+    rows.append(_rec("us", DocType.D1, date(2024, 1, 1), date_precision="year", _i=70).to_row())
+    _write_per_bank_unlocked(cfg, rows)
+    dropped: dict = {}
+    [e] = compute_series(cfg, today=days[-1], dropped=dropped)
+    assert e["n_3y"] == 9                       # 8 unlabelled days + the day-labelled 1 Jan
+    assert dropped == {("us", "D1"): 2}         # the year row + the unlabelled 1 Jan
+
+
+def test_none_setting_disables_the_placeholder_rule(tmp_path, monkeypatch):
+    monkeypatch.setenv("CADENCE_DROP_PRECISIONS", "none")
+    cfg = _mk_cfg(tmp_path)
+    _write_per_bank_unlocked(cfg, _ecb_e4_rows())
+    dropped: dict = {}
+    [e] = compute_series(cfg, today=date(2027, 3, 10), dropped=dropped)
+    assert e["last"] == "2027-01-01" and dropped == {}
