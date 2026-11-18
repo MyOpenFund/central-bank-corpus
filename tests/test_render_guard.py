@@ -13,6 +13,7 @@ from cb_corpus.htmlpdf import render_allowed
 from cb_corpus.models import DocRecord
 from cb_corpus.storage import Storage
 from cb_corpus.taxonomy import DocType
+from tests.conftest import pdf_body
 
 PUBLIC_V4 = "93.184.216.34"
 PUBLIC_V6 = "2606:2800:220:1:248:1893:25c8:1946"
@@ -127,7 +128,7 @@ def _html_storage(tmp_path, monkeypatch, resolver):
 
     def fake_render(url, output, **kw):
         output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_bytes(b"%PDF-1.4 stub")
+        output.write_bytes(pdf_body(b"%PDF-1.4 stub"))
         rendered.append(url)
     monkeypatch.setattr(storage_mod, "render_url_to_pdf", fake_render)
     return st, rendered

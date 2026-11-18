@@ -30,6 +30,7 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import Iterable, Iterator, Mapping, Optional
 
@@ -54,6 +55,42 @@ class ContentCheckFailed(RuntimeError):
     retried on later nights, then quarantined, exactly like a dead URL --
     never stored, never indexed, never a dedup owner. The message names
     every candidate URL with its reason."""
+
+
+def _temp_sibling(path: Path) -> Path:
+    """A fresh, unique temp path in `path`'s directory (`.<name>.<random>.part`),
+    created empty. Same directory on purpose: os.replace is atomic only
+    within one filesystem. Hidden and `.part`-suffixed so no reader that
+    walks raw/ for `*.pdf` / `*.html` (reindex, sweep-orphans) ever sees a
+    half-written file."""
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".part")
+    os.close(fd)
+    return Path(tmp)
+
+
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    """Write `data` to `path` so that `path` holds either its previous
+    content (or nothing) or ALL of `data` -- never a prefix (issue #21).
+
+    A plain write_bytes killed mid-way (SIGKILL, ENOSPC, power loss) left a
+    truncated artifact at the final path; the disaster-recovery reindex then
+    indexed it and save()'s doc_id guard meant it was never retried. Here the
+    bytes go to a temp sibling (_temp_sibling), are fsync'ed, then moved
+    into place with os.replace (atomic on POSIX). On any failure the temp
+    file is removed and the exception propagates (save() then fails like any
+    download: download error, quarantine night, retried later). The parent
+    directory itself is not fsync'ed: after a crash the rename may be lost,
+    which leaves no file -- the safe outcome."""
+    tmp = _temp_sibling(path)
+    try:
+        with tmp.open("wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def _is_html_mime(mime: str) -> bool:
@@ -943,6 +980,35 @@ class Storage:
                                    require_eof=self.cfg.pdf_require_eof)
         return None
 
+    def _render_pdf(self, url: str, pdf_path: Path) -> None:
+        """Render `url` with headless Chrome into `pdf_path`, atomically and
+        checked (issue #21, A3).
+
+        Chrome writes to a temp sibling of `pdf_path` (_temp_sibling), never
+        to the final path: a Chrome killed or timed out mid-print used to
+        leave a partial PDF there. The output must then pass the same PDF
+        check as a download (pdfcheck.check_pdf_bytes with
+        Config.min_pdf_bytes / pdf_require_eof -- a complete Chrome PDF ends
+        with %%EOF) before it is fsync'ed and moved into place. Otherwise
+        the temp file is removed and a RuntimeError raised, so the caller
+        keeps the HTML as the artifact (the existing fallback). RenderRefused
+        (the private-network guard) propagates unchanged."""
+        tmp = _temp_sibling(pdf_path)
+        try:
+            render_url_to_pdf(url, tmp, user_data_dir=str(self._chrome_profile),
+                              cfg=self.cfg, resolver=self.render_resolver)
+            problem = check_pdf_bytes(tmp.read_bytes(), min_bytes=self.cfg.min_pdf_bytes,
+                                      require_eof=self.cfg.pdf_require_eof)
+            if problem:
+                print(f"[storage] render output rejected for {url}: {problem} "
+                      f"(HTML kept as the artifact)", file=sys.stderr, flush=True)
+                raise RuntimeError(f"render output rejected for {url}: {problem}")
+            with tmp.open("rb") as fh:
+                os.fsync(fh.fileno())
+            os.replace(tmp, pdf_path)
+        finally:
+            tmp.unlink(missing_ok=True)
+
     # -- download --------------------------------------------------------
     def save(self, rec: DocRecord, *, dry_run: bool = False,
              bypass_quarantine: bool = False) -> str:
@@ -1027,7 +1093,7 @@ class Storage:
             rec.mime_type = "text/html"
             html_path = self.target_path(rec)
             html_path.parent.mkdir(parents=True, exist_ok=True)
-            html_path.write_bytes(content)
+            _atomic_write_bytes(html_path, content)
             rec.html_path = str(html_path)
 
             refused = None
@@ -1054,9 +1120,7 @@ class Storage:
                     # Chrome re-fetches the live URL; share the host's rate
                     # budget so this render + the get_bytes above don't burst.
                     self.fetcher.throttle(rec.pdf_url)
-                    render_url_to_pdf(rec.pdf_url, pdf_path,
-                                      user_data_dir=str(self._chrome_profile),
-                                      cfg=self.cfg, resolver=self.render_resolver)
+                    self._render_pdf(rec.pdf_url, pdf_path)
                     rec.mime_type = "application/pdf"
                     path = pdf_path
                 except RenderRefused as exc:
@@ -1074,7 +1138,7 @@ class Storage:
         else:
             path = self.target_path(rec)
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(content)
+            _atomic_write_bytes(path, content)
 
         rec.sha256 = digest
         rec.local_path = str(path)

@@ -248,3 +248,130 @@ def test_save_many_without_bad_content_prints_no_line(tmp_path, capsys):
     st = _storage(tmp_path, {U: (make_pdf(), "application/pdf")})
     st.save_many([_rec(U)], label="xx:C1")
     assert "bad-content" not in capsys.readouterr().err
+
+
+# -- A3: atomic artifact writes and the Chrome render ------------------------
+
+from cb_corpus import storage as storage_mod                     # noqa: E402
+from cb_corpus.storage import _atomic_write_bytes                 # noqa: E402
+from tests.conftest import public_resolver                        # noqa: E402
+
+
+def test_atomic_write_writes_and_replaces(tmp_path):
+    p = tmp_path / "d" / "a.pdf"
+    p.parent.mkdir()
+    _atomic_write_bytes(p, b"one")
+    _atomic_write_bytes(p, b"two")
+    assert p.read_bytes() == b"two"
+    assert sorted(x.name for x in p.parent.iterdir()) == ["a.pdf"]
+
+
+def test_atomic_write_killed_midway_leaves_no_final_file(tmp_path, monkeypatch):
+    p = tmp_path / "a.pdf"
+
+    def dying_fsync(fd):
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(storage_mod.os, "fsync", dying_fsync)
+    with pytest.raises(OSError):
+        _atomic_write_bytes(p, make_pdf())
+    assert list(tmp_path.iterdir()) == []            # no final file, no temp
+
+
+def test_atomic_write_failure_keeps_the_previous_file(tmp_path, monkeypatch):
+    p = tmp_path / "a.pdf"
+    p.write_bytes(b"previous")
+    monkeypatch.setattr(storage_mod.os, "replace",
+                        lambda *a: (_ for _ in ()).throw(OSError("killed")))
+    with pytest.raises(OSError):
+        _atomic_write_bytes(p, b"new")
+    assert p.read_bytes() == b"previous"
+    assert [x.name for x in tmp_path.iterdir()] == ["a.pdf"]
+
+
+def test_save_killed_mid_write_leaves_no_file_and_no_row(tmp_path, monkeypatch):
+    st = _storage(tmp_path, {U: (make_pdf(), "application/pdf")})
+    rec = _rec(U)
+    target = st.target_path(rec)
+
+    def dying_fsync(fd):
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(storage_mod.os, "fsync", dying_fsync)
+    with pytest.raises(OSError):
+        st.save(rec)
+    assert not target.exists()
+    assert _raw_files(tmp_path) == [] and _manifest_rows(tmp_path) == []
+    monkeypatch.undo()
+    assert st.save(_rec(U)) == "saved"               # retried cleanly next time
+
+
+def test_html_artifact_written_atomically(tmp_path, monkeypatch):
+    page = b"<html><body>account</body></html>"
+    st = _storage(tmp_path, {U: (page, "text/html")})
+    rec = _rec(U, mime="text/html")
+    html_target = st.target_path(rec)
+
+    def dying_fsync(fd):
+        raise OSError("killed")
+    monkeypatch.setattr(storage_mod.os, "fsync", dying_fsync)
+    with pytest.raises(OSError):
+        st.save(rec)
+    assert not html_target.exists() and _raw_files(tmp_path) == []
+
+
+def _render_storage(tmp_path, monkeypatch, write_output):
+    """A Storage that fetches an HTML page and 'renders' it with a fake
+    Chrome writing `write_output(output_path)`. Returns (storage, calls)."""
+    page = b"<html><body>Monetary policy account</body></html>"
+    st = _storage(tmp_path, {U: (page, "text/html")}, html_to_pdf=True)
+    st.render_resolver = staticmethod(public_resolver)
+    calls: list[Path] = []
+
+    def fake_render(url, output, **kw):
+        calls.append(output)
+        write_output(output)
+    monkeypatch.setattr(storage_mod, "render_url_to_pdf", fake_render)
+    return st, calls
+
+
+def test_chrome_renders_to_a_temp_path_then_moves_into_place(tmp_path, monkeypatch):
+    rendered = make_pdf("rendered")
+    st, calls = _render_storage(tmp_path, monkeypatch,
+                                lambda out: out.write_bytes(rendered))
+    rec = _rec(U, mime="text/html")
+    assert st.save(rec) == "saved"
+    final = Path(rec.local_path)
+    assert rec.mime_type == "application/pdf" and final.suffix == ".pdf"
+    assert final.read_bytes() == rendered
+    [tmp_out] = calls
+    assert tmp_out != final and tmp_out.parent == final.parent
+    assert not tmp_out.exists()
+    assert sorted(p.name for p in final.parent.iterdir()) == sorted(
+        [final.name, Path(rec.html_path).name])
+
+
+@pytest.mark.parametrize("output", [
+    b"<html><body>Chrome error page</body></html>" * 50,    # no %PDF
+    b"%PDF-1.4\n" + b"x" * 100,                              # stub
+    b"%PDF-1.4\n" + b"x" * 5000,                             # cut off, no %%EOF
+])
+def test_bad_chrome_output_keeps_the_html_as_artifact(tmp_path, monkeypatch, output, capsys):
+    st, calls = _render_storage(tmp_path, monkeypatch, lambda out: out.write_bytes(output))
+    rec = _rec(U, mime="text/html")
+    assert st.save(rec) == "saved"
+    assert rec.mime_type == "text/html" and rec.local_path == rec.html_path
+    assert rec.local_path.endswith(".html")
+    d = Path(rec.local_path).parent
+    assert [p.name for p in d.iterdir()] == [Path(rec.local_path).name]  # no .pdf, no temp
+    assert "render output rejected" in capsys.readouterr().err
+
+
+def test_chrome_failure_removes_its_temp_output(tmp_path, monkeypatch):
+    def half_written_then_crash(out):
+        out.write_bytes(b"%PDF-1.4 partial")
+        raise RuntimeError("Chrome timed out")
+    st, _ = _render_storage(tmp_path, monkeypatch, half_written_then_crash)
+    rec = _rec(U, mime="text/html")
+    assert st.save(rec) == "saved"
+    assert rec.local_path.endswith(".html")
+    d = Path(rec.local_path).parent
+    assert [p.name for p in d.iterdir()] == [Path(rec.local_path).name]
