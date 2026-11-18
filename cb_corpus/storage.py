@@ -19,9 +19,11 @@ content sha256.
 from __future__ import annotations
 
 import atexit
-import contextlib
 import datetime as _dt
-import fcntl
+# Not used directly any more (the lock lives in filelock.py), but kept as a
+# module attribute: tests patch `storage.fcntl.flock` -- the same module
+# object filelock.py calls -- to simulate lock-window races.
+import fcntl  # noqa: F401
 import hashlib
 import json
 import os
@@ -32,32 +34,20 @@ from pathlib import Path
 from typing import Iterable, Iterator, Mapping, Optional
 
 from .config import Config
+from .filelock import locked_sidecar
 from .http import Fetcher
 from .htmlpdf import RenderRefused, render_allowed, render_url_to_pdf
 from .models import DocRecord
 from .quarantine import Quarantine
 
 
-@contextlib.contextmanager
-def _locked(data_file: Path):
-    """Exclusive flock on the SIDECAR lock file of `data_file`.
-
-    The data file's inode changes on every rewrite (temp + os.replace), so a
-    flock on the data file itself cannot give mutual exclusion between
-    appenders and rewriters — an appender can hold a lock on the OLD inode
-    while a rewriter swaps in a new one, orphaning the appended bytes
-    (issue #18). The sidecar (`.<name>.lock`, created on demand, never
-    replaced or deleted) has a stable inode. Every manifest write path —
-    _append(), _repair_torn_tail(), apply_row_updates() — takes this lock.
-    """
-    lock = data_file.with_name("." + data_file.name + ".lock")
-    lock.parent.mkdir(parents=True, exist_ok=True)
-    with lock.open("a") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(fh, fcntl.LOCK_UN)
+# Exclusive flock on the SIDECAR lock file of a manifest (see
+# filelock.locked_sidecar for why a sidecar). Every manifest write path —
+# _append(), _repair_torn_tail(), apply_row_updates(), merge_rows_locked() —
+# takes this lock. Kept under its historical name: the lock moved to
+# cb_corpus/filelock.py so quarantine.py can share it without importing this
+# module.
+_locked = locked_sidecar
 
 
 _EXT_FOR_MIME = {
