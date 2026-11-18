@@ -13,9 +13,10 @@ from cb_corpus import pipeline
 from cb_corpus.config import Config
 from cb_corpus.taxonomy import DocType
 from cb_corpus.adapters.base import get_adapter
+from tests.conftest import pdf_body
 
 
-def _patch_net(monkeypatch, pages, doc=(b"%PDF-1.4 x", "application/pdf")):
+def _patch_net(monkeypatch, pages, doc=(pdf_body(b"%PDF-1.4 x"), "application/pdf")):
     """Make every Fetcher serve `pages` (url-substring -> text or callable)."""
     from cb_corpus.http import Fetcher
 
@@ -307,7 +308,7 @@ def test_run_source_drives_a_custom_source(tmp_path, monkeypatch):
 
     from cb_corpus.http import Fetcher
     # url-specific bytes so 'a' and 'b' aren't deduped by content sha256
-    monkeypatch.setattr(Fetcher, "get_bytes", lambda self, u: (f"%PDF {u}".encode(), "application/pdf"))
+    monkeypatch.setattr(Fetcher, "get_bytes", lambda self, u: (pdf_body(f"%PDF {u}".encode()), "application/pdf"))
     monkeypatch.setattr(Fetcher, "throttle", lambda self, u: None)
     cfg = Config(data_dir=tmp_path, html_to_pdf=True)
     r = pipeline.run_source(TwoDocs(), dry_run=False, config=cfg)

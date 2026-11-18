@@ -12,6 +12,7 @@ from cb_corpus.config import Config
 from cb_corpus.models import DocRecord
 from cb_corpus.storage import iter_manifest_rows
 from cb_corpus.taxonomy import DocType
+from tests.conftest import pdf_body
 
 
 class _Pages:
@@ -101,7 +102,7 @@ def test_listing_pdf_recovery_states_day_precision(tmp_path, monkeypatch):
     from cb_corpus.http import Fetcher
     monkeypatch.setattr(Fetcher, "get_text",
                         lambda self, url: "see FOMCpresconf20230322 transcript")
-    monkeypatch.setattr(Fetcher, "get_bytes", lambda self, u: (b"%PDF-1.4 x", "application/pdf"))
+    monkeypatch.setattr(Fetcher, "get_bytes", lambda self, u: (pdf_body(b"%PDF-1.4 x"), "application/pdf"))
     monkeypatch.setattr(Fetcher, "throttle", lambda self, u: None)
     cfg = Config(data_dir=tmp_path, html_to_pdf=False)
     pipeline.run_listing_pdf_recovery(

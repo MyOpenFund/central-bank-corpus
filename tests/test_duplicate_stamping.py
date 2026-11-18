@@ -11,8 +11,9 @@ from cb_corpus.config import Config
 from cb_corpus.models import DocRecord
 from cb_corpus.storage import Storage, iter_manifest_rows
 from cb_corpus.taxonomy import DocType
+from tests.conftest import pdf_body
 
-BODY = (b"%PDF-1.4 shared body", "application/pdf")
+BODY = (pdf_body(b"%PDF-1.4 shared body"), "application/pdf")
 
 
 def _rec(name: str, bank: str = "fr", source: str = "") -> DocRecord:
@@ -341,7 +342,7 @@ def _rendering_storage(tmp_path, monkeypatch, **cfg_kw) -> Storage:
 
     def fake_render(url, output, **kw):
         output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_bytes(b"%PDF-1.4 rendered")
+        output.write_bytes(pdf_body(b"%PDF-1.4 rendered"))
     monkeypatch.setattr(storage_mod, "render_url_to_pdf", fake_render)
     return st
 

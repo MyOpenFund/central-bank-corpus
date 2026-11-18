@@ -18,6 +18,7 @@ import pytest
 
 from cb_corpus.config import Config
 from cb_corpus.storage import Storage, iter_manifest_rows
+from tests.conftest import pdf_body
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +202,7 @@ def test_converged_via_known_pdf_url_skips_network(tmp_path):
 
     cfg = Config(data_dir=tmp_path)
     url = "https://www.banque-france.fr/already-have.pdf"
-    storage = Storage(cfg, _StubFetcher(bytes_ok={"already-have": (b"%PDF-1.4 x", "application/pdf")}))
+    storage = Storage(cfg, _StubFetcher(bytes_ok={"already-have": (pdf_body(b"%PDF-1.4 x"), "application/pdf")}))
     rec = DocRecord(bank_code="fr", doc_type=DocType.D1, title="Already here",
                     pdf_url=url, date=date(2020, 1, 1), mime_type="application/pdf")
     storage.save(rec)
@@ -223,7 +224,7 @@ def test_converged_via_known_source_url(tmp_path):
 
     cfg = Config(data_dir=tmp_path)
     source = "https://ideas.repec.org/p/bfr/banfra/981.html"
-    storage = Storage(cfg, _StubFetcher(bytes_ok={"x.pdf": (b"%PDF-1.4 x", "application/pdf")}))
+    storage = Storage(cfg, _StubFetcher(bytes_ok={"x.pdf": (pdf_body(b"%PDF-1.4 x"), "application/pdf")}))
     rec = DocRecord(bank_code="fr", doc_type=DocType.D1, title="Native copy",
                     pdf_url="https://www.banque-france.fr/native-x.pdf",
                     source_url=source, date=date(2020, 1, 1), mime_type="application/pdf")
@@ -320,8 +321,8 @@ def test_metadata_refresh_from_ideas_page_sets_month_precision_repec(tmp_path):
     fetcher = _StubFetcher(
         pages={ideas_url: _IDEAS_PAGE},
         cdx_hits={"dt986.pdf": "20250207000000"},
-        bytes_ok={"dt986.pdf": (b"%PDF-1.4 official", "application/pdf"),
-                 "web.archive.org/web/20250207000000id_": (b"%PDF-1.4 snap", "application/pdf")},
+        bytes_ok={"dt986.pdf": (pdf_body(b"%PDF-1.4 official"), "application/pdf"),
+                 "web.archive.org/web/20250207000000id_": (pdf_body(b"%PDF-1.4 snap"), "application/pdf")},
     )
     run_recover_downloads(bank_codes=["fr"], download=True, config=cfg, fetcher=fetcher,
                           csv_path=str(tmp_path / "r.csv"))
@@ -350,8 +351,8 @@ def test_metadata_refresh_falls_back_to_audit_fields_on_fetch_failure(tmp_path):
     # No `pages` entry for ideas_url -> get_text raises -> refresh fails.
     fetcher = _StubFetcher(
         cdx_hits={"dt999.pdf": "20250101000000"},
-        bytes_ok={"dt999.pdf": (b"%PDF-1.4 official", "application/pdf"),
-                 "web.archive.org/web/20250101000000id_": (b"%PDF-1.4 snap", "application/pdf")},
+        bytes_ok={"dt999.pdf": (pdf_body(b"%PDF-1.4 official"), "application/pdf"),
+                 "web.archive.org/web/20250101000000id_": (pdf_body(b"%PDF-1.4 snap"), "application/pdf")},
     )
     run_recover_downloads(bank_codes=["fr"], download=True, config=cfg, fetcher=fetcher,
                           csv_path=str(tmp_path / "r.csv"))
@@ -377,7 +378,7 @@ def test_download_saves_via_snapshot_fallback_when_official_url_blocked(tmp_path
     fetcher = _StubFetcher(
         cdx_hits={"wp1002.pdf": "20240601000000"},
         bytes_fail={"www.banque-france.fr"},    # official host still 403s
-        bytes_ok={"web.archive.org/web/20240601000000id_": (b"%PDF-1.4 snap", "application/pdf")},
+        bytes_ok={"web.archive.org/web/20240601000000id_": (pdf_body(b"%PDF-1.4 snap"), "application/pdf")},
     )
     results = run_recover_downloads(bank_codes=["fr"], download=True, config=cfg,
                                     fetcher=fetcher, csv_path=str(tmp_path / "r.csv"))
@@ -452,7 +453,7 @@ def test_download_bypasses_active_quarantine_and_recovers(tmp_path):
 
     fetcher = _StubFetcher(
         cdx_hits={"wp2000.pdf": "20240601000000"},
-        bytes_ok={"wp2000.pdf": (b"%PDF-1.4 official", "application/pdf")},
+        bytes_ok={"wp2000.pdf": (pdf_body(b"%PDF-1.4 official"), "application/pdf")},
     )
     results = run_recover_downloads(bank_codes=["fr"], download=True, config=cfg,
                                     fetcher=fetcher, csv_path=str(tmp_path / "r.csv"))
@@ -598,7 +599,7 @@ def test_download_skip_status_is_reported_as_duplicate_not_recoverable(tmp_path,
     from cb_corpus.taxonomy import DocType
 
     cfg = Config(data_dir=tmp_path)
-    dup_bytes = b"%PDF-1.4 duplicate-body"
+    dup_bytes = pdf_body(b"%PDF-1.4 duplicate-body")
 
     # Pre-seed the corpus with the document under its OWN (still-live) URL.
     seed_storage = Storage(cfg, _StubFetcher(
@@ -687,7 +688,7 @@ def test_stamps_applied_even_if_cdx_pass_dies_mid_loop(tmp_path, monkeypatch):
 
     # Pre-seed the row that entry 1's dead URL will be self-heal-stamped onto.
     seed_storage = Storage(cfg, _StubFetcher(
-        bytes_ok={"existing-crash-1.pdf": (b"%PDF-1.4 crash-1", "application/pdf")}))
+        bytes_ok={"existing-crash-1.pdf": (pdf_body(b"%PDF-1.4 crash-1"), "application/pdf")}))
     seed_rec_1 = DocRecord(bank_code="fr", doc_type=DocType.D1, title="Existing crash 1",
                           pdf_url=canonical_url_1, date=date(2020, 1, 1),
                           mime_type="application/pdf")

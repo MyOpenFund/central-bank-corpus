@@ -38,7 +38,27 @@ from .filelock import locked_sidecar
 from .http import Fetcher
 from .htmlpdf import RenderRefused, render_allowed, render_url_to_pdf
 from .models import DocRecord
+from .pdfcheck import check_pdf_bytes
 from .quarantine import Quarantine
+
+
+class ContentCheckFailed(RuntimeError):
+    """Every candidate URL of a record failed (issue #21): at least one
+    answered HTTP 200 with bytes that failed the content check (HTML for an
+    expected PDF, a body without the PDF shape -- see pdfcheck), and the
+    others failed the content check too or could not be fetched at all.
+
+    A RuntimeError on purpose: save()'s callers already route any exception
+    to the download-error path (save_many -> download_errors.jsonl with the
+    batch label, and the quarantine night count), so a rejected body is
+    retried on later nights, then quarantined, exactly like a dead URL --
+    never stored, never indexed, never a dedup owner. The message names
+    every candidate URL with its reason."""
+
+
+def _is_html_mime(mime: str) -> bool:
+    m = (mime or "").lower()
+    return m.startswith("text/html") or m.startswith("application/xhtml")
 
 
 # Exclusive flock on the SIDECAR lock file of a manifest (see
@@ -518,6 +538,10 @@ class Storage:
         # Render guard (B8): renders refused because the URL points at a
         # blocked network (resolver: the `render_resolver` class attribute).
         self.render_refused = 0
+        # Records whose save() raised ContentCheckFailed (issue #21): every
+        # candidate URL served bytes that failed the content check (or could
+        # not be fetched). save_many() prints the batch's own count.
+        self.content_rejected = 0
         # sha256 -> doc_id of the row that owns that content, not just a
         # membership set: a same-bytes save under a different doc_id needs to
         # report WHICH existing doc_id matched (`skip:duplicate-content:<id>`)
@@ -888,6 +912,37 @@ class Storage:
         return (self.cfg.raw_dir / rec.bank_code / rec.doc_type.code
                 / str(year) / f"{rec.doc_id}.{ext}")
 
+    # -- content check ---------------------------------------------------
+    def _content_problem(self, body: bytes, served_mime: str,
+                         expected_mime: str) -> Optional[str]:
+        """Why `body` (served with `served_mime`) must not be stored for a
+        producer that expected `expected_mime`, or None when it may be.
+
+        (1) Expected PDF (`expected_mime` application/pdf) but served HTML:
+            refused when Config.pdf_url_served_html is "reject" (consent
+            walls and error pages are HTML); "accept" lets it through to the
+            HTML path (stored, rendered when html_to_pdf), the old behaviour.
+        (2) Bytes that CLAIM to be a PDF -- the server says application/pdf,
+            or it does not say HTML and the producer expects a PDF (an empty
+            or octet-stream mime) -- must have a PDF's shape
+            (pdfcheck.check_pdf_bytes with Config.min_pdf_bytes /
+            pdf_require_eof). This also catches HTML bytes labelled
+            application/pdf by the server, whatever the producer expected:
+            they would otherwise be stored as a .pdf.
+        HTML producers (`expected_mime` text/html or empty) served HTML are
+        untouched: an HTML page is their document."""
+        expects_pdf = (expected_mime or "").lower() == "application/pdf"
+        served = (served_mime or "").lower()
+        if _is_html_mime(served):
+            if expects_pdf and self.cfg.pdf_url_served_html == "reject":
+                return (f"expected a PDF, the server sent HTML ({served}); "
+                        f"see Config.pdf_url_served_html")
+            return None
+        if served == "application/pdf" or expects_pdf:
+            return check_pdf_bytes(body, min_bytes=self.cfg.min_pdf_bytes,
+                                   require_eof=self.cfg.pdf_require_eof)
+        return None
+
     # -- download --------------------------------------------------------
     def save(self, rec: DocRecord, *, dry_run: bool = False,
              bypass_quarantine: bool = False) -> str:
@@ -922,17 +977,41 @@ class Storage:
         # Try the preferred URL, then any fallback copies (EconStor/SSRN/cached)
         # so a 403/dead preferred host doesn't lose the document. doc_id stays
         # bound to rec.pdf_url, so dedup/identity are unaffected by which copy won.
+        # Each candidate's bytes go through the content check (issue #21)
+        # BEFORE the sha256 dedup below: an error page served with 200 must
+        # never be stored, nor become the dedup owner that N other URLs
+        # serving the same page would then be filed under. A failing
+        # candidate is skipped like a failed fetch and the next one tried.
+        # The producer's expectation is read BEFORE the server's mime
+        # overwrites rec.mime_type.
+        expected_mime = rec.mime_type
         content = None
         mime = ""
+        failures: list[str] = []
+        rejected = False
         for url in [rec.pdf_url, *(rec.alt_urls or [])]:
             try:
-                content, mime = self.fetcher.get_bytes(url)
-                break
-            except Exception:
-                content = None
+                body, served = self.fetcher.get_bytes(url)
+            except Exception as exc:
+                failures.append(f"{url}: fetch failed ({type(exc).__name__})")
+                continue
+            problem = self._content_problem(body, served, expected_mime)
+            if problem:
+                rejected = True
+                failures.append(f"{url}: {problem}")
+                print(f"[storage] content check rejected {url}: {problem}",
+                      file=sys.stderr, flush=True)
+                continue
+            content, mime = body, served
+            break
         if content is None:
-            raise RuntimeError(
-                f"all {1 + len(rec.alt_urls or [])} candidate URL(s) failed for {rec.pdf_url}")
+            n = 1 + len(rec.alt_urls or [])
+            if rejected:
+                self.content_rejected += 1
+                raise ContentCheckFailed(
+                    f"content check failed for {rec.pdf_url} ({n} candidate URL(s)): "
+                    + "; ".join(failures))
+            raise RuntimeError(f"all {n} candidate URL(s) failed for {rec.pdf_url}")
         if mime:
             rec.mime_type = mime
         digest = hashlib.sha256(content).hexdigest()
@@ -1092,11 +1171,19 @@ class Storage:
         only by default, see is_stampable_owner), in a finally so a record
         iterator that raises mid-batch still persists what was learnt; a stamping failure there is only a
         WARNING (never masks the batch). Never written in dry run. One
-        `duplicate-content: N` line, and one `render refused: N` line, on
-        stderr when N > 0 for this batch."""
+        `duplicate-content: N` line, one `render refused: N` line and one
+        `bad-content: N` line on stderr when N > 0 for this batch.
+
+        A record whose every candidate URL failed the content check
+        (ContentCheckFailed, issue #21) is tallied as "error" like any failed
+        download -- it is one (download_errors.jsonl, quarantine, a failed
+        document in the run-report) -- and counted again on the
+        `bad-content` line so a host serving error pages with 200 is visible
+        as such, not lost among dead URLs."""
         counts: dict[str, int] = {}
         total = 0
         refused_before = self.render_refused
+        rejected_before = self.content_rejected
         try:
             for rec in recs:
                 try:
@@ -1122,6 +1209,12 @@ class Storage:
             prefix = f"[{label}] " if label else ""
             print(f"{prefix}render refused: {refused} (private network or unresolvable host; "
                   f"HTML kept)",
+                  file=sys.stderr, flush=True)
+        rejected = self.content_rejected - rejected_before
+        if rejected:
+            prefix = f"[{label}] " if label else ""
+            print(f"{prefix}bad-content: {rejected} (every candidate URL failed the "
+                  f"content check; recorded in download_errors.jsonl)",
                   file=sys.stderr, flush=True)
         summary = self.quarantine.summary_line()
         if summary:

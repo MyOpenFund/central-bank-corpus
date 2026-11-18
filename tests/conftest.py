@@ -174,6 +174,15 @@ def _storage_render_guard_without_dns(monkeypatch):
     monkeypatch.setattr(htmlpdf, "DEFAULT_RESOLVER", _no_dns_resolver)
 
 
+def pdf_body(head: bytes) -> bytes:
+    """`head` (a stub like b"%PDF-1.4 x") turned into bytes with a PDF's
+    shape, so Storage's content check (cb_corpus.pdfcheck, issue #21: magic,
+    >= Config.min_pdf_bytes, %%EOF at the end) lets it through. Deterministic:
+    the same head always gives the same bytes (same sha256), so tests about
+    duplicate content keep working; different heads stay different."""
+    return head + b"\n" + b"0" * 1024 + b"\n%%EOF\n"
+
+
 def public_resolver(host, port, *args, **kwargs):
     """Fake getaddrinfo: every name resolves to one public address."""
     return [(2, 1, 6, "", ("93.184.216.34", port or 0))]

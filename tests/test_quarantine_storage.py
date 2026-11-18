@@ -20,6 +20,7 @@ from cb_corpus.config import Config
 from cb_corpus.models import DocRecord
 from cb_corpus.storage import Storage
 from cb_corpus.taxonomy import DocType
+from tests.conftest import pdf_body
 
 
 def _rec(**kw):
@@ -49,7 +50,7 @@ class _OkFetcher:
 
     def get_bytes(self, url):
         self.calls.append(url)
-        return b"%PDF-fake", "application/pdf"
+        return pdf_body(b"%PDF-fake"), "application/pdf"
 
 
 def _mk_storage(tmp_path, fetcher):
@@ -267,7 +268,7 @@ def test_reindex_success_releases_quarantine_so_a_fresh_load_sees_it_clear(tmp_p
                       ["2026-08-19", "2026-08-20", "2026-08-21", "2026-08-22", "2026-08-23"])
     st = _mk_storage(tmp_path, _BoomFetcher())
     file_path = tmp_path / "found.pdf"
-    file_path.write_bytes(b"%PDF-fake-content")
+    file_path.write_bytes(pdf_body(b"%PDF-fake-content"))
 
     status = st.reindex(_rec(pdf_url=url), file_path, dry_run=False)
 
@@ -289,7 +290,7 @@ def test_reindex_skip_already_indexed_does_not_touch_quarantine(tmp_path):
     before = q_path.read_text()
     st = _mk_storage(tmp_path, _BoomFetcher())
     file_path = tmp_path / "found.pdf"
-    file_path.write_bytes(b"%PDF-fake-content")
+    file_path.write_bytes(pdf_body(b"%PDF-fake-content"))
     rec = _rec(pdf_url=url)
     st._ids.add(rec.doc_id)  # simulate already-indexed
 
