@@ -196,6 +196,24 @@ findings (it is a measure). Set `AUTOCOMMIT=0` in the one-shot's environment if 
 all may be pushed: reading the manifests repairs a torn final line in place, like every
 command that reads them.
 
+Repair example — fix what `audit-pdfs` found (README § Maintenance: replace or retire a bad
+artifact). The plan is shipped in the image under `/app/deploy/plans/` (the Dockerfile's
+`COPY deploy /app/deploy`; `.dockerignore` only drops `*.md`), so the image must be the one
+built from the commit that ships the plan (§7). First the dry run (it fetches the candidates,
+including Wayback, which the NAS reaches; writes only `reports/replace_artifact.csv`):
+`command: ["/app/deploy/run-job.sh", "campaign", "replace-artifact", "--plan", "/app/deploy/plans/2026-11-19-audit-pdfs.csv"]`.
+Read the JSON summary in the container log: each row's `outcome` (`would-replace`,
+`would-retire`, `unresolved`, `duplicate-of:<doc_id>`, `error`), `winning_url`, sizes,
+sha256s and `tried` (every candidate with its reason). Then the same `command:` with
+`"--write"` appended: the files are replaced in place, the retired file goes to
+`raw_orphans/`, and the autocommit pushes the manifest changes. A third run (dry or
+`--write`) must report only `already-fixed` / `already-retired` (plus whatever stayed
+`unresolved`); `already-fixed` assumes the winning URL still serves the same bytes, so a
+`would-replace` there means the live file changed, not that the write was lost. Finally
+re-run `audit-pdfs`: it should report only the rows still unresolved (in this plan, Banque
+de France WP 101 and Riksbank WP 397 when no Wayback capture passes; WP 397 then goes to a
+later plan as `retire,duplicate-of:c8d8705ae2aaa19d`).
+
 Maintenance example — policy-dates backfill (see README § Maintenance: policy-dates
 backfill): first `command: ["/app/deploy/run-job.sh", "campaign", "policy-dates"]`
 (dry-run; read `reports/policy_dates.csv` on the volume), then the same with `"--write"`

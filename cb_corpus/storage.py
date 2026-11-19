@@ -175,7 +175,8 @@ def _is_html_mime(mime: str) -> bool:
 
 # Exclusive flock on the SIDECAR lock file of a manifest (see
 # filelock.locked_sidecar for why a sidecar). Every manifest write path —
-# _append(), _repair_torn_tail(), apply_row_updates(), merge_rows_locked() —
+# _append(), _repair_torn_tail(), apply_row_updates(), merge_rows_locked(),
+# remove_rows_locked() —
 # takes this lock. Kept under its historical name: the lock moved to
 # cb_corpus/filelock.py so quarantine.py can share it without importing this
 # module.
@@ -496,8 +497,8 @@ def apply_row_updates(cfg: Config, updates: Mapping[str, dict]) -> int:
     whose doc_id is in `updates`, keep every other line VERBATIM — including
     rows appended after the caller built its snapshot — then temp+os.replace.
     Expensive work (renders, network) belongs BEFORE this call, outside the
-    lock. Deletions are not supported (no caller deletes; future deletes need
-    explicit tombstones). doc_ids not found on disk are skipped with a
+    lock. Deletions are not supported here: remove_rows_locked() is the one
+    locked delete. doc_ids not found on disk are skipped with a
     warning. Banks are processed sequentially (one lock at a time); a crash
     between banks leaves a partial, idempotent state. Returns the number of
     rows replaced.
@@ -594,6 +595,43 @@ def merge_rows_locked(cfg: Config, merges: Mapping[str, Mapping[str, object]]) -
                 os.replace(tmp, path)
         changed_total += changed
     return changed_total
+
+
+def remove_rows_locked(cfg: Config, doc_ids: Mapping[str, Iterable[str]]) -> int:
+    """Remove manifest rows by doc_id, INSIDE each bank's sidecar lock.
+
+    `doc_ids`: bank_code -> doc_ids to remove from that bank's manifest (the
+    caller knows the bank; no scan of every file). Same discipline as
+    merge_rows_locked: the file is re-read fresh under the lock, every other
+    line is kept VERBATIM (rows appended after the caller's snapshot
+    included), and it is rewritten (temp + os.replace) only when a row was
+    actually removed. A doc_id absent from the file, or a bank without a
+    manifest file, is a no-op, so a replay is idempotent. Returns the number
+    of rows removed.
+
+    No tombstone is written: the downstream vault ingest soft-deletes a row
+    that no manifest carries any more (its `last_seen_at` stops moving).
+    Callers keep their own audit trail (replace-artifact stamps the owner
+    row's `retired_duplicates`)."""
+    migrate_legacy_layout(cfg)           # never let a legacy file shadow a write
+    removed_total = 0
+    for bank in sorted(doc_ids):
+        ids = {d for d in doc_ids[bank] if d}
+        path = cfg.manifest_file(bank)
+        if not ids or not path.exists():
+            continue
+        with _locked(path):
+            pairs = _read_rows_for_rewrite(path)
+            keep = [raw for raw, did in pairs if did not in ids]
+            removed = len(pairs) - len(keep)
+            if removed:
+                tmp = path.with_suffix(".jsonl.tmp")
+                with tmp.open("w") as fh:
+                    for line in keep:
+                        fh.write(line + "\n")
+                os.replace(tmp, path)
+        removed_total += removed
+    return removed_total
 
 
 def _sweep_chrome_profiles(data_dir: Path, keep: Path) -> None:
