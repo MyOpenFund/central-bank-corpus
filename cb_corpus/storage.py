@@ -38,7 +38,7 @@ from .config import Config
 from .filelock import locked_sidecar
 from .http import Fetcher
 from .htmlpdf import RenderRefused, render_allowed, render_url_to_pdf
-from .models import DocRecord
+from .models import DocRecord, row_url, upgrade_row
 from .pdfcheck import check_pdf_bytes
 from .quarantine import Quarantine
 
@@ -375,7 +375,11 @@ def _iter_manifest_file(f: Path) -> Iterator[dict]:
                 f"append, hard stop): {f}:{i + 1}: {exc}"
             ) from exc
         offset += len(ln)
-    yield from rows
+    # upgrade_row: TRANSITION (pdf_url -> document_url, see models.row_url):
+    # a row read under the old key name is handed out under the new one, so
+    # any rewrite built from it writes `document_url` only.
+    for row in rows:
+        yield upgrade_row(row)
 
 
 def iter_manifest_rows(cfg: Config, bank_code: Optional[str] = None) -> Iterator[dict]:
@@ -523,6 +527,9 @@ def apply_row_updates(cfg: Config, updates: Mapping[str, dict]) -> int:
                     for raw, did in pairs:
                         upd = bank_updates.get(did) if did else None
                         if upd is not None:
+                            # transition (models.upgrade_row): never write
+                            # the old `pdf_url` key name back.
+                            upd = upgrade_row(dict(upd))
                             fh.write(json.dumps(upd, ensure_ascii=False) + "\n")
                             seen.add(did)
                             replaced += 1
@@ -581,7 +588,7 @@ def merge_rows_locked(cfg: Config, merges: Mapping[str, Mapping[str, object]]) -
             for raw, did in pairs:
                 fn = bank_merges.get(did) if did else None
                 if fn is not None:
-                    row = json.loads(raw)
+                    row = upgrade_row(json.loads(raw))   # transition, see models
                     if fn(row):
                         out.append(json.dumps(row, ensure_ascii=False))
                         changed += 1
@@ -728,7 +735,7 @@ class Storage:
             self._bank_by_id[rec["doc_id"]] = rec.get("bank_code") or "_unknown"
             if rec.get("sha256"):
                 self._hash_docid[rec["sha256"]] = rec["doc_id"]
-            url = rec.get("pdf_url")
+            url = row_url(rec)
             if url:
                 self._urls.add(normalize_url(url))
             # Persisted alt_urls (WP v3): the same paper may have been registered
@@ -750,7 +757,7 @@ class Storage:
                     self._source_urls.add(normalize_url(alt_src))
 
     def is_known_url(self, url: str) -> bool:
-        """True if a record with this pdf_url is already in the manifest
+        """True if a record with this document_url is already in the manifest
         (index-side normalized, see normalize_url — duplicate-slash variants
         of a known URL count as known too)."""
         return normalize_url(url) in self._urls
@@ -823,7 +830,7 @@ class Storage:
         merged, so a concurrent change to it is never reverted. `eligible`
         (row -> bool, optional) vetoes stamping a row. Comparisons use
         normalize_url: a candidate equal (after normalisation) to the row's
-        pdf_url/alt_urls (or source_url/alt_source_urls) is not added.
+        document_url/alt_urls (or source_url/alt_source_urls) is not added.
 
         Returns (urls_stamped, rows_modified, persisted_owner_ids) -- the
         last being every owner row found AND eligible (its URLs are on the
@@ -844,7 +851,7 @@ class Storage:
                     return False
                 persisted.add(did)
                 n = 0
-                for field, own_key, cands in (("alt_urls", "pdf_url", urls),
+                for field, own_key, cands in (("alt_urls", "document_url", urls),
                                               ("alt_source_urls", "source_url", srcs)):
                     current = list(row.get(field) or [])
                     seen = {normalize_url(u) for u in current if u}
@@ -890,9 +897,9 @@ class Storage:
         production paths go through `stamp_duplicates()`, which applies
         `is_stampable_owner` and writes the audit log; this method is kept
         for direct/administrative use and tests. For each row whose doc_id appears in
-        `stamps`, every URL that is neither the row's own `pdf_url` nor
+        `stamps`, every URL that is neither the row's own `document_url` nor
         already present in its `alt_urls` (compared after normalize_url) is
-        appended -- this only ADDS alt_urls, never touches `pdf_url`/`doc_id`
+        appended -- this only ADDS alt_urls, never touches `document_url`/`doc_id`
         (dedup identity is never rewritten). Unknown doc_ids are silently
         ignored (defensive; the caller logs totals).
 
@@ -919,7 +926,7 @@ class Storage:
         """Remember a `skip:duplicate-content` record (B1, grit wave 2026-11).
 
         Without this, a URL whose bytes another row already owns is
-        re-downloaded every night just to be discarded again. Its `pdf_url`
+        re-downloaded every night just to be discarded again. Its `document_url`
         (and `source_url`) are added to the in-memory indexes at once (this
         run never fetches it again), and queued for flush_duplicate_stamps(),
         which persists them on the OWNER row (`alt_urls` / `alt_source_urls`)
@@ -928,10 +935,10 @@ class Storage:
         Accepted side effect of a persisted stamp: the URL becomes a fallback
         download URL for the owner row. Never called in dry run
         (save()/reindex() return before any duplicate detection there)."""
-        self._urls.add(normalize_url(rec.pdf_url))
+        self._urls.add(normalize_url(rec.document_url))
         if rec.source_url:
             self._source_urls.add(normalize_url(rec.source_url))
-        self._pending_dups.append({"url": rec.pdf_url, "source_url": rec.source_url or "",
+        self._pending_dups.append({"url": rec.document_url, "source_url": rec.source_url or "",
                                    "owner_doc_id": owner_doc_id})
 
     def discard_duplicate_stamps(self) -> int:
@@ -1058,7 +1065,7 @@ class Storage:
     def target_path(self, rec: DocRecord) -> Path:
         year = rec.year or 0
         ext = ext_for_mime(rec.mime_type) if rec.mime_type else (
-            "pdf" if rec.pdf_url.lower().endswith(".pdf") else "html"
+            "pdf" if rec.document_url.lower().endswith(".pdf") else "html"
         )
         return (self.cfg.raw_dir / rec.bank_code / rec.doc_type.code
                 / str(year) / f"{rec.doc_id}.{ext}")
@@ -1136,7 +1143,7 @@ class Storage:
         # even called — the gate's state (skipped_count, on-disk file) is left
         # completely untouched by the bypass itself; a subsequent success still
         # releases the quarantine normally via record_success() below.
-        if not bypass_quarantine and self.quarantine.is_quarantined(rec.pdf_url):
+        if not bypass_quarantine and self.quarantine.is_quarantined(rec.document_url):
             return "skip:quarantined"
         if rec.doc_id in self._ids:
             return "skip:already-indexed"
@@ -1148,14 +1155,14 @@ class Storage:
             # then never be downloaded. (This is exactly how a 155-row
             # placeholder pollution happened once.)
             self._ids.add(rec.doc_id)
-            self._urls.add(normalize_url(rec.pdf_url))
+            self._urls.add(normalize_url(rec.document_url))
             if rec.source_url:
                 self._source_urls.add(normalize_url(rec.source_url))
             return "dry-run:indexed"
 
         # Try the preferred URL, then any fallback copies (EconStor/SSRN/cached)
         # so a 403/dead preferred host doesn't lose the document. doc_id stays
-        # bound to rec.pdf_url, so dedup/identity are unaffected by which copy won.
+        # bound to rec.document_url, so dedup/identity are unaffected by which copy won.
         # Each candidate's bytes go through the content check (issue #21)
         # BEFORE the sha256 dedup below: an error page served with 200 must
         # never be stored, nor become the dedup owner that N other URLs
@@ -1168,7 +1175,7 @@ class Storage:
         mime = ""
         failures: list[tuple[str, str]] = []   # (url, short reason)
         rejected = False
-        for url in [rec.pdf_url, *(rec.alt_urls or [])]:
+        for url in [rec.document_url, *(rec.alt_urls or [])]:
             try:
                 body, served = self.fetcher.get_bytes(url)
             except Exception as exc:
@@ -1195,7 +1202,7 @@ class Storage:
                 raise ContentCheckFailed(
                     f"content check failed: {reasons} -- {n} candidate URL(s): "
                     + "; ".join(f"{u}: {r}" for u, r in failures))
-            raise RuntimeError(f"all {n} candidate URL(s) failed for {rec.pdf_url}")
+            raise RuntimeError(f"all {n} candidate URL(s) failed for {rec.document_url}")
         if mime:
             rec.mime_type = mime
         digest = hashlib.sha256(content).hexdigest()
@@ -1218,18 +1225,18 @@ class Storage:
             if self.cfg.html_to_pdf:
                 # Never point --no-sandbox Chrome at the private network
                 # (Config.render_blocked_networks): refused -> keep the HTML.
-                refused = render_allowed(rec.pdf_url, self.cfg,
+                refused = render_allowed(rec.document_url, self.cfg,
                                          resolver=self.render_resolver)
                 if refused:
                     self.render_refused += 1
-                    print(f"[storage] render refused for {rec.pdf_url}: {refused} "
+                    print(f"[storage] render refused for {rec.document_url}: {refused} "
                           f"(HTML kept as the artifact)", file=sys.stderr, flush=True)
             if self.cfg.html_to_pdf and not refused:
                 # Try to render a PDF sibling. If Chrome fails, the HTML still
                 # remains and becomes the canonical artifact.
                 pdf_rec = DocRecord(  # transient copy for path resolution
                     bank_code=rec.bank_code, doc_type=rec.doc_type, title=rec.title,
-                    pdf_url=rec.pdf_url, date=rec.date,
+                    document_url=rec.document_url, date=rec.date,
                     mime_type="application/pdf",
                 )
                 # doc_id is derived from immutable fields, so same as rec.doc_id.
@@ -1237,8 +1244,8 @@ class Storage:
                 try:
                     # Chrome re-fetches the live URL; share the host's rate
                     # budget so this render + the get_bytes above don't burst.
-                    self.fetcher.throttle(rec.pdf_url)
-                    self._render_pdf(rec.pdf_url, pdf_path)
+                    self.fetcher.throttle(rec.document_url)
+                    self._render_pdf(rec.document_url, pdf_path)
                     rec.mime_type = "application/pdf"
                     path = pdf_path
                 except RenderRefused as exc:
@@ -1263,11 +1270,11 @@ class Storage:
         self._ids.add(rec.doc_id)
         self._hash_docid[digest] = rec.doc_id
         self._bank_by_id[rec.doc_id] = rec.bank_code
-        self._urls.add(normalize_url(rec.pdf_url))
+        self._urls.add(normalize_url(rec.document_url))
         if rec.source_url:
             self._source_urls.add(normalize_url(rec.source_url))
         self._append(rec)
-        self.quarantine.record_success(rec.pdf_url)
+        self.quarantine.record_success(rec.document_url)
         return "saved"
 
     # -- reindex (no download) -------------------------------------------
@@ -1326,7 +1333,7 @@ class Storage:
         self._ids.add(rec.doc_id)
         self._hash_docid[digest] = rec.doc_id
         self._bank_by_id[rec.doc_id] = rec.bank_code
-        self._urls.add(normalize_url(rec.pdf_url))
+        self._urls.add(normalize_url(rec.document_url))
         if rec.source_url:
             self._source_urls.add(normalize_url(rec.source_url))
         self._append(rec)
@@ -1334,7 +1341,7 @@ class Storage:
         # release its quarantine too — otherwise the nightly sync would keep
         # skipping a URL the corpus now actually has (recover-quarantine
         # design §3: any success releases the URL).
-        self.quarantine.record_success(rec.pdf_url)
+        self.quarantine.record_success(rec.document_url)
         return "reindexed"
 
     def _record_download_error(self, rec: DocRecord, exc: Exception, label: str) -> None:
@@ -1342,22 +1349,24 @@ class Storage:
         failed download — stdout scrolls away, this file doesn't). Append-only,
         O_APPEND line writes; never read by the crawler itself. Feeds the
         quarantine with this run's night (`self._night`, fixed at
-        construction)."""
+        construction). The append holds the file's sidecar lock
+        (filelock.locked_sidecar) so a locked rewrite of the file
+        (`migrate-document-url --write`) never loses a line."""
         entry = {
             "ts": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
             "label": label,
             "bank_code": rec.bank_code,
             "doc_type": rec.doc_type.code,
             "title": rec.title,
-            "pdf_url": rec.pdf_url,
+            "document_url": rec.document_url,
             "alt_urls": rec.alt_urls or [],
             "source_url": rec.source_url,
             "error": f"{type(exc).__name__}: {exc}".replace("\n", " ")[:500],
         }
         path = self.cfg.data_dir / "download_errors.jsonl"
-        with path.open("a") as fh:
+        with _locked(path), path.open("a") as fh:
             fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        self.quarantine.record_failure(rec.pdf_url, night=self._night)
+        self.quarantine.record_failure(rec.document_url, night=self._night)
 
     def save_many(self, recs: Iterable[DocRecord], *, dry_run: bool = False,
                   progress_every: int = 100, label: str = "") -> dict[str, int]:

@@ -34,14 +34,14 @@ Fields useful for ingestion:
 | `doc_type` | **filter** + metadata (map to a readable label, cf. §5) |
 | `year`, `date` | **temporal filter** / facet. `date` is always a full `YYYY-MM-DD` or `null`; read it with `date_precision` (§1a) |
 | `title` | chunk title / display |
-| `pdf_url` | **citation** (official source) |
+| `document_url` | **citation** (official source) |
 | `language` | filter (all `en` today) |
 | `date_precision` | how much of `date` is real: `day`, `month` (`date` = first day of the month), `year` (`date` = 1 January). Key absent = written before precision was recorded; `null` = undated row, or a producer that stated nothing. See §1a |
 | `date_kind` | optional, policy core only: what `date` is — `meeting`, `publication` or `period` (§1a). Absent on every other row and on undated rows |
 | `date_source` | where the date comes from: `bank_site`, `pdf_meta`, `wayback`, `repec` (working papers), `sitemap_lastmod` (a sitemap's last-modified day, not a publication date); `null` on some newer undated rows |
 | `mime_type` | `application/pdf` or `text/html` (the HTML is the artifact when PDF rendering failed); rarely another official format |
 | `html_path` | the kept raw HTML next to a rendered PDF, when there is one |
-| `alt_urls` | other URLs of the same document (dedup). May include stamped duplicate URLs (other addresses that served the same bytes, possibly dead now): not necessarily valid citations — cite `pdf_url` |
+| `alt_urls` | other URLs of the same document (dedup). May include stamped duplicate URLs (other addresses that served the same bytes, possibly dead now): not necessarily valid citations — cite `document_url` |
 | `alt_source_urls` | optional, rare: other landing pages that pointed at the same bytes (dedup only) |
 | `doc_id` | stable primary key (ideal as a document `id` in the store) |
 | `sha256` | change detection / ingestion idempotence |
@@ -170,7 +170,7 @@ def doc_metadata(d: dict) -> dict:
         "date_precision": d.get("date_precision"),   # day | month | year | None (§1a)
         "date_kind": d.get("date_kind"),             # meeting | publication | period | None
         "title":  d.get("title", ""),
-        "source_url": d.get("pdf_url"),   # <- the official citation
+        "source_url": d.get("document_url"),   # <- the official citation
         "language":   d.get("language", "en"),
     }
 ```
@@ -257,7 +257,7 @@ Metadata filters make answers targeted and citable:
 ## 6. Citation
 
 With every answer, return the **official source**: `title` + `bank_name` + `date` + `source_url`
-(`pdf_url`). Write the date as precisely as `date_precision` allows ("June 2021" for a `month`,
+(`document_url`). Write the date as precisely as `date_precision` allows ("June 2021" for a `month`,
 "2016" for a `year`), never the stored first day. Example rendering:
 
 > *"…"* — Bank of England, *Andrew Bailey: Monetary policy and the outlook*, 2023-05-18.

@@ -28,21 +28,21 @@ class _Pages:
 
 def test_a_record_without_a_stated_precision_does_not_claim_a_day():
     rec = DocRecord(bank_code="ch", doc_type=DocType.A2, title="t",
-                    pdf_url="https://x/a.pdf", date=date(2020, 5, 1))
+                    document_url="https://x/a.pdf", date=date(2020, 5, 1))
     assert rec.date_precision is None
     assert rec.to_row()["date_precision"] is None
 
 
 def test_an_undated_row_never_carries_a_precision():
     rec = DocRecord(bank_code="ch", doc_type=DocType.A2, title="t",
-                    pdf_url="https://x/a.pdf", date=None, date_precision="day")
+                    document_url="https://x/a.pdf", date=None, date_precision="day")
     assert rec.to_row()["date_precision"] is None
     assert rec.to_row()["date"] is None
 
 
 def test_a_stated_precision_is_kept():
     rec = DocRecord(bank_code="ch", doc_type=DocType.A2, title="t",
-                    pdf_url="https://x/a.pdf", date=date(2020, 5, 1), date_precision="month")
+                    document_url="https://x/a.pdf", date=date(2020, 5, 1), date_precision="month")
     assert rec.to_row()["date_precision"] == "month"
 
 

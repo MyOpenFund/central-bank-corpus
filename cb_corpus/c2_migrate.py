@@ -15,10 +15,10 @@ upgrade:
              the WP v3 migration established), date_precision="day",
              date_source="bank_site".
     alt_urls -> the live foedb URL is added whenever it differs from the
-             row's own pdf_url (double-slash legacy rows, the one corrupted
+             row's own document_url (double-slash legacy rows, the one corrupted
              row, and the one known ~hash re-issue -- see below).
 
-``doc_id`` / ``sha256`` / ``local_path`` / ``pdf_url`` are never touched --
+``doc_id`` / ``sha256`` / ``local_path`` / ``document_url`` are never touched --
 same invariant as wp_migrate: the file on disk is the same file, this is a
 pure metadata correction with zero downloads.
 
@@ -37,6 +37,7 @@ from typing import Iterable, Optional
 
 from .config import Config
 from .http import Fetcher
+from .models import row_url
 from .sources.ecb_foedb import discover_ecb_interviews
 from .storage import Storage
 
@@ -95,7 +96,7 @@ def _norm_cmp(s: str) -> str:
 
 
 def _match_native(url: str, native_by_url: dict) -> tuple[Optional[object], str]:
-    """(native record or None, match_type) for a manifest C2 row's pdf_url."""
+    """(native record or None, match_type) for a manifest C2 row's document_url."""
     native = native_by_url.get(match_key_url(url))
     if native is not None:
         return native, "url"
@@ -121,7 +122,7 @@ def build_report(fetcher: Fetcher, manifest_rows: Iterable[dict]) -> tuple[dict,
     """
     native_by_url: dict[str, object] = {}
     for rec in discover_ecb_interviews(fetcher):
-        native_by_url.setdefault(match_key_url(rec.pdf_url), rec)
+        native_by_url.setdefault(match_key_url(rec.document_url), rec)
 
     summary = {"native_total": len(native_by_url), "manifest_total": 0,
               "matched": 0, "no_match": 0, "enriched": 0,
@@ -132,7 +133,7 @@ def build_report(fetcher: Fetcher, manifest_rows: Iterable[dict]) -> tuple[dict,
         if row.get("bank_code") != "ecb" or row.get("doc_type") != "C2":
             continue
         summary["manifest_total"] += 1
-        url = row.get("pdf_url") or ""
+        url = row_url(row) or ""
         native, match_type = _match_native(url, native_by_url)
 
         if native is None:
@@ -159,7 +160,7 @@ def build_report(fetcher: Fetcher, manifest_rows: Iterable[dict]) -> tuple[dict,
                         or row.get("date_precision") != "day"
                         or row.get("date_source") != "bank_site")
 
-        native_url = native.pdf_url
+        native_url = native.document_url
         alt_url_added = native_url if native_url != url else ""
 
         if title_diff_kept:
@@ -186,8 +187,8 @@ def apply_change(row: dict, change: dict) -> None:
     """Apply one proposed `change` to a manifest `row`, in place.
 
     Metadata only: title (possibly unchanged), date + precision/source, and
-    the native URL registered in alt_urls when it differs from pdf_url.
-    doc_id / sha256 / local_path / pdf_url are deliberately left untouched.
+    the native URL registered in alt_urls when it differs from document_url.
+    doc_id / sha256 / local_path / document_url are deliberately left untouched.
     """
     row["title"] = change["new_title"]
     if change.get("new_date"):
@@ -243,6 +244,6 @@ def run_c2_migrate(cfg: Config, fetcher: Fetcher, write: bool = False) -> dict:
                 updates[row["doc_id"]] = row
         n = storage.rewrite_manifest(updates)
         print(f"C2-MIGRATED {n} row(s) in place "
-              f"(doc_id/pdf_url/sha256/local_path untouched)", file=sys.stderr)
+              f"(doc_id/document_url/sha256/local_path untouched)", file=sys.stderr)
         summary["applied"] = n
     return summary

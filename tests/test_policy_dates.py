@@ -26,13 +26,13 @@ FED = "https://www.federalreserve.gov"
 BOC = "https://www.bankofcanada.ca"
 
 
-def row(bank, dt, title, pdf_url, stored, source_url="", **extra):
+def row(bank, dt, title, document_url, stored, source_url="", **extra):
     """A manifest row as the corpus holds them; `stored` is its date today."""
-    r = {"bank_code": bank, "doc_type": dt, "title": title, "pdf_url": pdf_url,
+    r = {"bank_code": bank, "doc_type": dt, "title": title, "document_url": document_url,
          "source_url": source_url, "date": stored, "language": "en",
          "provenance": "bank_site", "mime_type": "application/pdf",
-         "sha256": "sha-" + pdf_url[-12:], "local_path": "/data/raw/" + pdf_url[-12:],
-         "doc_id": f"{bank}-{dt}-{abs(hash(pdf_url)) % 10**8}",
+         "sha256": "sha-" + document_url[-12:], "local_path": "/data/raw/" + document_url[-12:],
+         "doc_id": f"{bank}-{dt}-{abs(hash(document_url)) % 10**8}",
          "year": int(stored[:4]) if stored else None}
     r.update(extra)
     return r
@@ -58,7 +58,7 @@ def test_default_scope_is_the_policy_core():
     assert POLICY_DOC_TYPES == ("A1", "A2", "A3", "B1", "E1", "F1")
 
 
-@pytest.mark.parametrize("bank,dt,title,pdf_url,source_url,expected", [
+@pytest.mark.parametrize("bank,dt,title,document_url,source_url,expected", [
     # Federal Reserve: the 8 digits of the document URL
     ("us", "A2", "FOMC statement 2018-08-01",
      f"{FED}/newsevents/pressreleases/monetary20180801a.htm", "", ("2018-08-01", "day")),
@@ -137,28 +137,28 @@ def test_default_scope_is_the_policy_core():
      "monetary-policy-report-november-2025.pdf",
      f"{BOE}/monetary-policy-report/2025/november-2025", ("2025-11-01", "month")),
 ])
-def test_infer_policy_date(bank, dt, title, pdf_url, source_url, expected):
-    inf = infer_policy_date(bank, dt, title=title, pdf_url=pdf_url, source_url=source_url)
+def test_infer_policy_date(bank, dt, title, document_url, source_url, expected):
+    inf = infer_policy_date(bank, dt, title=title, document_url=document_url, source_url=source_url)
     assert inf.status == "dated", inf
     assert (inf.match.date.isoformat(), inf.match.precision) == expected
     assert inf.rule and inf.match.evidence
 
 
 def test_infer_outside_the_table_has_no_rule():
-    assert infer_policy_date("gb", "D1", title="Paper, 3 May 2020", pdf_url="x").status == "no-rule"
-    assert infer_policy_date("ch", "A3", title="3 May 2020", pdf_url="x").status == "no-rule"
+    assert infer_policy_date("gb", "D1", title="Paper, 3 May 2020", document_url="x").status == "no-rule"
+    assert infer_policy_date("ch", "A3", title="3 May 2020", document_url="x").status == "no-rule"
 
 
 def test_infer_reports_an_index_page_instead_of_dating_it():
     for url in (f"{BOC}/publications/mpr/", f"{BOC}/content_type/publications/mpr/",
                 f"{BOC}/publications/mpr/qualitative-research-on-the-mpr/"):
-        assert infer_policy_date("ca", "E1", title="", pdf_url=url).status == "not-a-report"
+        assert infer_policy_date("ca", "E1", title="", document_url=url).status == "not-a-report"
 
 
 def test_infer_flags_a_title_that_disagrees_with_its_url():
     inf = infer_policy_date(
         "gb", "A3", title="Minutes of the MPC Meeting held on 5 and 6 June 2013",
-        pdf_url=f"{BOE}/-/media/boe/files/minutes/2013/minutes-july-2013.pdf",
+        document_url=f"{BOE}/-/media/boe/files/minutes/2013/minutes-july-2013.pdf",
         source_url=f"{BOE}/minutes/2013/monetary-policy-committee-july-2013")
     assert inf.status == "conflict"
     assert "June 2013" in inf.detail and "july-2013" in inf.detail
@@ -168,7 +168,7 @@ def test_infer_title_day_agrees_with_a_url_that_only_knows_the_month():
     inf = infer_policy_date(
         "gb", "A3", title="Minutes of the special Monetary Policy Committee meeting "
         "ending on 10 March 2020",
-        pdf_url=f"{BOE}/-/media/boe/files/monetary-policy-summary-and-minutes/2020/"
+        document_url=f"{BOE}/-/media/boe/files/monetary-policy-summary-and-minutes/2020/"
         "march13-2020.pdf",
         source_url=f"{BOE}/monetary-policy-summary-and-minutes/2020/13march-2020")
     assert inf.status == "dated" and inf.match.date == date(2020, 3, 10)
@@ -176,7 +176,7 @@ def test_infer_title_day_agrees_with_a_url_that_only_knows_the_month():
 
 def test_infer_without_evidence():
     inf = infer_policy_date("gb", "A3", title="Bank Rate maintained at 0.5%",
-                            pdf_url=f"{BOE}/x.pdf", source_url=f"{BOE}/y")
+                            document_url=f"{BOE}/x.pdf", source_url=f"{BOE}/y")
     assert inf.status == "no-evidence"
 
 
@@ -538,7 +538,7 @@ def test_plan_only_ever_writes_date_keys():
     for r in (gb_minutes("Minutes of the MPC Meeting held on 3 and 4 February 1999"),
               row("ca", "E1", "", f"{BOC}/publications/mpr/", None, date_precision="day")):
         assert set(plan_row(r).updates) <= set(DATE_KEYS)
-    assert not {"doc_id", "sha256", "local_path", "pdf_url", "title"} & set(DATE_KEYS)
+    assert not {"doc_id", "sha256", "local_path", "document_url", "title"} & set(DATE_KEYS)
 
 
 # ---- the command on a manifest ----------------------------------------
@@ -588,7 +588,7 @@ def test_dry_run_writes_a_csv_and_no_manifest(tmp_path):
     lines = list(csv.DictReader(out.open()))
     assert list(lines[0]) == ["doc_id", "bank", "doc_type", "old_date", "old_precision",
                               "new_date", "new_precision", "kind", "action", "rule",
-                              "evidence", "fields_changed", "note", "title", "pdf_url"]
+                              "evidence", "fields_changed", "note", "title", "document_url"]
     assert len(lines) == 6                       # every row in scope, nothing else
     assert {ln["bank"] for ln in lines} == {"gb", "us", "ca"}
     assert {ln["doc_type"] for ln in lines} <= set(POLICY_DOC_TYPES)
@@ -628,7 +628,7 @@ def test_write_changes_only_date_keys_of_rows_in_scope_and_is_idempotent(tmp_pat
         diff = {k for k in set(old) | set(new) if old.get(k, "∅") != new.get(k, "∅")}
         assert diff <= set(DATE_KEYS), (did, diff)
         assert [k for k in new if k not in DATE_KEYS] == [k for k in old if k not in DATE_KEYS]
-        for k in ("doc_id", "sha256", "local_path", "pdf_url", "title", "source_url"):
+        for k in ("doc_id", "sha256", "local_path", "document_url", "title", "source_url"):
             assert new[k] == old[k]
         touched += bool(diff)
     assert touched == 5

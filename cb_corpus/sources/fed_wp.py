@@ -117,7 +117,7 @@ def parse_year_links(html: str, series: str, base_url: str = FED
 
 
 def parse_landing(html: str, base_url: str = FED) -> tuple[Optional[date], Optional[str]]:
-    """(citation_publication_date, pdf_url) from a paper's landing page.
+    """(citation_publication_date, document_url) from a paper's landing page.
 
     Prefers a .pdf over a legacy .ps. The PDF URL is read from the page (modern
     files/ or legacy pubs/), never derived.
@@ -211,7 +211,7 @@ def discover_fed_wp(fetcher: Fetcher, since: Optional[date] = None,
                     continue
                 yield DocRecord(
                     bank_code="us", doc_type=DocType.D1, title=title,
-                    pdf_url=pdf, source_url=landing, date=d, provenance="bank_site",
+                    document_url=pdf, source_url=landing, date=d, provenance="bank_site",
                     mime_type="application/pdf" if pdf.lower().endswith(".pdf") else "",
                     date_precision=prec, date_source="bank_site",
                 )

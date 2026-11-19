@@ -116,7 +116,7 @@ def ecb_wp_number(url: str) -> Optional[tuple[DocType, int]]:
     """(doc_type, number) for an ECB WP/OP PDF URL, else None.
 
     Used both to read a native foedb URL and to extract the join key from an
-    existing manifest ``pdf_url`` during migration.
+    existing manifest ``document_url`` during migration.
     """
     ms = _SERIES_RE.search(url or "")
     if not ms:
@@ -137,7 +137,7 @@ def repec_ecb_number(handle_or_url: str) -> Optional[tuple[DocType, int]]:
 
 
 def wp_op_from_record(rec: dict) -> Optional[tuple[DocType, int, str, Optional[date], str]]:
-    """Extract (doc_type, number, title, date, pdf_url) if `rec` is a WP/OP, else None.
+    """Extract (doc_type, number, title, date, document_url) if `rec` is a WP/OP, else None.
 
     Scans ``documentTypes`` first (the paper's own files), then ``childrenPublication``
     (language/variant children) for a scpwps/scpops PDF, preferring the English
@@ -162,11 +162,11 @@ def _record_to_doc(rec: dict) -> Optional[DocRecord]:
     got = wp_op_from_record(rec)
     if got is None:
         return None
-    doc_type, number, title, d, pdf_url = got
+    doc_type, number, title, d, document_url = got
     return DocRecord(
         bank_code="ecb", doc_type=doc_type,
         title=title or f"ECB {doc_type.name} {number}",
-        pdf_url=pdf_url, source_url=FOEDB_DB, date=d,
+        document_url=document_url, source_url=FOEDB_DB, date=d,
         provenance="bank_site", mime_type="application/pdf",
         # A missing/garbage pub_timestamp gives no date: then no precision and
         # no date source either (issue #23 c) -- the labels say what the source
@@ -183,7 +183,7 @@ def _interview_to_doc(title: str, d: Optional[date], url: str) -> DocRecord:
     return DocRecord(
         bank_code="ecb", doc_type=DocType.C2,
         title=title or f"ECB interview {d or ''}".strip(),
-        pdf_url=url, source_url=FOEDB_DB, date=d,
+        document_url=url, source_url=FOEDB_DB, date=d,
         provenance="bank_site", mime_type="text/html",
         date_precision="day" if d else None,
         date_source="bank_site" if d else None,

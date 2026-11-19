@@ -105,7 +105,7 @@ def _legacy_row_date(row) -> Optional[date]:
 def parse_legacy_year(html: str, base_url: str = BDF_LEGACY
                       ) -> list[tuple[Optional[date], str, int, str, str]]:
     """From a BdF legacy year-listing page, return (date, precision, number,
-    title, pdf_url) per paper.
+    title, document_url) per paper.
 
     Content-based: each ``div.node-publication`` block is one paper. A row
     missing its number, date, or PDF link is malformed and is skipped with a
@@ -129,7 +129,7 @@ def parse_legacy_year(html: str, base_url: str = BDF_LEGACY
             print(f"WARNING [bdf-legacy] n°{number} has no PDF link, skipped: {base_url}",
                   file=sys.stderr, flush=True)
             continue
-        pdf_url = urljoin(base_url, pdf_a["href"])
+        document_url = urljoin(base_url, pdf_a["href"])
 
         d = _legacy_row_date(row)
         if d is None:
@@ -142,7 +142,7 @@ def parse_legacy_year(html: str, base_url: str = BDF_LEGACY
         if not title:
             title = f"Documents de travail n°{number}"
 
-        parsed.append((d, number, title, pdf_url))
+        parsed.append((d, number, title, document_url))
 
     if not parsed:
         return []
@@ -151,9 +151,9 @@ def parse_legacy_year(html: str, base_url: str = BDF_LEGACY
     page_is_day = any(d.day != 1 for d, *_ in parsed)
     prec = "day" if page_is_day else "month"
     out: list[tuple[Optional[date], str, int, str, str]] = []
-    for d, number, title, pdf_url in parsed:
+    for d, number, title, document_url in parsed:
         dd = d if page_is_day else date(d.year, d.month, 1)
-        out.append((dd, prec, number, title, pdf_url))
+        out.append((dd, prec, number, title, document_url))
     return out
 
 
@@ -179,10 +179,10 @@ def _iter_legacy(fetcher: Fetcher, years: Optional[set] = None
             print(f"WARNING [bdf-legacy] year {y} fetch failed: {exc}",
                   file=sys.stderr, flush=True)
             continue
-        for d, prec, number, title, pdf_url in parse_legacy_year(html, url):
+        for d, prec, number, title, document_url in parse_legacy_year(html, url):
             yield number, DocRecord(
                 bank_code="fr", doc_type=DocType.D1, title=title,
-                pdf_url=pdf_url, source_url=url, date=d, provenance="bank_site",
+                document_url=document_url, source_url=url, date=d, provenance="bank_site",
                 mime_type="application/pdf",
                 date_precision=prec, date_source="bank_site",
             )
@@ -257,7 +257,7 @@ def _new_wp_number(text: str) -> Optional[int]:
 
 def parse_new_detail(html: str) -> tuple[Optional[int], list[str], Optional[str]]:
     """From a new-site working-paper detail page, return (number, authors,
-    pdf_url).
+    document_url).
 
     ``number`` is regex-extracted from the ``og:description`` meta first,
     falling back to the visible description paragraph
@@ -266,7 +266,7 @@ def parse_new_detail(html: str) -> tuple[Optional[int], list[str], Optional[str]
     guessed from the URL or card position). ``authors`` come from the
     ``.author-names-wrapper`` spans (comma suffix stripped); parsed for
     completeness but not persisted onto ``DocRecord`` (no author field
-    today). ``pdf_url`` is ALWAYS the scraped ``.pdf`` download link, never
+    today). ``document_url`` is ALWAYS the scraped ``.pdf`` download link, never
     derived from the number.
     """
     soup = BeautifulSoup(html, "lxml")
@@ -290,9 +290,9 @@ def parse_new_detail(html: str) -> tuple[Optional[int], list[str], Optional[str]
 
     pdf_a = next((a for a in soup.find_all("a", href=True)
                   if a["href"].lower().endswith(".pdf")), None)
-    pdf_url = urljoin(BDF_NEW, pdf_a["href"]) if pdf_a is not None else None
+    document_url = urljoin(BDF_NEW, pdf_a["href"]) if pdf_a is not None else None
 
-    return number, authors, pdf_url
+    return number, authors, document_url
 
 
 def _iter_new(fetcher: Fetcher, since: Optional[date] = None,
@@ -336,18 +336,18 @@ def _iter_new(fetcher: Fetcher, since: Optional[date] = None,
                 print(f"WARNING [bdf-new] detail page fetch failed, skipped: {detail_url}",
                       file=sys.stderr, flush=True)
                 continue
-            number, _authors, pdf_url = parse_new_detail(detail_html)
+            number, _authors, document_url = parse_new_detail(detail_html)
             if number is None:
                 print(f"WARNING [bdf-new] no WP number in og:description or body, "
                       f"skipped: {detail_url}", file=sys.stderr, flush=True)
                 continue
-            if pdf_url is None:
+            if document_url is None:
                 print(f"WARNING [bdf-new] n°{number} has no PDF link, skipped: {detail_url}",
                       file=sys.stderr, flush=True)
                 continue
             yield number, DocRecord(
                 bank_code="fr", doc_type=DocType.D1, title=title,
-                pdf_url=pdf_url, source_url=detail_url, date=d, provenance="bank_site",
+                document_url=document_url, source_url=detail_url, date=d, provenance="bank_site",
                 mime_type="application/pdf",
                 date_precision="day", date_source="bank_site",
             )
@@ -404,9 +404,9 @@ def fr_wp_number(url: str) -> Optional[int]:
     """WP number from the basename of a BdF PDF URL, or a RePEc IDEAS handle
     URL, else None.
 
-    Both the v2 manifest's pdf_url (downloaded via RePEc, e.g.
+    Both the v2 manifest's document_url (downloaded via RePEc, e.g.
     ``.../working-paper_155_2006.pdf`` or ``.../WP1004_0.pdf``) and this
-    module's own natively-scraped pdf_url (e.g.
+    module's own natively-scraped document_url (e.g.
     ``.../document-de-travail_198_2008.pdf``, ``.../wp660_0.pdf``,
     ``.../document-de-travail-661_2018-01_0.pdf``) carry the WP number as
     the FIRST digit run in the filename -- prefix text (French/English,

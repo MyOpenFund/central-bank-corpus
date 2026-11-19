@@ -3,7 +3,7 @@ and `--seed-quarantine` (cb_corpus/recover.py, cb_corpus/quarantine.py).
 
 No network in this suite: `_refresh_metadata` is monkeypatched to a stub so
 candidate rows never actually reach the fake IDEAS fetch. Fixtures use
-adversarial shapes on purpose: a candidate whose dead_pdf_url matches nothing
+adversarial shapes on purpose: a candidate whose dead_document_url matches nothing
 in the audit trail, a too-small "PDF" (truncated/HTML-error-page-as-pdf), and
 a candidate whose bytes hash-match a document already in the corpus.
 """
@@ -62,12 +62,12 @@ def _write_inventory(cfg: Config, entries: list[dict]) -> None:
             fh.write(json.dumps(e, ensure_ascii=False) + "\n")
 
 
-def _entry(bank="fr", pdf_url="https://www.banque-france.fr/dt986.pdf",
+def _entry(bank="fr", document_url="https://www.banque-france.fr/dt986.pdf",
           title="Document de travail 986", source_url="", doc_type="D1",
           alt_urls=None, ts="2026-01-01T00:00:00+00:00"):
     return {
         "ts": ts, "label": f"{bank}:{doc_type}", "bank_code": bank,
-        "doc_type": doc_type, "title": title, "pdf_url": pdf_url,
+        "doc_type": doc_type, "title": title, "document_url": document_url,
         "alt_urls": alt_urls or [], "source_url": source_url,
         "error": "HTTPError: 403",
     }
@@ -99,16 +99,16 @@ def _csv_rows(path):
 # provenance rules (spec decision 2)
 # ---------------------------------------------------------------------------
 
-def test_wayback_provenance_dead_url_stays_pdf_url(tmp_path, monkeypatch):
+def test_wayback_provenance_dead_url_stays_document_url(tmp_path, monkeypatch):
     from cb_corpus.recover import run_recover_downloads
 
     cfg = Config(data_dir=tmp_path)
     dead_url = "https://www.banque-france.fr/dt986.pdf"
     snapshot_url = "https://web.archive.org/web/20250101000000id_/https://www.banque-france.fr/dt986.pdf"
-    _write_inventory(cfg, [_entry(bank="fr", pdf_url=dead_url)])
+    _write_inventory(cfg, [_entry(bank="fr", document_url=dead_url)])
     local_pdf = _make_local_pdf(tmp_path, "wayback.pdf")
     cand_path = _write_candidates(tmp_path, [{
-        "dead_pdf_url": dead_url, "file_path": str(local_pdf),
+        "dead_document_url": dead_url, "file_path": str(local_pdf),
         "recovered_from": "wayback", "final_url": snapshot_url,
     }])
     _stub_refresh_metadata(monkeypatch, title="WP 986", rec_date=None,
@@ -122,7 +122,7 @@ def test_wayback_provenance_dead_url_stays_pdf_url(tmp_path, monkeypatch):
     rows = list(iter_manifest_rows(cfg, "fr"))
     assert len(rows) == 1
     row = rows[0]
-    assert row["pdf_url"] == dead_url               # official (dead) URL preserved as identity
+    assert row["document_url"] == dead_url               # official (dead) URL preserved as identity
     assert row["alt_urls"] == [snapshot_url]         # snapshot as the fallback
     assert row["provenance"] == "wayback"
     assert row["date_source"] == "wayback"           # no repec date -> honestly wayback
@@ -130,7 +130,7 @@ def test_wayback_provenance_dead_url_stays_pdf_url(tmp_path, monkeypatch):
 
     # File landed exactly at Storage.target_path(rec).
     rec = DocRecord(bank_code="fr", doc_type=DocType.D1, title="WP 986",
-                    pdf_url=dead_url, mime_type="application/pdf")
+                    document_url=dead_url, mime_type="application/pdf")
     storage = Storage(cfg, _NullFetcher())
     assert Path(row["local_path"]) == storage.target_path(rec)
 
@@ -138,16 +138,16 @@ def test_wayback_provenance_dead_url_stays_pdf_url(tmp_path, monkeypatch):
     assert csv_rows[0]["action"] == "recovered"
 
 
-def test_bank_site_provenance_final_url_becomes_pdf_url(tmp_path, monkeypatch):
+def test_bank_site_provenance_final_url_becomes_document_url(tmp_path, monkeypatch):
     from cb_corpus.recover import run_recover_downloads
 
     cfg = Config(data_dir=tmp_path)
     dead_url = "https://www.banque-france.fr/old-path/dt987.pdf"
     final_url = "https://www.banque-france.fr/new-path/dt987.pdf"
-    _write_inventory(cfg, [_entry(bank="fr", pdf_url=dead_url)])
+    _write_inventory(cfg, [_entry(bank="fr", document_url=dead_url)])
     local_pdf = _make_local_pdf(tmp_path, "banksite.pdf")
     cand_path = _write_candidates(tmp_path, [{
-        "dead_pdf_url": dead_url, "file_path": str(local_pdf),
+        "dead_document_url": dead_url, "file_path": str(local_pdf),
         "recovered_from": "bank_site", "final_url": final_url,
     }])
     _stub_refresh_metadata(monkeypatch, title="WP 987")
@@ -160,27 +160,27 @@ def test_bank_site_provenance_final_url_becomes_pdf_url(tmp_path, monkeypatch):
     rows = list(iter_manifest_rows(cfg, "fr"))
     assert len(rows) == 1
     row = rows[0]
-    assert row["pdf_url"] == final_url               # live URL points at reality
+    assert row["document_url"] == final_url               # live URL points at reality
     assert row["alt_urls"] == [dead_url]              # dead URL kept for history
     assert row["provenance"] == "bank_site"
     assert row["date_source"] == "bank_site"          # DocRecord default, untouched
 
     rec = DocRecord(bank_code="fr", doc_type=DocType.D1, title="WP 987",
-                    pdf_url=final_url, mime_type="application/pdf")
+                    document_url=final_url, mime_type="application/pdf")
     storage = Storage(cfg, _NullFetcher())
     assert Path(row["local_path"]) == storage.target_path(rec)
 
 
-def test_mirror_provenance_dead_url_stays_pdf_url(tmp_path, monkeypatch):
+def test_mirror_provenance_dead_url_stays_document_url(tmp_path, monkeypatch):
     from cb_corpus.recover import run_recover_downloads
 
     cfg = Config(data_dir=tmp_path)
     dead_url = "https://www.banque-france.fr/dt988.pdf"
     mirror_url = "https://www.econstor.eu/bitstream/dt988.pdf"
-    _write_inventory(cfg, [_entry(bank="fr", pdf_url=dead_url)])
+    _write_inventory(cfg, [_entry(bank="fr", document_url=dead_url)])
     local_pdf = _make_local_pdf(tmp_path, "mirror.pdf")
     cand_path = _write_candidates(tmp_path, [{
-        "dead_pdf_url": dead_url, "file_path": str(local_pdf),
+        "dead_document_url": dead_url, "file_path": str(local_pdf),
         "recovered_from": "mirror", "final_url": mirror_url,
     }])
     _stub_refresh_metadata(monkeypatch, title="WP 988")
@@ -193,12 +193,12 @@ def test_mirror_provenance_dead_url_stays_pdf_url(tmp_path, monkeypatch):
     rows = list(iter_manifest_rows(cfg, "fr"))
     assert len(rows) == 1
     row = rows[0]
-    assert row["pdf_url"] == dead_url                 # official URL is the WP's identity
+    assert row["document_url"] == dead_url                 # official URL is the WP's identity
     assert row["alt_urls"] == [mirror_url]
     assert row["provenance"] == "mirror"
 
     rec = DocRecord(bank_code="fr", doc_type=DocType.D1, title="WP 988",
-                    pdf_url=dead_url, mime_type="application/pdf")
+                    document_url=dead_url, mime_type="application/pdf")
     storage = Storage(cfg, _NullFetcher())
     assert Path(row["local_path"]) == storage.target_path(rec)
 
@@ -212,11 +212,11 @@ def test_too_small_file_is_bad_file_never_registered(tmp_path, monkeypatch):
 
     cfg = Config(data_dir=tmp_path)
     dead_url = "https://www.banque-france.fr/truncated.pdf"
-    _write_inventory(cfg, [_entry(bank="fr", pdf_url=dead_url)])
+    _write_inventory(cfg, [_entry(bank="fr", document_url=dead_url)])
     tiny = tmp_path / "tiny.pdf"
     tiny.write_bytes(b"%PDF-1.4 too small")   # well under 20KB
     cand_path = _write_candidates(tmp_path, [{
-        "dead_pdf_url": dead_url, "file_path": str(tiny),
+        "dead_document_url": dead_url, "file_path": str(tiny),
         "recovered_from": "wayback", "final_url": "https://web.archive.org/x",
     }])
     _stub_refresh_metadata(monkeypatch)
@@ -235,11 +235,11 @@ def test_missing_pdf_magic_is_bad_file(tmp_path, monkeypatch):
 
     cfg = Config(data_dir=tmp_path)
     dead_url = "https://www.banque-france.fr/notreally.pdf"
-    _write_inventory(cfg, [_entry(bank="fr", pdf_url=dead_url)])
+    _write_inventory(cfg, [_entry(bank="fr", document_url=dead_url)])
     fake = tmp_path / "fake.pdf"
     fake.write_bytes(b"<html>404 not found</html>" + b"x" * (25 * 1024))  # big but no magic
     cand_path = _write_candidates(tmp_path, [{
-        "dead_pdf_url": dead_url, "file_path": str(fake),
+        "dead_document_url": dead_url, "file_path": str(fake),
         "recovered_from": "mirror", "final_url": "https://econstor.eu/x.pdf",
     }])
     _stub_refresh_metadata(monkeypatch)
@@ -255,10 +255,10 @@ def test_unknown_dead_url_is_unknown_entry(tmp_path, monkeypatch):
     from cb_corpus.recover import run_recover_downloads
 
     cfg = Config(data_dir=tmp_path)
-    _write_inventory(cfg, [_entry(bank="fr", pdf_url="https://www.banque-france.fr/known.pdf")])
+    _write_inventory(cfg, [_entry(bank="fr", document_url="https://www.banque-france.fr/known.pdf")])
     local_pdf = _make_local_pdf(tmp_path)
     cand_path = _write_candidates(tmp_path, [{
-        "dead_pdf_url": "https://www.banque-france.fr/never-in-inventory.pdf",
+        "dead_document_url": "https://www.banque-france.fr/never-in-inventory.pdf",
         "file_path": str(local_pdf), "recovered_from": "wayback",
         "final_url": "https://web.archive.org/x",
     }])
@@ -271,7 +271,7 @@ def test_unknown_dead_url_is_unknown_entry(tmp_path, monkeypatch):
     assert list(iter_manifest_rows(cfg, "fr")) == []
     csv_rows = _csv_rows(tmp_path / "r.csv")
     assert csv_rows[0]["action"] == "unknown-entry"
-    assert csv_rows[0]["pdf_url"] == "https://www.banque-france.fr/never-in-inventory.pdf"
+    assert csv_rows[0]["document_url"] == "https://www.banque-france.fr/never-in-inventory.pdf"
 
 
 # ---------------------------------------------------------------------------
@@ -292,7 +292,7 @@ def test_duplicate_content_is_deduped_and_orphan_file_removed(tmp_path, monkeypa
     # Pre-seed the corpus with this exact content under a different, live URL.
     seed_storage = Storage(cfg, _NullFetcher())
     seed_rec = DocRecord(bank_code="fr", doc_type=DocType.D1, title="Existing copy",
-                        pdf_url="https://www.banque-france.fr/existing.pdf",
+                        document_url="https://www.banque-france.fr/existing.pdf",
                         date=date(2020, 1, 1), mime_type="application/pdf")
     seed_path = cfg.data_dir / "seed-source.pdf"
     seed_path.write_bytes(dup_bytes)
@@ -300,7 +300,7 @@ def test_duplicate_content_is_deduped_and_orphan_file_removed(tmp_path, monkeypa
 
     dead_url = "https://www.banque-france.fr/dt-alias.pdf"
     final_url = "https://web.archive.org/alias"
-    _write_inventory(cfg, [_entry(bank="fr", pdf_url=dead_url, title="Alias copy")])
+    _write_inventory(cfg, [_entry(bank="fr", document_url=dead_url, title="Alias copy")])
     q_path = cfg.data_dir / "download_quarantine.jsonl"
     q_path.parent.mkdir(parents=True, exist_ok=True)
     q_path.write_text(json.dumps({"url": dead_url,
@@ -309,7 +309,7 @@ def test_duplicate_content_is_deduped_and_orphan_file_removed(tmp_path, monkeypa
     local_pdf = tmp_path / "alias.pdf"
     local_pdf.write_bytes(dup_bytes)
     cand_path = _write_candidates(tmp_path, [{
-        "dead_pdf_url": dead_url, "file_path": str(local_pdf),
+        "dead_document_url": dead_url, "file_path": str(local_pdf),
         "recovered_from": "wayback", "final_url": final_url,
     }])
     _stub_refresh_metadata(monkeypatch, title="Alias copy")
@@ -329,7 +329,7 @@ def test_duplicate_content_is_deduped_and_orphan_file_removed(tmp_path, monkeypa
     # No orphan bytes: the copy made into the corpus layout for the alias
     # doc_id must have been removed again since it was never indexed.
     rec = DocRecord(bank_code="fr", doc_type=DocType.D1, title="Alias copy",
-                    pdf_url=dead_url, mime_type="application/pdf")
+                    document_url=dead_url, mime_type="application/pdf")
     storage = Storage(cfg, _NullFetcher())
     assert not storage.target_path(rec).exists()
 
@@ -357,7 +357,7 @@ def test_candidates_duplicate_stamp_order_dead_then_final(tmp_path, monkeypatch)
 
     seed_storage = Storage(cfg, _NullFetcher())
     seed_rec = DocRecord(bank_code="fr", doc_type=DocType.D1, title="Existing copy",
-                        pdf_url="https://www.banque-france.fr/existing-order.pdf",
+                        document_url="https://www.banque-france.fr/existing-order.pdf",
                         date=date(2020, 1, 1), mime_type="application/pdf")
     seed_path = cfg.data_dir / "seed-source-order.pdf"
     seed_path.write_bytes(dup_bytes)
@@ -365,11 +365,11 @@ def test_candidates_duplicate_stamp_order_dead_then_final(tmp_path, monkeypatch)
 
     dead_url = "https://www.banque-france.fr/dt-alias-order.pdf"
     final_url = "https://web.archive.org/alias-order"
-    _write_inventory(cfg, [_entry(bank="fr", pdf_url=dead_url, title="Alias copy order")])
+    _write_inventory(cfg, [_entry(bank="fr", document_url=dead_url, title="Alias copy order")])
     local_pdf = tmp_path / "alias-order.pdf"
     local_pdf.write_bytes(dup_bytes)
     cand_path = _write_candidates(tmp_path, [{
-        "dead_pdf_url": dead_url, "file_path": str(local_pdf),
+        "dead_document_url": dead_url, "file_path": str(local_pdf),
         "recovered_from": "wayback", "final_url": final_url,
     }])
     _stub_refresh_metadata(monkeypatch, title="Alias copy order")
@@ -393,10 +393,10 @@ def test_dry_run_writes_nothing(tmp_path, monkeypatch):
 
     cfg = Config(data_dir=tmp_path)
     dead_url = "https://www.banque-france.fr/dryrun.pdf"
-    _write_inventory(cfg, [_entry(bank="fr", pdf_url=dead_url)])
+    _write_inventory(cfg, [_entry(bank="fr", document_url=dead_url)])
     local_pdf = _make_local_pdf(tmp_path)
     cand_path = _write_candidates(tmp_path, [{
-        "dead_pdf_url": dead_url, "file_path": str(local_pdf),
+        "dead_document_url": dead_url, "file_path": str(local_pdf),
         "recovered_from": "wayback", "final_url": "https://web.archive.org/dryrun",
     }])
     _stub_refresh_metadata(monkeypatch, title="Dry run WP")
@@ -409,7 +409,7 @@ def test_dry_run_writes_nothing(tmp_path, monkeypatch):
     assert list(iter_manifest_rows(cfg, "fr")) == []
 
     rec = DocRecord(bank_code="fr", doc_type=DocType.D1, title="Dry run WP",
-                    pdf_url=dead_url, mime_type="application/pdf")
+                    document_url=dead_url, mime_type="application/pdf")
     storage = Storage(cfg, _NullFetcher())
     assert not storage.target_path(rec).exists()
 
@@ -418,8 +418,8 @@ def test_dry_run_writes_nothing(tmp_path, monkeypatch):
 
 
 def test_candidates_converged_dry_run_does_not_release_quarantine(tmp_path, monkeypatch):
-    """A row already indexed under the entry's own `pdf_url` (wayback
-    provenance keeps the candidate's `pdf_url == dead_url`) makes the entry
+    """A row already indexed under the entry's own `document_url` (wayback
+    provenance keeps the candidate's `document_url == dead_url`) makes the entry
     `_is_converged` from the start -- the short-circuit fires before the
     probe is even reached, in EITHER mode (dry-run or --download). The
     dry-run contract must still hold: no quarantine release, no manifest
@@ -428,15 +428,15 @@ def test_candidates_converged_dry_run_does_not_release_quarantine(tmp_path, monk
 
     cfg = Config(data_dir=tmp_path)
     dead_url = "https://www.banque-france.fr/probe-dup.pdf"
-    _write_inventory(cfg, [_entry(bank="fr", pdf_url=dead_url, title="Probe dup WP")])
+    _write_inventory(cfg, [_entry(bank="fr", document_url=dead_url, title="Probe dup WP")])
 
     # Pre-seed a row already indexed under the EXACT identity the candidate's
-    # own doc_id resolves to (wayback provenance keeps pdf_url == dead_url)
+    # own doc_id resolves to (wayback provenance keeps document_url == dead_url)
     # -- makes the entry `_is_converged` honestly, before ever reaching the
     # probe.
     seed_storage = Storage(cfg, _NullFetcher())
     seed_rec = DocRecord(bank_code="fr", doc_type=DocType.D1, title="Already here",
-                        pdf_url=dead_url, date=date(2020, 1, 1),
+                        document_url=dead_url, date=date(2020, 1, 1),
                         mime_type="application/pdf")
     seed_path = tmp_path / "seed.pdf"
     seed_path.write_bytes(pdf_body(b"%PDF-1.4 " + b"z" * (25 * 1024)))
@@ -449,7 +449,7 @@ def test_candidates_converged_dry_run_does_not_release_quarantine(tmp_path, monk
 
     local_pdf = _make_local_pdf(tmp_path, "probe-dup-local.pdf")
     cand_path = _write_candidates(tmp_path, [{
-        "dead_pdf_url": dead_url, "file_path": str(local_pdf),
+        "dead_document_url": dead_url, "file_path": str(local_pdf),
         "recovered_from": "wayback", "final_url": "https://web.archive.org/probe-dup",
     }])
     _stub_refresh_metadata(monkeypatch, title="Probe dup WP")
@@ -473,8 +473,8 @@ def test_bank_site_probe_duplicate_stamps_dead_url_on_alt_urls(tmp_path, monkeyp
     """The flagship self-heal scenario for `bank_site` provenance: the probe
     (`storage.reindex(..., dry_run=True)`) recognises the candidate's doc_id
     as already indexed under its live final_url, so nothing is (re)downloaded
-    -- but unlike wayback/mirror (where rec.pdf_url == dead_url, making the
-    stamp inherently a no-op), here rec.pdf_url == final_url, so the
+    -- but unlike wayback/mirror (where rec.document_url == dead_url, making the
+    stamp inherently a no-op), here rec.document_url == final_url, so the
     genuinely different dead_url must land in the pre-existing row's
     alt_urls, its own quarantine must be released, and the CSV row must
     carry the canonical (pre-seeded) doc_id."""
@@ -483,13 +483,13 @@ def test_bank_site_probe_duplicate_stamps_dead_url_on_alt_urls(tmp_path, monkeyp
     cfg = Config(data_dir=tmp_path)
     dead_url = "https://www.banque-france.fr/old-path/probe-bs.pdf"
     final_url = "https://www.banque-france.fr/new-path/probe-bs.pdf"
-    _write_inventory(cfg, [_entry(bank="fr", pdf_url=dead_url, title="Probe bank_site WP")])
+    _write_inventory(cfg, [_entry(bank="fr", document_url=dead_url, title="Probe bank_site WP")])
 
     # Pre-seed a row already indexed under the LIVE final_url -- exactly what
     # a prior bank_site recovery of this same doc would have produced.
     seed_storage = Storage(cfg, _NullFetcher())
     seed_rec = DocRecord(bank_code="fr", doc_type=DocType.D1, title="Already here",
-                        pdf_url=final_url, date=date(2020, 1, 1),
+                        document_url=final_url, date=date(2020, 1, 1),
                         mime_type="application/pdf")
     seed_path = tmp_path / "seed-bs.pdf"
     seed_path.write_bytes(pdf_body(b"%PDF-1.4 " + b"w" * (25 * 1024)))
@@ -502,7 +502,7 @@ def test_bank_site_probe_duplicate_stamps_dead_url_on_alt_urls(tmp_path, monkeyp
 
     local_pdf = _make_local_pdf(tmp_path, "probe-bs-local.pdf")
     cand_path = _write_candidates(tmp_path, [{
-        "dead_pdf_url": dead_url, "file_path": str(local_pdf),
+        "dead_document_url": dead_url, "file_path": str(local_pdf),
         "recovered_from": "bank_site", "final_url": final_url,
     }])
     _stub_refresh_metadata(monkeypatch, title="Probe bank_site WP")
@@ -512,11 +512,11 @@ def test_bank_site_probe_duplicate_stamps_dead_url_on_alt_urls(tmp_path, monkeyp
                                     csv_path=str(tmp_path / "r.csv"))
     assert results["fr"]["duplicate"] == 1
 
-    # (a) dead_url lands in the canonical row's alt_urls; pdf_url unchanged.
+    # (a) dead_url lands in the canonical row's alt_urls; document_url unchanged.
     rows = list(iter_manifest_rows(cfg, "fr"))
     assert len(rows) == 1
     assert rows[0]["doc_id"] == seed_rec.doc_id
-    assert rows[0]["pdf_url"] == final_url
+    assert rows[0]["document_url"] == final_url
     assert dead_url in rows[0]["alt_urls"]
 
     # (b) the dead URL's quarantine is released.
@@ -593,10 +593,10 @@ def test_rerunning_same_candidates_file_twice_does_not_delete_corpus_file(tmp_pa
 
     cfg = Config(data_dir=tmp_path)
     dead_url = "https://www.banque-france.fr/rerun.pdf"
-    _write_inventory(cfg, [_entry(bank="fr", pdf_url=dead_url, title="Rerun WP")])
+    _write_inventory(cfg, [_entry(bank="fr", document_url=dead_url, title="Rerun WP")])
     local_pdf = _make_local_pdf(tmp_path, "rerun.pdf")
     cand_path = _write_candidates(tmp_path, [{
-        "dead_pdf_url": dead_url, "file_path": str(local_pdf),
+        "dead_document_url": dead_url, "file_path": str(local_pdf),
         "recovered_from": "wayback", "final_url": "https://web.archive.org/rerun",
     }])
     _stub_refresh_metadata(monkeypatch, title="Rerun WP")
@@ -657,10 +657,10 @@ def test_duplicated_candidate_line_within_one_run_is_deduped_without_deleting_fi
 
     cfg = Config(data_dir=tmp_path)
     dead_url = "https://www.banque-france.fr/dupline.pdf"
-    _write_inventory(cfg, [_entry(bank="fr", pdf_url=dead_url, title="Dup line WP")])
+    _write_inventory(cfg, [_entry(bank="fr", document_url=dead_url, title="Dup line WP")])
     local_pdf = _make_local_pdf(tmp_path, "dupline.pdf")
     cand = {
-        "dead_pdf_url": dead_url, "file_path": str(local_pdf),
+        "dead_document_url": dead_url, "file_path": str(local_pdf),
         "recovered_from": "wayback", "final_url": "https://web.archive.org/dupline",
     }
     cand_path = _write_candidates(tmp_path, [cand, cand])
@@ -689,10 +689,10 @@ def test_wayback_empty_final_url_is_bad_candidate(tmp_path, monkeypatch):
 
     cfg = Config(data_dir=tmp_path)
     dead_url = "https://www.banque-france.fr/nofinalurl-wb.pdf"
-    _write_inventory(cfg, [_entry(bank="fr", pdf_url=dead_url)])
+    _write_inventory(cfg, [_entry(bank="fr", document_url=dead_url)])
     local_pdf = _make_local_pdf(tmp_path)
     cand_path = _write_candidates(tmp_path, [{
-        "dead_pdf_url": dead_url, "file_path": str(local_pdf),
+        "dead_document_url": dead_url, "file_path": str(local_pdf),
         "recovered_from": "wayback", "final_url": "",
     }])
     _stub_refresh_metadata(monkeypatch)
@@ -711,10 +711,10 @@ def test_bank_site_missing_final_url_key_is_bad_candidate(tmp_path, monkeypatch)
 
     cfg = Config(data_dir=tmp_path)
     dead_url = "https://www.banque-france.fr/nofinalurl-bs.pdf"
-    _write_inventory(cfg, [_entry(bank="fr", pdf_url=dead_url)])
+    _write_inventory(cfg, [_entry(bank="fr", document_url=dead_url)])
     local_pdf = _make_local_pdf(tmp_path)
     cand_path = _write_candidates(tmp_path, [{
-        "dead_pdf_url": dead_url, "file_path": str(local_pdf),
+        "dead_document_url": dead_url, "file_path": str(local_pdf),
         "recovered_from": "bank_site",   # no "final_url" key at all
     }])
     _stub_refresh_metadata(monkeypatch)
@@ -733,10 +733,10 @@ def test_mirror_empty_final_url_is_bad_candidate(tmp_path, monkeypatch):
 
     cfg = Config(data_dir=tmp_path)
     dead_url = "https://www.banque-france.fr/nofinalurl-mirror.pdf"
-    _write_inventory(cfg, [_entry(bank="fr", pdf_url=dead_url)])
+    _write_inventory(cfg, [_entry(bank="fr", document_url=dead_url)])
     local_pdf = _make_local_pdf(tmp_path)
     cand_path = _write_candidates(tmp_path, [{
-        "dead_pdf_url": dead_url, "file_path": str(local_pdf),
+        "dead_document_url": dead_url, "file_path": str(local_pdf),
         "recovered_from": "mirror", "final_url": "",
     }])
     _stub_refresh_metadata(monkeypatch)
@@ -755,7 +755,7 @@ def test_mirror_empty_final_url_is_bad_candidate(tmp_path, monkeypatch):
 # not honestly distinguishable from the dead URL, or (for wayback) not
 # actually an archive.org snapshot. This is exactly the failure mode that
 # produced a "wayback" manifest row whose alt_urls[0] silently equalled its
-# own dead pdf_url (final-review finding 1: no real snapshot trail at all).
+# own dead document_url (final-review finding 1: no real snapshot trail at all).
 # ---------------------------------------------------------------------------
 
 def test_final_url_equal_to_dead_url_is_bad_candidate_for_wayback(tmp_path, monkeypatch):
@@ -763,10 +763,10 @@ def test_final_url_equal_to_dead_url_is_bad_candidate_for_wayback(tmp_path, monk
 
     cfg = Config(data_dir=tmp_path)
     dead_url = "https://www.banque-france.fr/samething.pdf"
-    _write_inventory(cfg, [_entry(bank="fr", pdf_url=dead_url)])
+    _write_inventory(cfg, [_entry(bank="fr", document_url=dead_url)])
     local_pdf = _make_local_pdf(tmp_path)
     cand_path = _write_candidates(tmp_path, [{
-        "dead_pdf_url": dead_url, "file_path": str(local_pdf),
+        "dead_document_url": dead_url, "file_path": str(local_pdf),
         "recovered_from": "wayback", "final_url": dead_url,  # dishonest: no real snapshot
     }])
     _stub_refresh_metadata(monkeypatch)
@@ -782,16 +782,16 @@ def test_final_url_equal_to_dead_url_is_bad_candidate_for_wayback(tmp_path, monk
 
 def test_final_url_equal_to_dead_url_is_bad_candidate_for_bank_site(tmp_path, monkeypatch):
     """Rule (a) is not wayback-specific: ANY recovered_from with final_url ==
-    dead_pdf_url is rejected -- a "moved" doc that resolves to its own dead
+    dead_document_url is rejected -- a "moved" doc that resolves to its own dead
     URL never actually moved."""
     from cb_corpus.recover import run_recover_downloads
 
     cfg = Config(data_dir=tmp_path)
     dead_url = "https://www.banque-france.fr/samething-bs.pdf"
-    _write_inventory(cfg, [_entry(bank="fr", pdf_url=dead_url)])
+    _write_inventory(cfg, [_entry(bank="fr", document_url=dead_url)])
     local_pdf = _make_local_pdf(tmp_path)
     cand_path = _write_candidates(tmp_path, [{
-        "dead_pdf_url": dead_url, "file_path": str(local_pdf),
+        "dead_document_url": dead_url, "file_path": str(local_pdf),
         "recovered_from": "bank_site", "final_url": dead_url,
     }])
     _stub_refresh_metadata(monkeypatch)
@@ -808,12 +808,12 @@ def test_wayback_final_url_not_archive_org_is_bad_candidate(tmp_path, monkeypatc
 
     cfg = Config(data_dir=tmp_path)
     dead_url = "https://www.banque-france.fr/notarchive.pdf"
-    _write_inventory(cfg, [_entry(bank="fr", pdf_url=dead_url)])
+    _write_inventory(cfg, [_entry(bank="fr", document_url=dead_url)])
     local_pdf = _make_local_pdf(tmp_path)
     # A different, live-looking URL -- NOT web.archive.org -- claiming to be
     # a wayback recovery. Not honestly a snapshot.
     cand_path = _write_candidates(tmp_path, [{
-        "dead_pdf_url": dead_url, "file_path": str(local_pdf),
+        "dead_document_url": dead_url, "file_path": str(local_pdf),
         "recovered_from": "wayback",
         "final_url": "https://www.banque-france.fr/moved/notarchive.pdf",
     }])
@@ -835,10 +835,10 @@ def test_wayback_final_url_on_archive_org_is_accepted(tmp_path, monkeypatch):
     cfg = Config(data_dir=tmp_path)
     dead_url = "https://www.banque-france.fr/realsnapshot.pdf"
     snapshot_url = "https://web.archive.org/web/20250101000000id_/https://www.banque-france.fr/realsnapshot.pdf"
-    _write_inventory(cfg, [_entry(bank="fr", pdf_url=dead_url)])
+    _write_inventory(cfg, [_entry(bank="fr", document_url=dead_url)])
     local_pdf = _make_local_pdf(tmp_path)
     cand_path = _write_candidates(tmp_path, [{
-        "dead_pdf_url": dead_url, "file_path": str(local_pdf),
+        "dead_document_url": dead_url, "file_path": str(local_pdf),
         "recovered_from": "wayback", "final_url": snapshot_url,
     }])
     _stub_refresh_metadata(monkeypatch)
@@ -860,10 +860,10 @@ def test_copy_exception_stays_recoverable_and_is_audited(tmp_path, monkeypatch):
 
     cfg = Config(data_dir=tmp_path)
     dead_url = "https://www.banque-france.fr/copyfail.pdf"
-    _write_inventory(cfg, [_entry(bank="fr", pdf_url=dead_url, title="Copy fail WP")])
+    _write_inventory(cfg, [_entry(bank="fr", document_url=dead_url, title="Copy fail WP")])
     local_pdf = _make_local_pdf(tmp_path, "copyfail.pdf")
     cand_path = _write_candidates(tmp_path, [{
-        "dead_pdf_url": dead_url, "file_path": str(local_pdf),
+        "dead_document_url": dead_url, "file_path": str(local_pdf),
         "recovered_from": "wayback", "final_url": "https://web.archive.org/copyfail",
     }])
     _stub_refresh_metadata(monkeypatch, title="Copy fail WP")
@@ -887,7 +887,7 @@ def test_copy_exception_stays_recoverable_and_is_audited(tmp_path, monkeypatch):
     error_lines = [json.loads(l) for l in errors_path.read_text().splitlines() if l.strip()]
     reaudited = [e for e in error_lines if e.get("label") == "recover-downloads-candidates"]
     assert len(reaudited) == 1
-    assert reaudited[0]["pdf_url"] == dead_url
+    assert reaudited[0]["document_url"] == dead_url
 
 
 # ---------------------------------------------------------------------------
@@ -898,16 +898,16 @@ def test_read_candidates_skips_malformed_line_with_one_warning(tmp_path, capsys)
     from cb_corpus.recover import _read_candidates
 
     path = tmp_path / "candidates.jsonl"
-    good1 = json.dumps({"dead_pdf_url": "https://x.test/a.pdf", "file_path": "a.pdf",
+    good1 = json.dumps({"dead_document_url": "https://x.test/a.pdf", "file_path": "a.pdf",
                         "recovered_from": "wayback", "final_url": "https://web.archive.org/a"})
-    bad = '{"dead_pdf_url": "https://x.test/b.pdf", '  # malformed JSON
-    good2 = json.dumps({"dead_pdf_url": "https://x.test/c.pdf", "file_path": "c.pdf",
+    bad = '{"dead_document_url": "https://x.test/b.pdf", '  # malformed JSON
+    good2 = json.dumps({"dead_document_url": "https://x.test/c.pdf", "file_path": "c.pdf",
                         "recovered_from": "wayback", "final_url": "https://web.archive.org/c"})
     path.write_text(good1 + "\n" + bad + "\n" + good2 + "\n")
 
     rows = _read_candidates(str(path))
 
-    assert [r["dead_pdf_url"] for r in rows] == ["https://x.test/a.pdf", "https://x.test/c.pdf"]
+    assert [r["dead_document_url"] for r in rows] == ["https://x.test/a.pdf", "https://x.test/c.pdf"]
     err = capsys.readouterr().err
     assert err.count("WARNING") == 1
 
@@ -921,10 +921,10 @@ def test_out_of_scope_candidate_is_filtered_not_unknown_entry(tmp_path, monkeypa
 
     cfg = Config(data_dir=tmp_path)
     dead_url = "https://www.bundesbank.de/oos.pdf"
-    _write_inventory(cfg, [_entry(bank="de", pdf_url=dead_url, title="DE WP")])
+    _write_inventory(cfg, [_entry(bank="de", document_url=dead_url, title="DE WP")])
     local_pdf = _make_local_pdf(tmp_path)
     cand_path = _write_candidates(tmp_path, [{
-        "dead_pdf_url": dead_url, "file_path": str(local_pdf),
+        "dead_document_url": dead_url, "file_path": str(local_pdf),
         "recovered_from": "wayback", "final_url": "https://web.archive.org/oos",
     }])
     _stub_refresh_metadata(monkeypatch)
@@ -948,10 +948,10 @@ def test_bad_doc_type_action(tmp_path, monkeypatch):
 
     cfg = Config(data_dir=tmp_path)
     dead_url = "https://www.banque-france.fr/baddoctype.pdf"
-    _write_inventory(cfg, [_entry(bank="fr", pdf_url=dead_url, doc_type="ZZZ")])
+    _write_inventory(cfg, [_entry(bank="fr", document_url=dead_url, doc_type="ZZZ")])
     local_pdf = _make_local_pdf(tmp_path)
     cand_path = _write_candidates(tmp_path, [{
-        "dead_pdf_url": dead_url, "file_path": str(local_pdf),
+        "dead_document_url": dead_url, "file_path": str(local_pdf),
         "recovered_from": "wayback", "final_url": "https://web.archive.org/baddoctype",
     }])
     _stub_refresh_metadata(monkeypatch)
@@ -970,7 +970,7 @@ def test_bad_doc_type_action(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_bank_site_recovery_releases_the_dead_urls_quarantine(tmp_path, monkeypatch):
-    """reindex() releases rec.pdf_url on success, which for bank_site IS the
+    """reindex() releases rec.document_url on success, which for bank_site IS the
     NEW final_url -- the OLD dead_url would otherwise stay quarantined
     forever even though the corpus now has the doc under its new address."""
     from cb_corpus.recover import run_recover_downloads
@@ -978,7 +978,7 @@ def test_bank_site_recovery_releases_the_dead_urls_quarantine(tmp_path, monkeypa
     cfg = Config(data_dir=tmp_path)
     dead_url = "https://www.banque-france.fr/old-path/dt989.pdf"
     final_url = "https://www.banque-france.fr/new-path/dt989.pdf"
-    _write_inventory(cfg, [_entry(bank="fr", pdf_url=dead_url)])
+    _write_inventory(cfg, [_entry(bank="fr", document_url=dead_url)])
 
     q_path = cfg.data_dir / "download_quarantine.jsonl"
     q_path.parent.mkdir(parents=True, exist_ok=True)
@@ -990,7 +990,7 @@ def test_bank_site_recovery_releases_the_dead_urls_quarantine(tmp_path, monkeypa
 
     local_pdf = _make_local_pdf(tmp_path, "banksite989.pdf")
     cand_path = _write_candidates(tmp_path, [{
-        "dead_pdf_url": dead_url, "file_path": str(local_pdf),
+        "dead_document_url": dead_url, "file_path": str(local_pdf),
         "recovered_from": "bank_site", "final_url": final_url,
     }])
     _stub_refresh_metadata(monkeypatch, title="WP 989")
@@ -1005,17 +1005,17 @@ def test_bank_site_recovery_releases_the_dead_urls_quarantine(tmp_path, monkeypa
 
 
 def test_wayback_recovery_dead_url_release_stays_a_noop(tmp_path, monkeypatch):
-    """For wayback/mirror, rec.pdf_url IS dead_url, so reindex() already
+    """For wayback/mirror, rec.document_url IS dead_url, so reindex() already
     released it -- the extra record_success(dead_url) call must be a
     harmless no-op, never a crash or a double-release error."""
     from cb_corpus.recover import run_recover_downloads
 
     cfg = Config(data_dir=tmp_path)
     dead_url = "https://www.banque-france.fr/dt990.pdf"
-    _write_inventory(cfg, [_entry(bank="fr", pdf_url=dead_url)])
+    _write_inventory(cfg, [_entry(bank="fr", document_url=dead_url)])
     local_pdf = _make_local_pdf(tmp_path, "wayback990.pdf")
     cand_path = _write_candidates(tmp_path, [{
-        "dead_pdf_url": dead_url, "file_path": str(local_pdf),
+        "dead_document_url": dead_url, "file_path": str(local_pdf),
         "recovered_from": "wayback",
         "final_url": "https://web.archive.org/web/20250101000000id_/https://www.banque-france.fr/dt990.pdf",
     }])
@@ -1039,10 +1039,10 @@ def test_dry_run_reports_duplicate_for_already_indexed_doc_id(tmp_path, monkeypa
 
     cfg = Config(data_dir=tmp_path)
     dead_url = "https://www.banque-france.fr/dryrun-dup.pdf"
-    _write_inventory(cfg, [_entry(bank="fr", pdf_url=dead_url, title="Dry-run dup WP")])
+    _write_inventory(cfg, [_entry(bank="fr", document_url=dead_url, title="Dry-run dup WP")])
     local_pdf = _make_local_pdf(tmp_path, "dryrundup.pdf")
     cand_path = _write_candidates(tmp_path, [{
-        "dead_pdf_url": dead_url, "file_path": str(local_pdf),
+        "dead_document_url": dead_url, "file_path": str(local_pdf),
         "recovered_from": "wayback", "final_url": "https://web.archive.org/dryrundup",
     }])
     _stub_refresh_metadata(monkeypatch, title="Dry-run dup WP")
@@ -1075,10 +1075,10 @@ def test_dry_run_still_reports_recoverable_for_a_new_doc(tmp_path, monkeypatch):
 
     cfg = Config(data_dir=tmp_path)
     dead_url = "https://www.banque-france.fr/dryrun-new.pdf"
-    _write_inventory(cfg, [_entry(bank="fr", pdf_url=dead_url, title="Dry-run new WP")])
+    _write_inventory(cfg, [_entry(bank="fr", document_url=dead_url, title="Dry-run new WP")])
     local_pdf = _make_local_pdf(tmp_path, "dryrunnew.pdf")
     cand_path = _write_candidates(tmp_path, [{
-        "dead_pdf_url": dead_url, "file_path": str(local_pdf),
+        "dead_document_url": dead_url, "file_path": str(local_pdf),
         "recovered_from": "wayback", "final_url": "https://web.archive.org/dryrunnew",
     }])
     _stub_refresh_metadata(monkeypatch, title="Dry-run new WP")
@@ -1096,10 +1096,10 @@ def test_bad_provenance_action(tmp_path, monkeypatch):
 
     cfg = Config(data_dir=tmp_path)
     dead_url = "https://www.banque-france.fr/badprov.pdf"
-    _write_inventory(cfg, [_entry(bank="fr", pdf_url=dead_url)])
+    _write_inventory(cfg, [_entry(bank="fr", document_url=dead_url)])
     local_pdf = _make_local_pdf(tmp_path)
     cand_path = _write_candidates(tmp_path, [{
-        "dead_pdf_url": dead_url, "file_path": str(local_pdf),
+        "dead_document_url": dead_url, "file_path": str(local_pdf),
         "recovered_from": "some_unrecognised_source", "final_url": "https://example.org/x",
     }])
     _stub_refresh_metadata(monkeypatch)
@@ -1134,18 +1134,18 @@ def test_stamps_applied_even_if_pass_dies_mid_loop(tmp_path, monkeypatch):
     dead_url_2 = "https://www.banque-france.fr/old-path/crash-2.pdf"
     final_url_2 = "https://www.banque-france.fr/new-path/crash-2.pdf"
     _write_inventory(cfg, [
-        _entry(bank="fr", pdf_url=dead_url_1, title="Crash WP 1"),
-        _entry(bank="fr", pdf_url=dead_url_2, title="Crash WP 2"),
+        _entry(bank="fr", document_url=dead_url_1, title="Crash WP 1"),
+        _entry(bank="fr", document_url=dead_url_2, title="Crash WP 2"),
     ])
 
     # Pre-seed both rows already indexed under their LIVE final_urls -- what
     # a prior bank_site recovery of each doc would have produced.
     seed_storage = Storage(cfg, _NullFetcher())
     seed_rec_1 = DocRecord(bank_code="fr", doc_type=DocType.D1, title="Already here 1",
-                           pdf_url=final_url_1, date=date(2020, 1, 1),
+                           document_url=final_url_1, date=date(2020, 1, 1),
                            mime_type="application/pdf")
     seed_rec_2 = DocRecord(bank_code="fr", doc_type=DocType.D1, title="Already here 2",
-                           pdf_url=final_url_2, date=date(2020, 1, 1),
+                           document_url=final_url_2, date=date(2020, 1, 1),
                            mime_type="application/pdf")
     seed_path_1 = tmp_path / "seed-crash-1.pdf"
     seed_path_1.write_bytes(pdf_body(b"%PDF-1.4 " + b"c" * (25 * 1024)))
@@ -1157,9 +1157,9 @@ def test_stamps_applied_even_if_pass_dies_mid_loop(tmp_path, monkeypatch):
     local_pdf_1 = _make_local_pdf(tmp_path, "crash-1-local.pdf")
     local_pdf_2 = _make_local_pdf(tmp_path, "crash-2-local.pdf")
     cand_path = _write_candidates(tmp_path, [
-        {"dead_pdf_url": dead_url_1, "file_path": str(local_pdf_1),
+        {"dead_document_url": dead_url_1, "file_path": str(local_pdf_1),
          "recovered_from": "bank_site", "final_url": final_url_1},
-        {"dead_pdf_url": dead_url_2, "file_path": str(local_pdf_2),
+        {"dead_document_url": dead_url_2, "file_path": str(local_pdf_2),
          "recovered_from": "bank_site", "final_url": final_url_2},
     ])
     _stub_refresh_metadata(monkeypatch, title="Crash WP")
@@ -1182,7 +1182,7 @@ def test_stamps_applied_even_if_pass_dies_mid_loop(tmp_path, monkeypatch):
 
     # The first candidate's stamp must already be persisted despite the
     # crash on the second candidate's probe.
-    rows = {r["pdf_url"]: r for r in iter_manifest_rows(cfg, "fr")}
+    rows = {r["document_url"]: r for r in iter_manifest_rows(cfg, "fr")}
     assert dead_url_1 in rows[final_url_1]["alt_urls"]
     assert dead_url_2 not in rows[final_url_2]["alt_urls"]
 
@@ -1203,11 +1203,11 @@ def test_candidates_rerun_over_healed_corpus_reports_converged(tmp_path, monkeyp
     cfg = Config(data_dir=tmp_path)
     dead_url = "https://www.banque-france.fr/old-path/converge.pdf"
     final_url = "https://www.banque-france.fr/new-path/converge.pdf"
-    _write_inventory(cfg, [_entry(bank="fr", pdf_url=dead_url, title="Converge WP")])
+    _write_inventory(cfg, [_entry(bank="fr", document_url=dead_url, title="Converge WP")])
 
     seed_storage = Storage(cfg, _NullFetcher())
     seed_rec = DocRecord(bank_code="fr", doc_type=DocType.D1, title="Already here",
-                        pdf_url=final_url, date=date(2020, 1, 1),
+                        document_url=final_url, date=date(2020, 1, 1),
                         mime_type="application/pdf")
     seed_path = tmp_path / "seed-converge.pdf"
     seed_path.write_bytes(pdf_body(b"%PDF-1.4 " + b"v" * (25 * 1024)))
@@ -1220,7 +1220,7 @@ def test_candidates_rerun_over_healed_corpus_reports_converged(tmp_path, monkeyp
 
     local_pdf = _make_local_pdf(tmp_path, "converge-local.pdf")
     cand_path = _write_candidates(tmp_path, [{
-        "dead_pdf_url": dead_url, "file_path": str(local_pdf),
+        "dead_document_url": dead_url, "file_path": str(local_pdf),
         "recovered_from": "bank_site", "final_url": final_url,
     }])
     _stub_refresh_metadata(monkeypatch, title="Converge WP")

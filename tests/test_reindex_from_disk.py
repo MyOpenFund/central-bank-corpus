@@ -5,7 +5,7 @@ tens of thousands of downloaded speech PDFs accumulated on disk". The files
 are still there, but every bit of metadata that made them findable — the exact
 publication date, the source URL — lived only in the manifest. Re-downloading
 is not an option (weeks of crawling); instead the function re-derives the join
-by recomputing each speech's stable `doc_id = sha1("<bank>|C1|<pdf_url>")[:16]`
+by recomputing each speech's stable `doc_id = sha1("<bank>|C1|<document_url>")[:16]`
 from the BIS sitemaps and looking for a file already named that.
 
 That whole path had no test, so nothing pinned the hash basis, the per-bank
@@ -90,7 +90,7 @@ def test_on_disk_pdf_is_reindexed_by_recomputed_doc_id(tmp_path, monkeypatch,
     assert len(rows) == 1
     row = rows[0]
     assert row["doc_id"] == doc_id
-    assert row["pdf_url"] == SPEECH_URL
+    assert row["document_url"] == SPEECH_URL
     assert row["source_url"] == "https://www.bis.org/review/r200115a.htm"
     assert row["date"] == "2020-01-15"                  # from the r<YYMMDD> slug
     assert row["bank_code"] == "de" and row["doc_type"] == "C1"
@@ -168,7 +168,7 @@ def test_duplicate_content_file_url_is_stamped_on_the_owner(tmp_path, monkeypatc
     rows = [json.loads(ln) for ln in
             (tmp_path / "manifest" / "de.jsonl").read_text().splitlines() if ln.strip()]
     assert len(rows) == 1
-    assert rows[0]["pdf_url"] == SPEECH_URL
+    assert rows[0]["document_url"] == SPEECH_URL
     assert rows[0]["alt_urls"] == [OTHER_URL]
     assert rows[0]["alt_source_urls"] == ["https://www.bis.org/review/r200220b.htm"]
 
@@ -181,7 +181,7 @@ def test_native_reindex_flushes_duplicate_stamps(tmp_path, monkeypatch):
 
     cfg = Config(data_dir=tmp_path)
     recs = [DocRecord(bank_code="fr", doc_type=DocType.E1, title=n,
-                      pdf_url=f"https://www.banque-france.fr/{n}.pdf",
+                      document_url=f"https://www.banque-france.fr/{n}.pdf",
                       source_url=f"https://www.banque-france.fr/{n}.html")
             for n in ("a", "b")]
     for r in recs:
@@ -200,8 +200,8 @@ def test_native_reindex_flushes_duplicate_stamps(tmp_path, monkeypatch):
     assert counts["reindexed"] == 1
     rows = [json.loads(ln) for ln in
             (tmp_path / "manifest" / "fr.jsonl").read_text().splitlines() if ln.strip()]
-    assert len(rows) == 1 and rows[0]["pdf_url"] == recs[0].pdf_url
-    assert rows[0]["alt_urls"] == [recs[1].pdf_url]
+    assert len(rows) == 1 and rows[0]["document_url"] == recs[0].document_url
+    assert rows[0]["alt_urls"] == [recs[1].document_url]
     assert rows[0]["alt_source_urls"] == [recs[1].source_url]
 
 
@@ -216,7 +216,7 @@ def test_reindex_flush_failure_never_replaces_the_original_exception(
     _wire_sitemaps(monkeypatch, fetcher_factory)
 
     def reindex(self, rec, path, dry_run=False):
-        self._pending_dups.append({"url": rec.pdf_url, "source_url": "",
+        self._pending_dups.append({"url": rec.document_url, "source_url": "",
                                    "owner_doc_id": "x"})
         raise RuntimeError("original failure")
 

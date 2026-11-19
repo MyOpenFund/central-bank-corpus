@@ -33,14 +33,14 @@ FIX = Path(__file__).parent / "fixtures"
 # ---- Phase 0 schema --------------------------------------------------
 def test_docrecord_date_quality_defaults():
     rec = DocRecord(bank_code="ecb", doc_type=DocType.D1, title="x",
-                    pdf_url="https://x/wp.pdf")
+                    document_url="https://x/wp.pdf")
     # precision is "not stated" unless the producer states one (never a claimed day)
     assert (rec.date_precision, rec.date_source, rec.repec_handle) == (None, "bank_site", "")
 
 
 def test_to_row_serializes_alt_urls_and_quality_fields():
     rec = DocRecord(bank_code="ecb", doc_type=DocType.D1, title="x",
-                    pdf_url="https://x/wp.pdf", alt_urls=["https://alt/wp.pdf"],
+                    document_url="https://x/wp.pdf", alt_urls=["https://alt/wp.pdf"],
                     date=date(2025, 9, 1), date_precision="month", date_source="repec",
                     repec_handle="RePEc:ecb:ecbwps:20253117")
     row = rec.to_row()
@@ -54,7 +54,7 @@ def test_load_existing_indexes_alt_urls(tmp_path):
     cfg = Config(data_dir=tmp_path)
     Storage(cfg)  # ensures dirs
     row = {"doc_id": "d1", "bank_code": "ecb", "doc_type": "D1",
-           "pdf_url": "https://x//pub/wp.pdf", "alt_urls": ["https://native/wp.pdf"],
+           "document_url": "https://x//pub/wp.pdf", "alt_urls": ["https://native/wp.pdf"],
            "sha256": "abc"}
     cfg.manifest_path.write_text(json.dumps(row) + "\n")
     st = Storage(cfg)
@@ -67,7 +67,7 @@ def test_load_existing_tolerates_null_alt_urls(tmp_path):
     cfg = Config(data_dir=tmp_path)
     Storage(cfg)
     row = {"doc_id": "d1", "bank_code": "ecb", "doc_type": "D1",
-           "pdf_url": "https://x/wp.pdf", "alt_urls": None}
+           "document_url": "https://x/wp.pdf", "alt_urls": None}
     cfg.manifest_path.write_text(json.dumps(row) + "\n")
     st = Storage(cfg)                                    # must not raise on None
     assert st.is_known_url("https://x/wp.pdf")
@@ -81,11 +81,11 @@ def test_rewrite_manifest_is_atomic_and_idempotent(tmp_path):
     # apply_row_updates) -- so the manifest must be seeded first.
     seed = [
         {"doc_id": "a", "bank_code": "ecb", "doc_type": "D1",
-         "pdf_url": "https://x/a.pdf", "alt_urls": [], "date": "2020-01-02"},
+         "document_url": "https://x/a.pdf", "alt_urls": [], "date": "2020-01-02"},
         {"doc_id": "b", "bank_code": "ecb", "doc_type": "D2",
-         "pdf_url": "https://x/b.pdf", "alt_urls": [], "date": "2021-03-04"},
+         "document_url": "https://x/b.pdf", "alt_urls": [], "date": "2021-03-04"},
         {"doc_id": "c", "bank_code": "ecb", "doc_type": "D1",
-         "pdf_url": "https://x/c.pdf", "alt_urls": [], "date": "2022-05-06"},
+         "document_url": "https://x/c.pdf", "alt_urls": [], "date": "2022-05-06"},
     ]
     ecb_file = cfg.manifest_file("ecb")
     ecb_file.parent.mkdir(parents=True, exist_ok=True)
@@ -135,9 +135,9 @@ def test_chunk_records_and_wp_op_extraction():
     assert len(wp) == 2 and len(op) == 2 and len(other) == 2     # 2 WP + 2 OP + 2 non-WP
     # the known recent WP: number, exact day, absolute single-slash URL, real title
     wp3244 = next(p for p in wp if p[1] == 3244)
-    _dt, number, title, d, pdf_url = wp3244
+    _dt, number, title, d, document_url = wp3244
     assert number == 3244 and d == date(2026, 6, 3) and title
-    assert pdf_url == "https://www.ecb.europa.eu/pub/pdf/scpwps/ecb.wp3244~0e92afef7d.en.pdf"
+    assert document_url == "https://www.ecb.europa.eu/pub/pdf/scpwps/ecb.wp3244~0e92afef7d.en.pdf"
 
 
 def test_record_date_uses_berlin_not_utc():
@@ -201,7 +201,7 @@ def test_discover_ecb_wp_yields_d1_and_d2():
     for r in recs:
         assert r.provenance == "bank_site"
         assert r.date_precision == "day" and r.date_source == "bank_site"
-        assert r.pdf_url.startswith("https://www.ecb.europa.eu/pub/pdf/")
+        assert r.document_url.startswith("https://www.ecb.europa.eu/pub/pdf/")
 
 
 def test_discover_ecb_wp_since_early_stops():
@@ -288,7 +288,7 @@ def test_discover_ecb_interviews_yields_c2_html_rows(capsys):
     assert len(docs) == 1
     d = docs[0]
     assert (d.doc_type, d.bank_code) == (DocType.C2, "ecb")
-    assert d.pdf_url == "https://www.ecb.europa.eu/press/inter/date/2026/html/ecb.in260824~x.en.html"
+    assert d.document_url == "https://www.ecb.europa.eu/press/inter/date/2026/html/ecb.in260824~x.en.html"
     assert d.title == "Interview with X"
     assert str(d.date) == "2026-08-24" and d.date_precision == "day"
     assert d.mime_type == "text/html" and d.provenance == "bank_site"
@@ -340,13 +340,13 @@ def test_repec_handle_from_source_url():
 def test_build_report_join_classifies_and_proposes(monkeypatch):
     native = [
         DocRecord(bank_code="ecb", doc_type=DocType.D1, title="WP 3244",
-                  pdf_url="https://www.ecb.europa.eu/pub/pdf/scpwps/ecb.wp3244~aa.en.pdf",
+                  document_url="https://www.ecb.europa.eu/pub/pdf/scpwps/ecb.wp3244~aa.en.pdf",
                   date=date(2026, 6, 3)),
         DocRecord(bank_code="ecb", doc_type=DocType.D1, title="WP 3243",
-                  pdf_url="https://www.ecb.europa.eu/pub/pdf/scpwps/ecb.wp3243~bb.en.pdf",
+                  document_url="https://www.ecb.europa.eu/pub/pdf/scpwps/ecb.wp3243~bb.en.pdf",
                   date=date(2026, 6, 3)),
         DocRecord(bank_code="ecb", doc_type=DocType.D2, title="OP 388",
-                  pdf_url="https://www.ecb.europa.eu/pub/pdf/scpops/ecb.op388.en.pdf",
+                  document_url="https://www.ecb.europa.eu/pub/pdf/scpops/ecb.op388.en.pdf",
                   date=date(2026, 2, 1)),
     ]
     monkeypatch.setitem(wp_migrate._NATIVE, "ecb", lambda fetcher: iter(native))
@@ -354,24 +354,24 @@ def test_build_report_join_classifies_and_proposes(monkeypatch):
     manifest = [
         # A: month row, matches 3244 by key -> proposed change
         {"doc_id": "aaa", "bank_code": "ecb", "doc_type": "D1", "date": "2026-06-01",
-         "pdf_url": "https://www.ecb.europa.eu//pub/pdf/scpwps/ecb.wp3244~aa.en.pdf",
+         "document_url": "https://www.ecb.europa.eu//pub/pdf/scpwps/ecb.wp3244~aa.en.pdf",
          "source_url": "https://ideas.repec.org/p/ecb/ecbwps/20263244.html"},
         # C: already migrated (matches 3243) -> counted already_day, no change
         {"doc_id": "ccc", "bank_code": "ecb", "doc_type": "D1", "date": "2026-06-03",
          "date_precision": "day", "date_source": "bank_site",
-         "pdf_url": "https://www.ecb.europa.eu//pub/pdf/scpwps/ecb.wp3243~bb.en.pdf",
+         "document_url": "https://www.ecb.europa.eu//pub/pdf/scpwps/ecb.wp3243~bb.en.pdf",
          "source_url": "https://ideas.repec.org/p/ecb/ecbwps/20263243.html"},
         # B: legacy OP number 2, no native match -> unmatched
         {"doc_id": "bbb", "bank_code": "ecb", "doc_type": "D2", "date": "2002-02-01",
-         "pdf_url": "https://www.ecb.europa.eu//pub/pdf/scpops/ecbocp2.pdf",
+         "document_url": "https://www.ecb.europa.eu//pub/pdf/scpops/ecbocp2.pdf",
          "source_url": "https://ideas.repec.org/p/ecb/ecbops/20022.html"},
         # F: month OP 388 matches -> proposed change
         {"doc_id": "fff", "bank_code": "ecb", "doc_type": "D2", "date": "2026-02-01",
-         "pdf_url": "https://www.ecb.europa.eu//pub/pdf/scpops/ecb.op388.en.pdf",
+         "document_url": "https://www.ecb.europa.eu//pub/pdf/scpops/ecb.op388.en.pdf",
          "source_url": "https://ideas.repec.org/p/ecb/ecbops/2026388.html"},
         # E: different bank -> ignored entirely
         {"doc_id": "eee", "bank_code": "us", "doc_type": "D1", "date": "2020-01-01",
-         "pdf_url": "https://federalreserve.gov/x.pdf", "source_url": ""},
+         "document_url": "https://federalreserve.gov/x.pdf", "source_url": ""},
     ]
 
     summary, changes = build_report("ecb", fetcher=None, manifest_rows=manifest)
@@ -400,11 +400,11 @@ def test_ecb_d1_d2_are_native_and_skip_known_urls(monkeypatch):
     assert DocType.D1 in ECBAdapter.native_types and DocType.D2 in ECBAdapter.native_types
     recs = [
         DocRecord(bank_code="ecb", doc_type=DocType.D1, title="a",
-                  pdf_url="https://www.ecb.europa.eu/pub/pdf/scpwps/ecb.wp1.en.pdf"),
+                  document_url="https://www.ecb.europa.eu/pub/pdf/scpwps/ecb.wp1.en.pdf"),
         DocRecord(bank_code="ecb", doc_type=DocType.D1, title="b",
-                  pdf_url="https://www.ecb.europa.eu/pub/pdf/scpwps/ecb.wp2.en.pdf"),
+                  document_url="https://www.ecb.europa.eu/pub/pdf/scpwps/ecb.wp2.en.pdf"),
         DocRecord(bank_code="ecb", doc_type=DocType.D2, title="c",
-                  pdf_url="https://www.ecb.europa.eu/pub/pdf/scpops/ecb.op1.en.pdf"),
+                  document_url="https://www.ecb.europa.eu/pub/pdf/scpops/ecb.op1.en.pdf"),
     ]
     monkeypatch.setattr(ecb_foedb, "discover_ecb_wp",
                         lambda fetcher, since=None: iter(recs))
@@ -481,7 +481,7 @@ def test_apply_change_preserves_native_precision():
     """A Fed paper with no confirmed day must migrate to month precision, not be
     mislabeled 'day'. apply_change honours the change's date_precision."""
     from cb_corpus.wp_migrate import apply_change
-    row = {"date": "2022-12-01", "pdf_url": "https://x/a.pdf", "alt_urls": []}
+    row = {"date": "2022-12-01", "document_url": "https://x/a.pdf", "alt_urls": []}
     apply_change(row, {"new_date": "2022-12-01", "date_precision": "month",
                        "repec_handle": "RePEc:fip:fedgfe:2022-86",
                        "alt_url_added": "https://y/a.pdf"})
@@ -508,8 +508,8 @@ def test_discover_fed_wp_month_constraint(monkeypatch):
 
     recs = list(discover_fed_wp(F()))
     assert len(recs) == 2 and all(r.bank_code == "us" and r.doc_type == DocType.D1 for r in recs)
-    a = next(r for r in recs if "2025110" in r.pdf_url)
-    b = next(r for r in recs if "2025050" in r.pdf_url)
+    a = next(r for r in recs if "2025110" in r.document_url)
+    b = next(r for r in recs if "2025050" in r.document_url)
     assert a.date == date(2025, 12, 22) and a.date_precision == "day"     # day in listing month
     assert b.date == date(2025, 3, 1) and b.date_precision == "month"     # revision -> month kept
     assert a.date_source == "bank_site" and a.provenance == "bank_site"
@@ -557,7 +557,7 @@ def test_boj_adapter_routes_d1_native(monkeypatch):
     from cb_corpus.adapters.boj import BoJAdapter
     import cb_corpus.sources.boj_wp as boj_mod
     recs = [DocRecord(bank_code="jp", doc_type=DocType.D1, title="x",
-                      pdf_url="https://www.boj.or.jp/en/research/wps_rev/wps_2025/data/wp25e13.pdf")]
+                      document_url="https://www.boj.or.jp/en/research/wps_rev/wps_2025/data/wp25e13.pdf")]
     monkeypatch.setattr(boj_mod, "discover_boj_wp", lambda fetcher, since=None: iter(recs))
     ad = BoJAdapter(get_bank("jp"), fetcher=object())
     assert DocType.D1 in ad.native_types and DocType.A3 in ad.native_types
@@ -584,11 +584,11 @@ def test_build_report_title_tier_matches_slug_drift(monkeypatch):
     from cb_corpus.wp_migrate import normalize_title
     assert normalize_title("ECB-Global:  a Study!") == "ecb global a study"
     native = [DocRecord(bank_code="gb", doc_type=DocType.D1, title="Some BoE Paper: A Study",
-                        pdf_url="https://x/-/media/boe/files/working-paper/2025/new-slug.pdf",
+                        document_url="https://x/-/media/boe/files/working-paper/2025/new-slug.pdf",
                         date=date(2025, 5, 30))]
     monkeypatch.setitem(wp_migrate._NATIVE, "gb", lambda fetcher: iter(native))
     manifest = [{"doc_id": "g1", "bank_code": "gb", "doc_type": "D1", "date": "2025-01-01",
-                 "pdf_url": "https://x/-/media/boe/files/working-paper/2025/old-slug.pdf",
+                 "document_url": "https://x/-/media/boe/files/working-paper/2025/old-slug.pdf",
                  "source_url": "https://ideas.repec.org/p/boe/boeewp/1116.html",
                  "title": "Some BoE Paper: A Study"}]
     summary, changes = build_report("gb", fetcher=None, manifest_rows=manifest)
@@ -600,7 +600,7 @@ def test_boe_adapter_routes_d1_native(monkeypatch):
     from cb_corpus.adapters.boe import BoEAdapter
     import cb_corpus.sources.boe_wp as boe_mod
     recs = [DocRecord(bank_code="gb", doc_type=DocType.D1, title="x",
-                      pdf_url="https://x/-/media/boe/files/working-paper/2025/s.pdf")]
+                      document_url="https://x/-/media/boe/files/working-paper/2025/s.pdf")]
     monkeypatch.setattr(boe_mod, "discover_boe_wp", lambda fetcher, since=None: iter(recs))
     ad = BoEAdapter(get_bank("gb"), fetcher=object())
     assert DocType.D1 in ad.native_types
@@ -646,7 +646,7 @@ def test_buba_adapter_routes_d1_native(monkeypatch):
     from cb_corpus.adapters.buba import BubaAdapter
     import cb_corpus.sources.buba_wp as buba_mod
     recs = [DocRecord(bank_code="de", doc_type=DocType.D1, title="x",
-                      pdf_url="https://www.bundesbank.de/resource/blob/1/a/B/2026-05-06-dkp-14-data.pdf")]
+                      document_url="https://www.bundesbank.de/resource/blob/1/a/B/2026-05-06-dkp-14-data.pdf")]
     monkeypatch.setattr(buba_mod, "discover_buba_wp", lambda fetcher, since=None: iter(recs))
     ad = BubaAdapter(get_bank("de"), fetcher=object())
     assert DocType.D1 in ad.native_types
@@ -667,17 +667,17 @@ def test_build_report_fr_join_stamps_alt_url_and_upgrades_date(monkeypatch):
     """A fake manifest row (v2, RePEc-dated, month precision, legacy filename
     form) joined against a fake native record (day precision, different --
     modern -- filename form) on the WP number: date upgrades to day, the
-    native URL lands in alt_urls, doc_id/pdf_url/sha256 untouched."""
+    native URL lands in alt_urls, doc_id/document_url/sha256 untouched."""
     native = [
         DocRecord(bank_code="fr", doc_type=DocType.D1, title="Some BdF Paper",
-                  pdf_url="https://www.banque-france.fr/system/files/2006-03/WP155.pdf",
+                  document_url="https://www.banque-france.fr/system/files/2006-03/WP155.pdf",
                   date=date(2006, 3, 14), date_precision="day", date_source="bank_site"),
     ]
     monkeypatch.setitem(wp_migrate._NATIVE, "fr", lambda fetcher: iter(native))
 
     manifest = [
         {"doc_id": "fr155", "bank_code": "fr", "doc_type": "D1", "date": "2006-03-01",
-         "pdf_url": ("https://publications.banque-france.fr/sites/default/files/"
+         "document_url": ("https://publications.banque-france.fr/sites/default/files/"
                      "medias/documents/working-paper_155_2006.pdf"),
          "source_url": "https://ideas.repec.org/p/bfr/banfra/155.html",
          "sha256": "h155", "local_path": "/raw/155.pdf"},
@@ -701,7 +701,7 @@ def test_build_report_fr_join_stamps_alt_url_and_upgrades_date(monkeypatch):
     assert "https://www.banque-france.fr/system/files/2006-03/WP155.pdf" in row["alt_urls"]
     # identity untouched
     assert row["doc_id"] == "fr155" and row["sha256"] == "h155"
-    assert row["pdf_url"] == manifest[0]["pdf_url"]
+    assert row["document_url"] == manifest[0]["document_url"]
 # ---- Sveriges Riksbank (se) working papers ---------------------------
 from cb_corpus.sources.riksbank_wp import (
     parse_wp_listing, se_url_number, se_handle_number, discover_riksbank_wp, RIKSBANK,
@@ -851,20 +851,20 @@ def test_discover_riksbank_wp_since_stops_before_next_page():
 
 
 def test_wp_migrate_se_key_match_registers_alt_url(monkeypatch):
-    """The real production gap: a legacy RePEc-discovered se row's pdf_url (the
+    """The real production gap: a legacy RePEc-discovered se row's document_url (the
     old riksbank.se/Documents/... form) differs from the current native listing
     URL for the SAME WP number -> matched by key, day date applied, and the
     native URL registered in alt_urls (zero re-download guard)."""
     native = [DocRecord(
         bank_code="se", doc_type=DocType.D1,
         title="Subprime Borrowers, Securitization and the Transmission of Business Cycles",
-        pdf_url=("https://www.riksbank.se/globalassets/media/rapporter/working-papers/2016/"
+        document_url=("https://www.riksbank.se/globalassets/media/rapporter/working-papers/2016/"
                  "no.-317-subprime-borrowers-securitization-and-the-transmission-of-business-cycles"),
         date=date(2016, 3, 3), date_precision="day")]   # as the Riksbank scraper states it
     monkeypatch.setitem(wp_migrate._NATIVE, "se", lambda fetcher: iter(native))
     manifest = [{
         "doc_id": "s317", "bank_code": "se", "doc_type": "D1", "date": "2016-03-01",
-        "pdf_url": "http://www.riksbank.se/Documents/Rapporter/Working_papers/2016/rap_wp317_160303.pdf",
+        "document_url": "http://www.riksbank.se/Documents/Rapporter/Working_papers/2016/rap_wp317_160303.pdf",
         "source_url": "https://ideas.repec.org/p/hhs/rbnkwp/0317.html",
     }]
     summary, changes = build_report("se", fetcher=None, manifest_rows=manifest)
@@ -874,7 +874,7 @@ def test_wp_migrate_se_key_match_registers_alt_url(monkeypatch):
     assert c["old_date"] == "2016-03-01" and c["new_date"] == "2016-03-03"
     assert c["date_precision"] == "day"
     assert c["repec_handle"] == "RePEc:hhs:rbnkwp:0317"
-    assert c["alt_url_added"] == native[0].pdf_url          # different URL -> registered
+    assert c["alt_url_added"] == native[0].document_url          # different URL -> registered
 
 
 def test_riksbank_adapter_routes_d1_native_and_skips_known_urls(monkeypatch):
@@ -882,9 +882,9 @@ def test_riksbank_adapter_routes_d1_native_and_skips_known_urls(monkeypatch):
     import cb_corpus.sources.riksbank_wp as se_mod
     recs = [
         DocRecord(bank_code="se", doc_type=DocType.D1, title="a",
-                  pdf_url="https://www.riksbank.se/globalassets/.../no.-466-a.pdf"),
+                  document_url="https://www.riksbank.se/globalassets/.../no.-466-a.pdf"),
         DocRecord(bank_code="se", doc_type=DocType.D1, title="b",
-                  pdf_url="https://www.riksbank.se/globalassets/.../no.-467-b.pdf"),
+                  document_url="https://www.riksbank.se/globalassets/.../no.-467-b.pdf"),
     ]
     monkeypatch.setattr(se_mod, "discover_riksbank_wp", lambda fetcher, since=None: iter(recs))
     ad = RiksbankAdapter(get_bank("se"), fetcher=object())
@@ -924,13 +924,13 @@ def test_wp_dates_pdf_creation_date(tmp_path):
 def test_wp_dates_recover_wayback_month_constrained(monkeypatch):
     # same-month first capture -> day recovered (wayback)
     monkeypatch.setattr(wp_dates, "first_capture", lambda f, u: "20020129141357")
-    row = {"date": "2002-01-01", "pdf_url": "https://x/200201pap.pdf", "local_path": None}
+    row = {"date": "2002-01-01", "document_url": "https://x/200201pap.pdf", "local_path": None}
     r = recover(object(), row)
     assert r["date"] == "2002-01-29" and r["date_source"] == "wayback"
     assert r["evidence_url"].startswith("https://web.archive.org/web/20020129")
     # capture in a later month (e.g. a digitisation snapshot) -> rejected
     monkeypatch.setattr(wp_dates, "first_capture", lambda f, u: "20130205000000")
-    assert recover(object(), {"date": "2002-01-01", "pdf_url": "https://x/200201pap.pdf"}) is None
+    assert recover(object(), {"date": "2002-01-01", "document_url": "https://x/200201pap.pdf"}) is None
 
 
 # ---- phase 2: repec-check ------------------------------------------
@@ -961,7 +961,7 @@ def test_wp_dates_apply_only_replays_index(tmp_path):
     row = {"doc_id": "d1", "bank_code": "ecb", "doc_type": "D1", "date": "2010-01-01",
            "date_precision": "month", "date_source": "repec",
            "source_url": "https://ideas.repec.org/p/ecb/ecbwps/2010100.html",
-           "title": "X", "pdf_url": "https://x/wp.pdf", "year": 2010}
+           "title": "X", "document_url": "https://x/wp.pdf", "year": 2010}
     cfg.manifest_file("ecb").parent.mkdir(parents=True, exist_ok=True)
     cfg.manifest_file("ecb").write_text(json.dumps(row) + "\n")
     index_path(cfg).write_text(json.dumps({
@@ -973,16 +973,16 @@ def test_wp_dates_apply_only_replays_index(tmp_path):
     # in the row's own month (2010-01): a replayed hit is month-checked (#22)
     assert after["date"] == "2010-01-15" and after["date_precision"] == "day"
     assert after["date_source"] == "wayback" and after["year"] == 2010
-    assert after["doc_id"] == "d1" and after["pdf_url"] == row["pdf_url"]   # identity intact
+    assert after["doc_id"] == "d1" and after["document_url"] == row["document_url"]   # identity intact
 
 
 def test_run_wp_migrate_write_applies_in_place_and_is_idempotent(tmp_path, monkeypatch):
     native = [
         DocRecord(bank_code="ecb", doc_type=DocType.D1, title="WP 3244",
-                  pdf_url="https://www.ecb.europa.eu/pub/pdf/scpwps/ecb.wp3244~aa.en.pdf",
+                  document_url="https://www.ecb.europa.eu/pub/pdf/scpwps/ecb.wp3244~aa.en.pdf",
                   date=date(2026, 6, 3)),
         DocRecord(bank_code="ecb", doc_type=DocType.D2, title="OP 388",
-                  pdf_url="https://www.ecb.europa.eu/pub/pdf/scpops/ecb.op388.en.pdf",
+                  document_url="https://www.ecb.europa.eu/pub/pdf/scpops/ecb.op388.en.pdf",
                   date=date(2026, 2, 10)),
     ]
     monkeypatch.setitem(wp_migrate._NATIVE, "ecb", lambda fetcher: iter(native))
@@ -991,15 +991,15 @@ def test_run_wp_migrate_write_applies_in_place_and_is_idempotent(tmp_path, monke
     Storage(cfg)  # ensure dirs exist
     rows = [
         {"doc_id": "id3244", "bank_code": "ecb", "doc_type": "D1", "date": "2026-06-01",
-         "pdf_url": "https://www.ecb.europa.eu//pub/pdf/scpwps/ecb.wp3244~aa.en.pdf",
+         "document_url": "https://www.ecb.europa.eu//pub/pdf/scpwps/ecb.wp3244~aa.en.pdf",
          "source_url": "https://ideas.repec.org/p/ecb/ecbwps/20263244.html",
          "sha256": "h1", "local_path": "/raw/3244.pdf"},
         {"doc_id": "id388", "bank_code": "ecb", "doc_type": "D2", "date": "2026-02-01",
-         "pdf_url": "https://www.ecb.europa.eu//pub/pdf/scpops/ecb.op388.en.pdf",
+         "document_url": "https://www.ecb.europa.eu//pub/pdf/scpops/ecb.op388.en.pdf",
          "source_url": "https://ideas.repec.org/p/ecb/ecbops/2026388.html",
          "sha256": "h2", "local_path": "/raw/388.pdf"},
         {"doc_id": "idus", "bank_code": "us", "doc_type": "D1", "date": "2020-01-01",
-         "pdf_url": "https://federalreserve.gov/x.pdf", "source_url": ""},
+         "document_url": "https://federalreserve.gov/x.pdf", "source_url": ""},
     ]
     cfg.manifest_path.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
 
@@ -1013,7 +1013,7 @@ def test_run_wp_migrate_write_applies_in_place_and_is_idempotent(tmp_path, monke
     assert "https://www.ecb.europa.eu/pub/pdf/scpwps/ecb.wp3244~aa.en.pdf" in a["alt_urls"]
     # invariant #1: identity/content/file pointers untouched
     assert a["doc_id"] == "id3244" and a["sha256"] == "h1" and a["local_path"] == "/raw/3244.pdf"
-    assert a["pdf_url"] == rows[0]["pdf_url"]
+    assert a["document_url"] == rows[0]["document_url"]
     # non-ECB row passes through byte-for-byte (no schema fields injected)
     assert after["idus"] == rows[2]
 

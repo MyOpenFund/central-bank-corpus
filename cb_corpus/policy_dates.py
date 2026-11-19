@@ -55,6 +55,7 @@ from .dates import (FED_SEP_COMPILATION_URL, KINDLESS_DATE_SOURCES, PRECISION_DA
                     PRECISION_MONTH, PRECISION_YEAR, PRECISIONS, STATUS_DATED,
                     STATUS_NO_EVIDENCE, STATUS_NO_RULE, STATUS_NOT_A_REPORT, DateMatch,
                     infer_policy_date, is_misfiled, policy_date_kind)
+from .models import row_url
 from .storage import iter_manifest_rows, merge_rows_locked
 
 #: Default scope: the policy core. Both are parameters of run_policy_dates
@@ -111,13 +112,13 @@ ROW_NOTES = (
             field="title", pattern=STUB_TITLE),
     RowNote(note="individual projections: dated at the meeting, released about five "
                  "years later",
-            field="pdf_url", pattern=FED_SEP_COMPILATION_URL, series=("us", "F1")),
+            field="document_url", pattern=FED_SEP_COMPILATION_URL, series=("us", "F1")),
 )
 NOTE_MISFILED = "misfiled: not a document of this series; dated like its page, no date_kind"
 
 CSV_COLUMNS = ("doc_id", "bank", "doc_type", "old_date", "old_precision", "new_date",
                "new_precision", "kind", "action", "rule", "evidence", "fields_changed",
-               "note", "title", "pdf_url")
+               "note", "title", "document_url")
 
 
 @dataclass
@@ -214,16 +215,16 @@ def plan_row(row: dict, *, rules: Optional[dict] = None,
     `rules` defaults to dates.POLICY_DATE_RULES. The caller decides the
     scope; a series without a rule comes back `no-rule` with no change."""
     bank, code = row.get("bank_code"), row.get("doc_type")
-    title, pdf_url = row.get("title"), row.get("pdf_url")
+    title, document_url = row.get("title"), row_url(row)
     old_date = row.get("date") or None
     old_label = row.get("date_precision")
     label = old_label if old_label in PRECISIONS else None
-    inf = infer_policy_date(bank, code, title=title, pdf_url=pdf_url,
+    inf = infer_policy_date(bank, code, title=title, document_url=document_url,
                             source_url=row.get("source_url"), rules=rules)
     if inf.status == STATUS_NO_RULE:
         return RowPlan(action=inf.status, new_date=old_date, new_precision=old_label,
                        kind=row.get("date_kind") or "")
-    misfiled = is_misfiled(bank, code, title=title, pdf_url=pdf_url, rules=rules)
+    misfiled = is_misfiled(bank, code, title=title, document_url=document_url, rules=rules)
     note = _notes(row, misfiled)
     if inf.status != STATUS_DATED:
         plan = RowPlan(action=inf.status, new_date=old_date, new_precision=old_label,
@@ -271,7 +272,7 @@ def plan_row(row: dict, *, rules: Optional[dict] = None,
         source = plan.updates["date_source"] = EVIDENCE_DATE_SOURCE
     # What the date IS, for the date and precision the row will hold.
     plan.kind = policy_date_kind(bank, code, date=t_date, precision=t_prec, date_source=source,
-                                 title=title, pdf_url=pdf_url) or ""
+                                 title=title, document_url=document_url) or ""
     if plan.kind and row.get("date_kind") != plan.kind:
         plan.updates["date_kind"] = plan.kind
     elif not plan.kind and "date_kind" in row:
@@ -357,7 +358,7 @@ def run_policy_dates(bank_codes: Optional[Iterable[str]] = None,
                         row.get("date_precision") or "", plan.new_date or "",
                         plan.new_precision or "", plan.kind, plan.action, plan.rule,
                         plan.evidence, plan.fields_changed(), plan.note,
-                        row.get("title") or "", row.get("pdf_url") or ""])
+                        row.get("title") or "", row_url(row) or ""])
 
     result = dict(counts)
     result["rows"] = sum(counts.values())

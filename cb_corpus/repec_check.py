@@ -30,6 +30,7 @@ from bs4 import BeautifulSoup
 from .banks import get_bank
 from .config import Config
 from .http import Fetcher
+from .models import row_url
 from .runreport import SourceStats
 from .sources.repec import (IDEAS, SERIES, _paper_meta, cap_truncation,
                             extract_pdf_candidates, listing_error_truncation,
@@ -193,7 +194,7 @@ def run_repec_check(bank_codes: Optional[Iterable[str]] = None,
                 if track:
                     by_h.setdefault(h, set()).add(did)
             if key_pdf:
-                k = key_pdf(row.get("pdf_url") or "") or (key_handle and key_handle(row.get("source_url") or ""))
+                k = key_pdf(row_url(row) or "") or (key_handle and key_handle(row.get("source_url") or ""))
                 if k:
                     keys.add(k)
                     if track:
@@ -203,7 +204,7 @@ def run_repec_check(bank_codes: Optional[Iterable[str]] = None,
                 titles.add(t)
                 if track:
                     by_t.setdefault(t, set()).add(did)
-            for u in [row.get("pdf_url"), *(row.get("alt_urls") or [])]:
+            for u in [row_url(row), *(row.get("alt_urls") or [])]:
                 if u:
                     urls.add(match_key_url(u))
                     if track:
@@ -302,7 +303,7 @@ def run_repec_check(bank_codes: Optional[Iterable[str]] = None,
                                      "doc_type": row.get("doc_type", ""),
                                      "date": row.get("date", ""),
                                      "title": row.get("title", ""),
-                                     "pdf_url": row.get("pdf_url", ""), "bucket": bucket})
+                                     "document_url": (row_url(row) or ""), "bucket": bucket})
         results[bank] = summary
         print(f"{bank}: {summary}")
 
@@ -317,7 +318,7 @@ def run_repec_check(bank_codes: Optional[Iterable[str]] = None,
     rout = reverse_csv_path or str(cfg.reports_dir / "repec_check_reverse.csv")
     with open(rout, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=["bank", "doc_id", "doc_type", "date",
-                                           "title", "pdf_url", "bucket"])
+                                           "title", "document_url", "bucket"])
         w.writeheader()
         for r in reverse_rows:
             w.writerow(r)
@@ -350,14 +351,14 @@ def _build_indexes(storage: Storage, bank: str) -> dict:
         if h:
             by_handle.setdefault(h, []).append(row)
         if key_pdf:
-            k = key_pdf(row.get("pdf_url") or "") or (
+            k = key_pdf(row_url(row) or "") or (
                 key_handle and key_handle(row.get("source_url") or ""))
             if k:
                 by_key.setdefault(k, []).append(row)
         t = normalize_title(row.get("title") or "")
         if t:
             by_title.setdefault(t, []).append(row)
-        for u in [row.get("pdf_url"), *(row.get("alt_urls") or [])]:
+        for u in [row_url(row), *(row.get("alt_urls") or [])]:
             if u:
                 by_url.setdefault(match_key_url(u), []).append(row)
         src = row.get("source_url")
@@ -427,7 +428,7 @@ def _walk_entries(bank: str, fetcher: Fetcher, idx: dict, bank_home: str):
             if not cand_by_id:
                 # Second pass (cheap -- only unmatched entries): fetch the
                 # IDEAS page and re-match by its bank PDF-URL candidates
-                # (matched against pdf_url/alt_urls) or its canonical title.
+                # (matched against document_url/alt_urls) or its canonical title.
                 try:
                     html = fetcher.get_text(ideas_url)
                     fetched_title, _, _ = _paper_meta(html)  # never dates (reconcile)

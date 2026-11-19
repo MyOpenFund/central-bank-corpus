@@ -138,7 +138,7 @@ def test_storage_refuses_render_keeps_html_counts_and_warns(tmp_path, monkeypatc
     st, rendered = _html_storage(tmp_path, monkeypatch,
                                  _resolver({"intranet.example": ["192.168.0.7"]}))
     rec = DocRecord(bank_code="ecb", doc_type=DocType.A3, title="x",
-                    pdf_url="http://intranet.example/x.html", date=date(2024, 1, 1))
+                    document_url="http://intranet.example/x.html", date=date(2024, 1, 1))
     assert st.save(rec) == "saved"
     assert rendered == []                              # Chrome never launched
     assert rec.mime_type == "text/html" and rec.local_path.endswith(".html")
@@ -151,9 +151,9 @@ def test_storage_renders_public_url(tmp_path, monkeypatch):
     st, rendered = _html_storage(tmp_path, monkeypatch,
                                  _resolver({"www.ecb.europa.eu": [PUBLIC_V4]}))
     rec = DocRecord(bank_code="ecb", doc_type=DocType.A3, title="x",
-                    pdf_url="https://www.ecb.europa.eu/x.en.html", date=date(2024, 1, 1))
+                    document_url="https://www.ecb.europa.eu/x.en.html", date=date(2024, 1, 1))
     assert st.save(rec) == "saved"
-    assert rendered == [rec.pdf_url]
+    assert rendered == [rec.document_url]
     assert rec.mime_type == "application/pdf" and st.render_refused == 0
 
 
@@ -282,7 +282,7 @@ def _html_manifest(tmp_path, url):
     html = tmp_path / "raw" / "ecb" / "A3" / "2024" / "d1.html"
     html.parent.mkdir(parents=True, exist_ok=True)
     html.write_bytes(b"<html>x</html>")
-    row = {"bank_code": "ecb", "doc_type": "A3", "title": "x", "pdf_url": url,
+    row = {"bank_code": "ecb", "doc_type": "A3", "title": "x", "document_url": url,
            "date": "2024-01-01", "year": 2024, "doc_id": "d1", "mime_type": "text/html",
            "local_path": str(html), "sha256": None, "language": "en"}
     mf = tmp_path / "manifest" / "ecb.jsonl"
@@ -329,7 +329,7 @@ def test_retry_html_strategy_goes_through_the_guard(tmp_path, monkeypatch):
 def test_save_many_prints_render_refused_summary(tmp_path, monkeypatch, capsys):
     st, _rendered = _html_storage(tmp_path, monkeypatch, _resolver({}))
     recs = [DocRecord(bank_code="ecb", doc_type=DocType.A3, title=n,
-                      pdf_url=f"http://10.0.0.{i}/{n}.html")
+                      document_url=f"http://10.0.0.{i}/{n}.html")
             for i, n in enumerate(("a", "b"), start=1)]
     st.fetcher.get_bytes = lambda url: (url.encode(), "text/html")   # distinct bytes
     st.save_many(recs, label="ecb")
@@ -376,6 +376,6 @@ def test_render_refused_summaries_name_unresolvable_hosts(tmp_path, monkeypatch,
     st, _ = _html_storage(tmp_path / "s", monkeypatch, _resolver({}))
     st.fetcher.get_bytes = lambda url: (b"<html>x</html>", "text/html")
     st.save_many([DocRecord(bank_code="ecb", doc_type=DocType.A3, title="n",
-                            pdf_url="https://nowhere.example/n.html")], label="ecb")
+                            document_url="https://nowhere.example/n.html")], label="ecb")
     assert "[ecb] render refused: 1 (private network or unresolvable host; HTML kept)" \
         in capsys.readouterr().err

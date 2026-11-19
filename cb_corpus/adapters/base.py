@@ -183,7 +183,7 @@ class BankAdapter(ABC):
                 # reindex/test paths, which want every record.
                 skip = getattr(self, "_skip_known_url", None)
                 if skip is not None:
-                    recs = (r for r in recs if not skip(r.pdf_url))
+                    recs = (r for r in recs if not skip(r.document_url))
                 yield from recs
             else:
                 if native_only:
@@ -199,7 +199,7 @@ class BankAdapter(ABC):
             # double-slash legacy rows, see `data: index normalized URL forms
             # for 15 legacy D3 rows`). doc_id-based dedup in Storage.save()
             # only catches that case if doc_id happens to match; is_known_url()
-            # (primary pdf_url + alt_urls) catches it unconditionally, and
+            # (primary document_url + alt_urls) catches it unconditionally, and
             # doing it here — before download — is what actually stops the
             # nightly re-fetch, since save() only skips by doc_id BEFORE
             # fetching too, not by URL. For every native type whose URL *is*
@@ -211,7 +211,7 @@ class BankAdapter(ABC):
             recs = self._discover_native(doc_type, since)
             skip = getattr(self, "_skip_known_url", None)
             if skip is not None:
-                recs = (r for r in recs if not skip(r.pdf_url))
+                recs = (r for r in recs if not skip(r.document_url))
             yield from recs
 
     def discover_all(self, scope: tuple[DocType, ...] = FULL_SCOPE,

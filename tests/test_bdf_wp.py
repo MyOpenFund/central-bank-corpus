@@ -42,9 +42,9 @@ def test_parse_legacy_year_prefix_variants_and_day_precision():
 
     # n°745, the newest paper, is filename `wp745.pdf` — a plain scraped link.
     d745 = next(r for r in rows if r[2] == 745)
-    d, prec, number, title, pdf_url = d745
+    d, prec, number, title, document_url = d745
     assert d == date(2019, 12, 27) and prec == "day"
-    assert pdf_url == BDF_LEGACY + "/sites/default/files/medias/documents/wp745.pdf"
+    assert document_url == BDF_LEGACY + "/sites/default/files/medias/documents/wp745.pdf"
     assert title
 
     # n°738 carries a revised-version filename suffix (`wp738_1.pdf`) — the
@@ -192,12 +192,12 @@ def test_iter_legacy_yields_number_docrecord_pairs_from_years(monkeypatch):
     assert all(r.date_precision == "month" for r in recs)
     # The pairing is stable per row: n°30 keeps its own record, not n°3's.
     by_number = dict(pairs)
-    assert by_number[30].pdf_url.endswith("document-de-travail_30_1994.pdf")
+    assert by_number[30].document_url.endswith("document-de-travail_30_1994.pdf")
     # n°3's PDF is filed under a completely unrelated "debats-economiques_..."
     # filename (a mismatched re-upload) -- proof the link must always be
     # scraped, never derived from a document-de-travail_{num}_{year} pattern.
-    assert by_number[3].pdf_url.endswith("debats-economiques_3_2006-10.pdf")
-    assert {r.pdf_url.rsplit("/", 1)[-1] for r in recs} == {
+    assert by_number[3].document_url.endswith("debats-economiques_3_2006-10.pdf")
+    assert {r.document_url.rsplit("/", 1)[-1] for r in recs} == {
         "document-de-travail_30_1994.pdf", "debats-economiques_3_2006-10.pdf",
     }
 
@@ -237,12 +237,12 @@ def test_iter_legacy_years_none_walks_full_range_newest_first(monkeypatch):
     assert f.calls[1].endswith("year=1994.html")
 
 
-def test_iter_legacy_docrecord_doc_id_is_stable_and_keyed_on_pdf_url():
+def test_iter_legacy_docrecord_doc_id_is_stable_and_keyed_on_document_url():
     import cb_corpus.sources.bdf_wp as bdf_mod
     f = _FakeFetcher({"year=1994.html": _read("legacy_1994_sparse.html")})
     pairs = list(_iter_legacy(f, years={1994}))
     ids = {r.doc_id for _n, r in pairs}
-    assert len(ids) == len(pairs)                        # distinct pdf_url -> distinct doc_id
+    assert len(ids) == len(pairs)                        # distinct document_url -> distinct doc_id
 
 
 # ==== New-system walker (Task 2) =======================================
@@ -393,7 +393,7 @@ def test_parse_new_detail_authors():
     assert authors == ["Bertrand Candelon", "Laurent Ferrara", "Marc Joëts"]
 
 
-def test_parse_new_detail_pdf_url_scraped_never_derived():
+def test_parse_new_detail_document_url_scraped_never_derived():
     _n, _a, pdf = parse_new_detail(_read("new_detail_wp660.html"))
     assert pdf == BDF_NEW + "/system/files/2023-05/wp660_0.pdf"
     # n661's PDF filename carries a completely different naming convention
@@ -461,12 +461,12 @@ def test_iter_new_yields_number_docrecord_pairs(monkeypatch):
     assert r660.date == date(2018, 1, 15)
     assert r660.date_precision == "day" and r660.date_source == "bank_site"
     assert r660.provenance == "bank_site" and r660.mime_type == "application/pdf"
-    assert r660.pdf_url == BDF_NEW + "/system/files/2023-05/wp660_0.pdf"
+    assert r660.document_url == BDF_NEW + "/system/files/2023-05/wp660_0.pdf"
     assert r660.source_url.endswith("exchange-rate-movements-firm-level-exports-and-heterogeneity")
 
     r661 = by_number[661]
     assert r661.date == date(2018, 1, 24)
-    assert r661.pdf_url == BDF_NEW + "/system/files/2023-05/document-de-travail-661_2018-01_0.pdf"
+    assert r661.document_url == BDF_NEW + "/system/files/2023-05/document-de-travail-661_2018-01_0.pdf"
 
     # only the single listing page was fetched, plus the two detail pages
     assert len(f.calls) == 3
@@ -569,13 +569,13 @@ def test_discover_fr_wp_full_mode_prefers_new_system_in_the_overlap(monkeypatch)
 
     legacy_500 = DocRecord(
         bank_code="fr", doc_type=DocType.D1, title="Legacy 500",
-        pdf_url="https://legacy/wp500.pdf", source_url="https://legacy/y2019.html",
+        document_url="https://legacy/wp500.pdf", source_url="https://legacy/y2019.html",
         date=date(2019, 6, 1), provenance="bank_site", mime_type="application/pdf",
         date_precision="month", date_source="bank_site",
     )
     new_500 = DocRecord(
         bank_code="fr", doc_type=DocType.D1, title="New 500",
-        pdf_url="https://new/wp500.pdf", source_url="https://new/wp500",
+        document_url="https://new/wp500.pdf", source_url="https://new/wp500",
         date=date(2019, 6, 17), provenance="bank_site", mime_type="application/pdf",
         date_precision="day", date_source="bank_site",
     )
@@ -603,13 +603,13 @@ def test_discover_fr_wp_full_mode_unions_non_overlapping_numbers(monkeypatch):
 
     legacy_only = DocRecord(
         bank_code="fr", doc_type=DocType.D1, title="Legacy only n1",
-        pdf_url="https://legacy/wp1.pdf", source_url="https://legacy/y1994.html",
+        document_url="https://legacy/wp1.pdf", source_url="https://legacy/y1994.html",
         date=date(1994, 3, 1), provenance="bank_site", mime_type="application/pdf",
         date_precision="month", date_source="bank_site",
     )
     new_only = DocRecord(
         bank_code="fr", doc_type=DocType.D1, title="New only n1060",
-        pdf_url="https://new/wp1060.pdf", source_url="https://new/wp1060",
+        document_url="https://new/wp1060.pdf", source_url="https://new/wp1060",
         date=date(2026, 8, 21), provenance="bank_site", mime_type="application/pdf",
         date_precision="day", date_source="bank_site",
     )
@@ -632,19 +632,19 @@ def test_discover_fr_wp_full_mode_yields_each_number_once(monkeypatch):
 
     def fake_iter_legacy(fetcher, years=None):
         yield 1, DocRecord(bank_code="fr", doc_type=DocType.D1, title="a",
-                           pdf_url="https://legacy/1.pdf", source_url="https://legacy/1",
+                           document_url="https://legacy/1.pdf", source_url="https://legacy/1",
                            date=date(2000, 1, 1), provenance="bank_site",
                            mime_type="application/pdf", date_precision="month",
                            date_source="bank_site")
         yield 2, DocRecord(bank_code="fr", doc_type=DocType.D1, title="b",
-                           pdf_url="https://legacy/2.pdf", source_url="https://legacy/2",
+                           document_url="https://legacy/2.pdf", source_url="https://legacy/2",
                            date=date(2001, 1, 1), provenance="bank_site",
                            mime_type="application/pdf", date_precision="month",
                            date_source="bank_site")
 
     def fake_iter_new(fetcher, since=None):
         yield 2, DocRecord(bank_code="fr", doc_type=DocType.D1, title="b-new",
-                           pdf_url="https://new/2.pdf", source_url="https://new/2",
+                           document_url="https://new/2.pdf", source_url="https://new/2",
                            date=date(2001, 3, 5), provenance="bank_site",
                            mime_type="application/pdf", date_precision="day",
                            date_source="bank_site")
@@ -669,7 +669,7 @@ def test_discover_fr_wp_since_mode_skips_legacy_entirely(monkeypatch):
 
     new_rec = DocRecord(
         bank_code="fr", doc_type=DocType.D1, title="fresh",
-        pdf_url="https://new/wp1060.pdf", source_url="https://new/wp1060",
+        document_url="https://new/wp1060.pdf", source_url="https://new/wp1060",
         date=date(2026, 8, 21), provenance="bank_site", mime_type="application/pdf",
         date_precision="day", date_source="bank_site",
     )
@@ -716,7 +716,7 @@ def test_discover_fr_wp_full_mode_real_fixtures_end_to_end(monkeypatch):
     })
     recs = list(discover_fr_wp(f, years={1994}))
     assert len(recs) == 4                                          # 30, 3, 660, 661
-    pdf_suffixes = {r.pdf_url.rsplit("/", 1)[-1] for r in recs}
+    pdf_suffixes = {r.document_url.rsplit("/", 1)[-1] for r in recs}
     assert pdf_suffixes == {
         "document-de-travail_30_1994.pdf", "debats-economiques_3_2006-10.pdf",
         "wp660_0.pdf", "document-de-travail-661_2018-01_0.pdf",
@@ -738,7 +738,7 @@ def test_fr_adapter_registered_and_reaches_discover_fr_wp_for_d1(monkeypatch):
 
     sentinel = DocRecord(
         bank_code="fr", doc_type=DocType.D1, title="sentinel",
-        pdf_url="https://new/sentinel.pdf", source_url="https://new/sentinel",
+        document_url="https://new/sentinel.pdf", source_url="https://new/sentinel",
         date=date(2026, 8, 21), provenance="bank_site", mime_type="application/pdf",
         date_precision="day", date_source="bank_site",
     )
@@ -765,7 +765,7 @@ from cb_corpus.sources.bdf_wp import fr_wp_number
 
 
 def test_fr_wp_number_manifest_url_forms():
-    """v2 manifest pdf_url forms (downloaded via RePEc): the old
+    """v2 manifest document_url forms (downloaded via RePEc): the old
     `working-paper_NNN_YYYY.pdf` / `document-de-travail_NNN_YYYY.pdf` legacy
     naming, and the modern short `WPNNN.pdf` / `DTNNN.pdf` naming."""
     B = "https://publications.banque-france.fr/sites/default/files/medias/documents/"
@@ -776,7 +776,7 @@ def test_fr_wp_number_manifest_url_forms():
 
 
 def test_fr_wp_number_listing_url_forms():
-    """The native walkers' own scraped pdf_url forms (see bdf_wp module
+    """The native walkers' own scraped document_url forms (see bdf_wp module
     docstring): wild legacy prefixes, and the new site's WP{NUM}.pdf."""
     B = "https://publications.banque-france.fr/sites/default/files/medias/documents/"
     assert fr_wp_number(B + "document-de-travail_350_2011.pdf") == 350

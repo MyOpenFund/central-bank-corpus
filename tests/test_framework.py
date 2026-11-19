@@ -95,7 +95,7 @@ def test_parse_bis_listing():
     assert it.date == date(2024, 3, 15)
     assert it.title == "Inflation outlook"
     assert it.institution == "Bank of England"
-    assert it.pdf_url.endswith("/review/r240315a.pdf")
+    assert it.document_url.endswith("/review/r240315a.pdf")
 
 
 # ---- BIS sitemap-based discovery (v2) -------------------------------
@@ -132,11 +132,11 @@ def test_parse_sitemap_index_filters_yearly_files():
 
 def test_parse_year_sitemap_keeps_only_review_pdfs():
     metas = parse_year_sitemap(BIS_YEAR_SITEMAP)
-    assert {m.pdf_url for m in metas} == {
+    assert {m.document_url for m in metas} == {
         "https://www.bis.org/review/r240315a.pdf",
         "https://www.bis.org/review/r240316b.pdf",
     }
-    first = next(m for m in metas if "r240315a" in m.pdf_url)
+    first = next(m for m in metas if "r240315a" in m.document_url)
     assert first.date == date(2024, 3, 15)
     assert first.detail_url.endswith("r240315a.htm")
 
@@ -340,16 +340,16 @@ def test_storage_tries_alt_urls_on_download_failure(tmp_path):
 
     st.fetcher.get_bytes = fake_get_bytes
     rec = DocRecord(bank_code="fr", doc_type=DocType.D1, title="x",
-                    pdf_url="https://blocked.fr/preferred.pdf",
+                    document_url="https://blocked.fr/preferred.pdf",
                     alt_urls=["https://econstor.eu/fallback.pdf"],
                     date=date(2024, 1, 1))
     assert st.save(rec) == "saved"
     assert calls == ["https://blocked.fr/preferred.pdf",
                      "https://econstor.eu/fallback.pdf"]        # tried in order
     assert Path(rec.local_path).read_bytes().startswith(b"%PDF")
-    assert rec.pdf_url == "https://blocked.fr/preferred.pdf"    # citation/doc_id unchanged
+    assert rec.document_url == "https://blocked.fr/preferred.pdf"    # citation/doc_id unchanged
     # alt_urls is persisted (WP v3) so dedup recognises fallback URLs across
-    # restarts — but doc_id stays bound to the preferred pdf_url.
+    # restarts — but doc_id stays bound to the preferred document_url.
     assert rec.to_row()["alt_urls"] == ["https://econstor.eu/fallback.pdf"]
 
 
@@ -386,7 +386,7 @@ def test_wayback_for_url_latest_or_none():
     assert wayback_for_url(Empty(), "http://riksbank.com/upload/none.pdf") is None
 
 
-def test_boe_wp_sitemap_parser_and_pdf_url():
+def test_boe_wp_sitemap_parser_and_document_url():
     """BoE working papers from the bank's own sitemap -> live PDF urls."""
     from cb_corpus.sources.boe_wp import sitemap_papers
 
@@ -760,7 +760,7 @@ def test_ecb_blog_discovery_yields_docrecords_day_precision_and_skips_malformed(
     assert all(r.date_precision == "day" for r in recs)
     dates = sorted(r.date for r in recs)
     assert dates == [date(2024, 11, 14), date(2024, 11, 19), date(2026, 2, 27)]
-    assert not any("blog-untitled" in r.pdf_url for r in recs)
+    assert not any("blog-untitled" in r.document_url for r in recs)
     err = capsys.readouterr().err
     assert "blog-untitled" in err and "D3" in err
 
@@ -783,7 +783,7 @@ def test_ecb_d3_native_and_reached_by_discover_all():
 
 def test_ecb_d3_double_slash_legacy_row_deduped_via_alt_url(tmp_path):
     """15 of the 212 historical D3 rows were written by the old one-off
-    scraper with a double-slash pdf_url (`europa.eu//press/...`); the new
+    scraper with a double-slash document_url (`europa.eu//press/...`); the new
     `_discover_blog` always normalizes to a single slash. Without indexing the
     normalized form, is_known_url() would miss on every nightly run and
     silently re-fetch those 15 posts. The data-fix registers the normalized
@@ -795,7 +795,7 @@ def test_ecb_d3_double_slash_legacy_row_deduped_via_alt_url(tmp_path):
                        "ecb.blog230824~362178a805.en.html")
     row = {
         "bank_code": "ecb", "doc_type": "D3", "title": "ECB D3 2023-08-24",
-        "pdf_url": legacy_url, "source_url": "", "date": "2023-08-24",
+        "document_url": legacy_url, "source_url": "", "date": "2023-08-24",
         "language": "en", "provenance": "bank_site", "mime_type": "text/html",
         "sha256": "f8ee5df6f1402ceee7af11b4e8e9706638c8b213bfe844b1e265c6b4160e7b86",
         "local_path": "data/raw/ecb/D3/2023/f0d212497f8b1289.html",
@@ -823,7 +823,7 @@ def test_ecb_d3_known_legacy_row_filtered_before_any_fetch_through_discover_flow
                        "ecb.blog230824~362178a805.en.html")
     row = {
         "bank_code": "ecb", "doc_type": "D3", "title": "ECB D3 2023-08-24",
-        "pdf_url": legacy_url, "source_url": "", "date": "2023-08-24",
+        "document_url": legacy_url, "source_url": "", "date": "2023-08-24",
         "language": "en", "provenance": "bank_site", "mime_type": "text/html",
         "sha256": "f8ee5df6f1402ceee7af11b4e8e9706638c8b213bfe844b1e265c6b4160e7b86",
         "local_path": "data/raw/ecb/D3/2023/f0d212497f8b1289.html",
@@ -871,7 +871,7 @@ def test_ecb_d3_known_legacy_row_filtered_before_any_fetch_through_discover_flow
     adapter._skip_known_url = storage.is_known_url   # what pipeline.run() sets
 
     recs = list(adapter.discover(DocType.D3))
-    yielded_urls = [r.pdf_url for r in recs]
+    yielded_urls = [r.document_url for r in recs]
     assert normalized_url not in yielded_urls   # filtered by discover(), not by save()
     assert any("20260301" in u for u in yielded_urls)   # the new post still comes through
 
@@ -893,7 +893,7 @@ def test_discovery_slash_variant_of_indexed_row_skipped_before_fetch(tmp_path):
                  "ecb.blog230824~362178a805.en.html")
     row = {
         "bank_code": "ecb", "doc_type": "D3", "title": "ECB D3 2023-08-24",
-        "pdf_url": clean_url, "source_url": "", "date": "2023-08-24",
+        "document_url": clean_url, "source_url": "", "date": "2023-08-24",
         "language": "en", "provenance": "bank_site", "mime_type": "text/html",
         "sha256": "f8ee5df6f1402ceee7af11b4e8e9706638c8b213bfe844b1e265c6b4160e7b86",
         "local_path": "data/raw/ecb/D3/2023/f0d212497f8b1289.html",
@@ -940,7 +940,7 @@ def test_discovery_slash_variant_of_indexed_row_skipped_before_fetch(tmp_path):
     adapter._skip_known_url = storage.is_known_url   # what pipeline.run() sets
 
     recs = list(adapter.discover(DocType.D3))
-    yielded_urls = [r.pdf_url for r in recs]
+    yielded_urls = [r.document_url for r in recs]
     assert variant_url not in yielded_urls   # filtered by discover(), not by save()
     assert any("20260301" in u for u in yielded_urls)   # the new post still comes through
 
@@ -959,12 +959,12 @@ def test_ecb_c2_native_and_reached_by_discover_all(monkeypatch):
 
     recs = [
         DocRecord(bank_code="ecb", doc_type=DocType.C2, title="Interview A",
-                  pdf_url="https://www.ecb.europa.eu/press/inter/date/2024/html/"
+                  document_url="https://www.ecb.europa.eu/press/inter/date/2024/html/"
                           "ecb.in240103~aa.en.html",
                   date=date(2024, 1, 3), provenance="bank_site", mime_type="text/html",
                   date_precision="day"),   # as the foedb source states it
         DocRecord(bank_code="ecb", doc_type=DocType.C2, title="Interview B",
-                  pdf_url="https://www.ecb.europa.eu/press/inter/date/2024/html/"
+                  document_url="https://www.ecb.europa.eu/press/inter/date/2024/html/"
                           "ecb.in240319~bb.en.html",
                   date=date(2024, 3, 19), provenance="bank_site", mime_type="text/html",
                   date_precision="day"),
@@ -983,7 +983,7 @@ def test_ecb_c2_native_and_reached_by_discover_all(monkeypatch):
 
 
 def test_ecb_c2_double_slash_legacy_row_deduped_via_alt_url(tmp_path):
-    """54 of the 637 pre-existing C2 rows carry a double-slash pdf_url
+    """54 of the 637 pre-existing C2 rows carry a double-slash document_url
     (`europa.eu//press/...`), the same one-off scraper artifact as 15 of
     D3's 212 rows. The live foedb source (sources/ecb_foedb.discover_ecb_interviews)
     always yields the normalized single-slash form -- the data-fix registers
@@ -996,7 +996,7 @@ def test_ecb_c2_double_slash_legacy_row_deduped_via_alt_url(tmp_path):
                        "ecb.in191216~8014b1bae6.en.html")
     row = {
         "bank_code": "ecb", "doc_type": "C2", "title": "Interview with NOS Nieuwsuur",
-        "pdf_url": legacy_url, "source_url": "", "date": "2019-12-16",
+        "document_url": legacy_url, "source_url": "", "date": "2019-12-16",
         "language": "en", "provenance": "bank_site", "mime_type": "text/html",
         "sha256": "9d67b7c417f25253b3b81fe698bea2b0263f0cef430f2f2bdb239192eb2e7fb6",
         "local_path": "data/raw/ecb/C2/2019/18f03b281e9ab1ba.html",
@@ -1013,7 +1013,7 @@ def test_ecb_c2_double_slash_legacy_row_deduped_via_alt_url(tmp_path):
 
 def test_ecb_d1_double_slash_legacy_row_deduped_via_alt_url(tmp_path):
     """17 live D1/D2 rows (repec_discovery, 2026-07/08 vintage) carry the same
-    double-slash pdf_url artifact (`europa.eu//pub/pdf/...`) as the D3/C2
+    double-slash document_url artifact (`europa.eu//pub/pdf/...`) as the D3/C2
     legacy rows above -- repec discovery always yields the normalized
     single-slash form, so without indexing it these rows would silently
     re-download on every nightly run. Same amendment, same convention:
@@ -1025,7 +1025,7 @@ def test_ecb_d1_double_slash_legacy_row_deduped_via_alt_url(tmp_path):
     row = {
         "bank_code": "ecb", "doc_type": "D1",
         "title": "A theory of bank liquidity requirements",
-        "pdf_url": legacy_url,
+        "document_url": legacy_url,
         "source_url": "https://ideas.repec.org/p/ecb/ecbwps/20263252.html",
         "date": "2026-07-01", "language": "en", "provenance": "repec_discovery",
         "mime_type": "application/pdf",
@@ -1047,7 +1047,7 @@ def test_storage_indexes_any_url_in_dry_run(tmp_path):
     cfg = Config(data_dir=tmp_path)
     st = Storage(cfg)
     rec = DocRecord(bank_code="gb", doc_type=DocType.C1, title="x",
-                    pdf_url="https://www.bankofengland.co.uk/a.pdf")
+                    document_url="https://www.bankofengland.co.uk/a.pdf")
     assert st.save(rec, dry_run=True) == "dry-run:indexed"
     # second time should be deduped on doc_id
     assert st.save(rec, dry_run=True) == "skip:already-indexed"
@@ -1060,7 +1060,7 @@ def test_storage_tracks_known_urls_for_rerun_dedup(tmp_path):
     st1 = Storage(cfg)
     st1.fetcher.get_bytes = lambda url: (pdf_body(b"%PDF-1.4 data"), "application/pdf")
     rec = DocRecord(bank_code="de", doc_type=DocType.C1, title="x",
-                    pdf_url="https://www.bis.org/review/r240315a.pdf",
+                    document_url="https://www.bis.org/review/r240315a.pdf",
                     date=date(2024, 3, 15))
     assert st1.save(rec) == "saved"
     # Reopen — _urls is re-populated from the manifest.
@@ -1074,7 +1074,7 @@ def test_dry_run_does_not_persist_and_never_blocks_real_save(tmp_path):
     later real run would skip it as 'already-indexed' and never download it."""
     cfg = Config(data_dir=tmp_path)
     rec = DocRecord(bank_code="us", doc_type=DocType.A2, title="x",
-                    pdf_url="https://x/a.pdf", date=date(2020, 1, 1),
+                    document_url="https://x/a.pdf", date=date(2020, 1, 1),
                     mime_type="application/pdf")
     from cb_corpus.storage import iter_manifest_rows
     st = Storage(cfg)
@@ -1097,11 +1097,11 @@ def test_duplicate_content_status_carries_matched_doc_id(tmp_path):
     st = Storage(cfg)
     st.fetcher.get_bytes = lambda url: (pdf_body(b"%PDF-1.4 same body"), "application/pdf")
     rec_a = DocRecord(bank_code="fr", doc_type=DocType.D1, title="A",
-                      pdf_url="https://www.banque-france.fr/a.pdf",
+                      document_url="https://www.banque-france.fr/a.pdf",
                       date=date(2020, 1, 1))
     assert st.save(rec_a) == "saved"
     rec_b = DocRecord(bank_code="fr", doc_type=DocType.D1, title="B",
-                      pdf_url="https://www.banque-france.fr/b.pdf",
+                      document_url="https://www.banque-france.fr/b.pdf",
                       date=date(2020, 1, 1))
     assert st.save(rec_b) == f"skip:duplicate-content:{rec_a.doc_id}"
 
@@ -1110,7 +1110,7 @@ def test_duplicate_content_status_carries_matched_doc_id(tmp_path):
     local_pdf = tmp_path / "reindex-src.pdf"
     local_pdf.write_bytes(pdf_body(b"%PDF-1.4 same body"))
     rec_c = DocRecord(bank_code="fr", doc_type=DocType.D1, title="C",
-                      pdf_url="https://www.banque-france.fr/c.pdf",
+                      document_url="https://www.banque-france.fr/c.pdf",
                       date=date(2020, 1, 1))
     assert st2.reindex(rec_c, local_pdf) == f"skip:duplicate-content:{rec_a.doc_id}"
 
@@ -1123,14 +1123,14 @@ def test_duplicate_content_map_survives_reload(tmp_path):
     st1 = Storage(cfg)
     st1.fetcher.get_bytes = lambda url: (pdf_body(b"%PDF-1.4 reload body"), "application/pdf")
     rec_a = DocRecord(bank_code="fr", doc_type=DocType.D1, title="A",
-                      pdf_url="https://www.banque-france.fr/reload-a.pdf",
+                      document_url="https://www.banque-france.fr/reload-a.pdf",
                       date=date(2020, 1, 1))
     assert st1.save(rec_a) == "saved"
 
     st2 = Storage(cfg)   # fresh instance, re-reads the manifest
     st2.fetcher.get_bytes = lambda url: (pdf_body(b"%PDF-1.4 reload body"), "application/pdf")
     rec_b = DocRecord(bank_code="fr", doc_type=DocType.D1, title="B",
-                      pdf_url="https://www.banque-france.fr/reload-b.pdf",
+                      document_url="https://www.banque-france.fr/reload-b.pdf",
                       date=date(2020, 1, 1))
     assert st2.save(rec_b) == f"skip:duplicate-content:{rec_a.doc_id}"
 
@@ -1140,7 +1140,7 @@ def test_stamp_alt_urls_adds_missing_url_and_persists(tmp_path):
     st = Storage(cfg)
     st.fetcher.get_bytes = lambda url: (pdf_body(b"%PDF-1.4 stamp body"), "application/pdf")
     rec = DocRecord(bank_code="fr", doc_type=DocType.D1, title="A",
-                    pdf_url="https://www.banque-france.fr/stamp-a.pdf",
+                    document_url="https://www.banque-france.fr/stamp-a.pdf",
                     date=date(2020, 1, 1))
     assert st.save(rec) == "saved"
 
@@ -1153,16 +1153,16 @@ def test_stamp_alt_urls_adds_missing_url_and_persists(tmp_path):
     assert row["alt_urls"] == ["https://dead.example/stamp-a.pdf"]
 
 
-def test_stamp_alt_urls_skips_url_equal_to_pdf_url(tmp_path):
+def test_stamp_alt_urls_skips_url_equal_to_document_url(tmp_path):
     cfg = Config(data_dir=tmp_path)
     st = Storage(cfg)
     st.fetcher.get_bytes = lambda url: (pdf_body(b"%PDF-1.4 stamp body 2"), "application/pdf")
     rec = DocRecord(bank_code="fr", doc_type=DocType.D1, title="A",
-                    pdf_url="https://www.banque-france.fr/stamp-b.pdf",
+                    document_url="https://www.banque-france.fr/stamp-b.pdf",
                     date=date(2020, 1, 1))
     assert st.save(rec) == "saved"
 
-    n = st.stamp_alt_urls({rec.doc_id: [rec.pdf_url]})
+    n = st.stamp_alt_urls({rec.doc_id: [rec.document_url]})
     assert n == (0, 0)
     row = next(r for r in st.iter_manifest("fr") if r["doc_id"] == rec.doc_id)
     assert row["alt_urls"] == []
@@ -1173,7 +1173,7 @@ def test_stamp_alt_urls_skips_already_present_alt(tmp_path):
     st = Storage(cfg)
     st.fetcher.get_bytes = lambda url: (pdf_body(b"%PDF-1.4 stamp body 3"), "application/pdf")
     rec = DocRecord(bank_code="fr", doc_type=DocType.D1, title="A",
-                    pdf_url="https://www.banque-france.fr/stamp-c.pdf",
+                    document_url="https://www.banque-france.fr/stamp-c.pdf",
                     alt_urls=["https://mirror.example/stamp-c.pdf"],
                     date=date(2020, 1, 1))
     assert st.save(rec) == "saved"
@@ -1189,7 +1189,7 @@ def test_stamp_alt_urls_no_op_returns_zero_and_does_not_rewrite(tmp_path, monkey
     st = Storage(cfg)
     st.fetcher.get_bytes = lambda url: (pdf_body(b"%PDF-1.4 stamp body 4"), "application/pdf")
     rec = DocRecord(bank_code="fr", doc_type=DocType.D1, title="A",
-                    pdf_url="https://www.banque-france.fr/stamp-d.pdf",
+                    document_url="https://www.banque-france.fr/stamp-d.pdf",
                     date=date(2020, 1, 1))
     assert st.save(rec) == "saved"
 
@@ -1205,7 +1205,7 @@ def test_stamp_alt_urls_ignores_unknown_doc_id(tmp_path):
     st = Storage(cfg)
     st.fetcher.get_bytes = lambda url: (pdf_body(b"%PDF-1.4 stamp body 5"), "application/pdf")
     rec = DocRecord(bank_code="fr", doc_type=DocType.D1, title="A",
-                    pdf_url="https://www.banque-france.fr/stamp-e.pdf",
+                    document_url="https://www.banque-france.fr/stamp-e.pdf",
                     date=date(2020, 1, 1))
     assert st.save(rec) == "saved"
 
@@ -1220,7 +1220,7 @@ def test_stamp_alt_urls_returns_urls_and_rows_modified(tmp_path):
     st = Storage(cfg)
     st.fetcher.get_bytes = lambda url: (pdf_body(b"%PDF-1.4 stamp body order"), "application/pdf")
     rec = DocRecord(bank_code="fr", doc_type=DocType.D1, title="A",
-                    pdf_url="https://www.banque-france.fr/stamp-order.pdf",
+                    document_url="https://www.banque-france.fr/stamp-order.pdf",
                     date=date(2020, 1, 1))
     assert st.save(rec) == "saved"
 
@@ -1263,13 +1263,13 @@ def test_storage_html_to_pdf_invokes_renderer(tmp_path, monkeypatch):
         rendered.append((url, output))
     monkeypatch.setattr(storage_mod, "render_url_to_pdf", fake_render)
     rec = DocRecord(bank_code="ecb", doc_type=DocType.A3, title="x",
-                    pdf_url="https://www.ecb.europa.eu/x.en.html",
+                    document_url="https://www.ecb.europa.eu/x.en.html",
                     date=date(2024, 1, 1))
     assert st.save(rec) == "saved"
     assert rec.mime_type == "application/pdf"
     assert rec.local_path.endswith(".pdf")
     assert Path(rec.local_path).read_bytes().startswith(b"%PDF")
-    assert rendered and rendered[0][0] == rec.pdf_url
+    assert rendered and rendered[0][0] == rec.document_url
 
 
 def test_storage_html_to_pdf_falls_back_when_chrome_fails(tmp_path, monkeypatch):
@@ -1282,7 +1282,7 @@ def test_storage_html_to_pdf_falls_back_when_chrome_fails(tmp_path, monkeypatch)
         raise RuntimeError("chrome down")
     monkeypatch.setattr(storage_mod, "render_url_to_pdf", boom)
     rec = DocRecord(bank_code="ecb", doc_type=DocType.A3, title="x",
-                    pdf_url="https://e.test/x.html", date=date(2024, 1, 1))
+                    document_url="https://e.test/x.html", date=date(2024, 1, 1))
     assert st.save(rec) == "saved"
     assert rec.mime_type == "text/html"
     assert rec.local_path.endswith(".html")
@@ -1294,7 +1294,7 @@ def test_storage_html_to_pdf_disabled_keeps_html(tmp_path):
     st = Storage(cfg)
     st.fetcher.get_bytes = lambda url: (b"<html>raw</html>", "text/html")
     rec = DocRecord(bank_code="ecb", doc_type=DocType.A3, title="x",
-                    pdf_url="https://e.test/x.html", date=date(2024, 1, 1))
+                    document_url="https://e.test/x.html", date=date(2024, 1, 1))
     assert st.save(rec) == "saved"
     assert rec.mime_type == "text/html"
     assert rec.local_path.endswith(".html")
@@ -1322,7 +1322,7 @@ def test_retry_html_recovers_and_records_failures(tmp_path, monkeypatch):
         for p, mime, code in zip(paths, ["text/html", "text/html", "application/pdf"], ["a", "b", "c"]):
             fh.write(_json.dumps({
                 "bank_code": "ecb", "doc_type": "A3", "title": "x",
-                "pdf_url": f"https://e.test/{code}.en.html",
+                "document_url": f"https://e.test/{code}.en.html",
                 "date": "2024-01-01", "year": 2024, "doc_id": code,
                 "mime_type": mime, "local_path": str(p),
                 "sha256": None, "language": "en",
@@ -1376,7 +1376,7 @@ def test_convert_existing_rewrites_manifest(tmp_path, monkeypatch):
     with cfg.manifest_path.open("w") as fh:
         fh.write(_json.dumps({
             "bank_code": "ecb", "doc_type": "A3", "title": "x",
-            "pdf_url": "https://e.test/abc.en.html",
+            "document_url": "https://e.test/abc.en.html",
             "date": "2024-01-01", "year": 2024, "doc_id": "abc123",
             "mime_type": "text/html", "local_path": str(html_path),
             "sha256": None, "language": "en",
@@ -1406,11 +1406,11 @@ def test_storage_target_path_extension(tmp_path):
     cfg = Config(data_dir=tmp_path)
     st = Storage(cfg)
     pdf_rec = DocRecord(bank_code="us", doc_type=DocType.A3, title="m",
-                        pdf_url="https://x/y.pdf", date=_d(2024, 1, 1),
+                        document_url="https://x/y.pdf", date=_d(2024, 1, 1),
                         mime_type="application/pdf")
     assert st.target_path(pdf_rec).suffix == ".pdf"
     html_rec = DocRecord(bank_code="ecb", doc_type=DocType.A3, title="m",
-                         pdf_url="https://x/y.en.html", date=_d(2024, 1, 1),
+                         document_url="https://x/y.en.html", date=_d(2024, 1, 1),
                          mime_type="text/html")
     assert st.target_path(html_rec).suffix == ".html"
 
@@ -1420,7 +1420,7 @@ def test_completeness_matrix_statuses(tmp_path):
     cfg = Config(data_dir=tmp_path)
     # one downloaded FOMC minute in 2024 (expected 8 -> partial)
     rec = DocRecord(bank_code="us", doc_type=DocType.A3, title="m",
-                    pdf_url="https://www.federalreserve.gov/x.pdf",
+                    document_url="https://www.federalreserve.gov/x.pdf",
                     date=date(2024, 5, 1))
     cfg.manifest_path.parent.mkdir(parents=True, exist_ok=True)
     with cfg.manifest_path.open("w") as fh:
@@ -1661,12 +1661,12 @@ def test_is_known_url_matches_slash_variants_both_directions(tmp_path):
     st.fetcher.get_bytes = lambda url: (pdf_body(f"%PDF-1.4 {url}".encode()), "application/pdf")
 
     rec_a = DocRecord(bank_code="e", doc_type=DocType.D1, title="A",
-                      pdf_url="https://e.eu//press//a.pdf", date=date(2024, 1, 1))
+                      document_url="https://e.eu//press//a.pdf", date=date(2024, 1, 1))
     assert st.save(rec_a) == "saved"
     assert st.is_known_url("https://e.eu/press/a.pdf")
 
     rec_b = DocRecord(bank_code="e", doc_type=DocType.D1, title="B",
-                      pdf_url="https://e.eu/press/b.pdf", date=date(2024, 1, 1))
+                      document_url="https://e.eu/press/b.pdf", date=date(2024, 1, 1))
     assert st.save(rec_b) == "saved"
     assert st.is_known_url("https://e.eu//press/b.pdf")
 
@@ -1680,7 +1680,7 @@ def test_known_url_variants_cover_alt_urls_reload_and_source_urls(tmp_path):
     st.fetcher.get_bytes = lambda url: (pdf_body(b"%PDF-1.4 body"), "application/pdf")
 
     rec = DocRecord(bank_code="e", doc_type=DocType.D1, title="A",
-                    pdf_url="https://e.eu/press/preferred.pdf",
+                    document_url="https://e.eu/press/preferred.pdf",
                     alt_urls=["https://e.eu//press//alt.pdf"],
                     source_url="https://e.eu//press//index.html",
                     date=date(2024, 1, 1))

@@ -55,7 +55,7 @@ def _storage(tmp_path, responses, **cfg_kw) -> Storage:
 
 def _rec(url: str, *, mime: str = "application/pdf", alt_urls=None,
          title: str = "t") -> DocRecord:
-    return DocRecord(bank_code="xx", doc_type=DocType.C1, title=title, pdf_url=url,
+    return DocRecord(bank_code="xx", doc_type=DocType.C1, title=title, document_url=url,
                      date=date(2025, 1, 2), mime_type=mime, date_precision="day",
                      alt_urls=list(alt_urls or []))
 
@@ -119,7 +119,7 @@ def test_consent_page_for_expected_pdf_is_rejected_and_fallback_wins(tmp_path):
     assert Path(rec.local_path).read_bytes() == good
     assert rec.mime_type == "application/pdf" and rec.html_path is None
     [row] = _manifest_rows(tmp_path)
-    assert row["pdf_url"] == U and row["local_path"].endswith(".pdf")
+    assert row["document_url"] == U and row["local_path"].endswith(".pdf")
 
 
 def test_consent_page_only_candidate_raises_and_writes_nothing(tmp_path):
@@ -239,7 +239,7 @@ def test_save_many_counts_records_and_shows_bad_content(tmp_path, capsys):
     assert "[xx:C1] bad-content: 1" in err
     [line] = (tmp_path / "download_errors.jsonl").read_text().splitlines()
     entry = json.loads(line)
-    assert entry["label"] == "xx:C1" and entry["pdf_url"] == U
+    assert entry["label"] == "xx:C1" and entry["document_url"] == U
     assert entry["error"].startswith("ContentCheckFailed:")
     q = (tmp_path / "download_quarantine.jsonl").read_text()
     assert U in q                                    # fed like any failed download
@@ -477,11 +477,11 @@ def test_recover_candidate_truncated_is_bad_file_and_never_copied(tmp_path, monk
                                                _write_candidates, _write_inventory)
     cfg = Config(data_dir=tmp_path)
     dead_url = "https://www.banque-france.fr/cut.pdf"
-    _write_inventory(cfg, [_entry(bank="fr", pdf_url=dead_url)])
+    _write_inventory(cfg, [_entry(bank="fr", document_url=dead_url)])
     cut = tmp_path / "cut.pdf"
     cut.write_bytes(b"%PDF-1.4 " + b"x" * (25 * 1024))
     cand_path = _write_candidates(tmp_path, [{
-        "dead_pdf_url": dead_url, "file_path": str(cut),
+        "dead_document_url": dead_url, "file_path": str(cut),
         "recovered_from": "wayback", "final_url": "https://web.archive.org/x",
     }])
     _stub_refresh_metadata(monkeypatch)

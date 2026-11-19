@@ -30,7 +30,7 @@ def _mk_cfg(tmp_path) -> Config:
 
 def _rec(bank_code, doc_type, d, **kw) -> DocRecord:
     base = dict(bank_code=bank_code, doc_type=doc_type, title="t",
-               pdf_url=f"https://x.test/{bank_code}-{doc_type.code}-{d.isoformat()}-{kw.get('_i', 0)}.pdf",
+               document_url=f"https://x.test/{bank_code}-{doc_type.code}-{d.isoformat()}-{kw.get('_i', 0)}.pdf",
                date=d)
     kw.pop("_i", None)
     base.update(kw)
@@ -155,7 +155,7 @@ def test_dateless_rows_are_ignored_not_crashed_on(tmp_path):
     dates = [date(2025, 1, 1) + timedelta(days=10 * i) for i in range(6)]
     recs = [_rec("us", DocType.D1, d) for d in dates]
     dateless = DocRecord(bank_code="us", doc_type=DocType.D1, title="no date",
-                         pdf_url="https://x.test/nodate.pdf", date=None)
+                         document_url="https://x.test/nodate.pdf", date=None)
     _write(cfg, recs + [dateless])
 
     entries = compute_series(cfg, today=dates[-1] + timedelta(days=1))

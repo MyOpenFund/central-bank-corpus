@@ -28,7 +28,7 @@ def _pages(*years: int) -> dict[str, object]:
 
 
 def _codes(records) -> list[str]:
-    return [r.pdf_url.rsplit("/", 1)[-1].split(".")[0] for r in records]
+    return [r.document_url.rsplit("/", 1)[-1].split(".")[0] for r in records]
 
 
 def test_discover_walks_years_newest_first(fetcher_factory):
@@ -55,7 +55,7 @@ def test_discover_yields_records_with_the_day_printed_in_the_listing(fetcher_fac
     newest = recs[0]
     assert newest.date == date(2026, 8, 14) and newest.date_precision == "day"
     assert newest.title.startswith("What Prevents Productivity Gains")
-    assert newest.pdf_url == ("https://www.boj.or.jp/en/research/wps_rev/wps_2026/"
+    assert newest.document_url == ("https://www.boj.or.jp/en/research/wps_rev/wps_2026/"
                               "data/wp26e12.pdf")
     assert newest.source_url.endswith("/wps_rev/wps_2026/index.htm")
     assert newest.bank_code == "jp" and newest.doc_type == DocType.D1

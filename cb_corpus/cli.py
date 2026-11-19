@@ -187,7 +187,7 @@ def main(argv: list[str] | None = None) -> int:
                              "(titles/dates/alt_urls). Dry-run by default.")
     cm.add_argument("--write", action="store_true",
                     help="apply the enrichment to the manifest (metadata only: "
-                         "title/date/precision/source/alt_urls; doc_id/pdf_url unchanged)")
+                         "title/date/precision/source/alt_urls; doc_id/document_url unchanged)")
 
     wd = sub.add_parser("wp-dates",
                         help="WP v3 phase 4: recover the publication DAY for legacy "
@@ -279,8 +279,9 @@ def main(argv: list[str] | None = None) -> int:
                      help="actually save recoverable documents (default: dry-run report)")
     rdl.add_argument("--csv", default="", help="CSV output path (default data/reports/recover_downloads.csv)")
     rdl.add_argument("--candidates", default="",
-                     help="JSONL of externally-recovered docs ({dead_pdf_url, file_path, "
-                          "recovered_from: wayback|bank_site|mirror, final_url, title?}) -- "
+                     help="JSONL of externally-recovered docs ({dead_document_url, file_path, "
+                          "recovered_from: wayback|bank_site|mirror, final_url, title?}; "
+                          "the old key dead_pdf_url is still read) -- "
                           "switches to candidates-only mode, no CDX walk; --download registers "
                           "them into the corpus via Storage.reindex")
     rdl.add_argument("--seed-quarantine", default="",

@@ -190,7 +190,7 @@ python -m cb_corpus policy-dates --write               # apply (idempotent: a se
 
 The CSV has one line per row in scope: `old_date`, `old_precision`, `new_date`,
 `new_precision`, `kind`, `action`, `rule`, `evidence` (the title or URL fragment the date was
-read from), `fields_changed`, then `title` and `pdf_url` to check against. Actions:
+read from), `fields_changed`, then `title` and `document_url` to check against. Actions:
 
 | `action` | Meaning | Written |
 |---|---|---|
@@ -220,7 +220,7 @@ year leaves `local_path` under the old year folder (`data/raw/<bank>/<type>/<old
 1. `cb-campaign` with `command: ["/app/deploy/run-job.sh", "campaign", "policy-dates"]` — the
    dry-run. It changes nothing and commits nothing.
 2. Read `reports/policy_dates.csv` on the volume: filter `action`, check `evidence` against
-   `title` / `pdf_url`. Rows in `conflict`, `mismatch` or `no-evidence` are yours to judge; they
+   `title` / `document_url`. Rows in `conflict`, `mismatch` or `no-evidence` are yours to judge; they
    are never written.
 3. Same stack with `"policy-dates", "--write"`. The autocommit pushes the manifests.
 4. Re-run the dry-run: every dated row must read `unchanged`.
@@ -292,19 +292,19 @@ python -m cb_corpus replace-artifact --plan deploy/plans/2026-11-19-audit-pdfs.c
 ```
 
 - `replace`: `candidates` = space-separated URLs and/or `wayback` (the newest HTTP-200 PDF
-  captures of the row's own `pdf_url`, one per distinct payload, at most
+  captures of the row's own `document_url`, one per distinct payload, at most
   `--wayback-max-captures`, default 10). The first candidate passing the content check
   (same rule as a download) whose bytes no other row owns wins; a candidate another row
   already owns is noted in `tried` and the search goes on (outcome `duplicate-of:<doc_id>`
   only when nothing else won). `--write` replaces the file atomically at the same path (an
   `html_path` sibling is untouched) and updates the row: `sha256`, `mime_type`, the winning
-  URL first in `alt_urls` (a download still tries `pdf_url` first: the winning URL becomes
+  URL first in `alt_urls` (a download still tries `document_url` first: the winning URL becomes
   the first fallback), one more entry in the `artifact_replaced` history list. `doc_id`,
-  `pdf_url`, `local_path` never change. Only `.pdf` artifacts can be replaced, and not a
+  `document_url`, `local_path` never change. Only `.pdf` artifacts can be replaced, and not a
   file another row also points at.
 - `retire`: `candidates` = `duplicate-of:<owner doc_id>`, a real PDF owner whose file passes
   the content check and matches its `sha256` (and is not the retired row's file itself, nor
-  a hard link of it). `--write` stamps the retired row's `pdf_url`
+  a hard link of it). `--write` stamps the retired row's `document_url`
   / `source_url` on the owner (`alt_urls` / `alt_source_urls`, as duplicate-content
   stamping does) plus a `retired_duplicates` audit entry, moves the file to
   `data/raw_orphans/` and removes the row from its manifest. The vault soft-deletes it at

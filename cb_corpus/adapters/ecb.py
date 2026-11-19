@@ -175,7 +175,7 @@ def parse_statement_items(html: str, base_url: str = MOPO_INDEX) -> list[tuple[d
 
 def parse_bulletin_pdfs(html: str, base_url: str = BULLETIN_INDEX
                        ) -> list[tuple[Optional[date], str, str]]:
-    """From the Economic Bulletin all-releases page, return (date, title, pdf_url).
+    """From the Economic Bulletin all-releases page, return (date, title, document_url).
 
     Keeps only the English-language PDFs (`eb<YYYY><II>.en.pdf`).
     """
@@ -339,7 +339,7 @@ class ECBAdapter(BankAdapter):
                 yield DocRecord(
                     bank_code="ecb", doc_type=doc_type,
                     title=f"{title_prefix} {d.isoformat()}",
-                    pdf_url=url, source_url=year_url, date=d,
+                    document_url=url, source_url=year_url, date=d,
                     provenance="bank_site",
                     date_precision="day",    # YYMMDD in the document file name
                 )
@@ -360,7 +360,7 @@ class ECBAdapter(BankAdapter):
                 yield DocRecord(
                     bank_code="ecb", doc_type=DocType.A3,
                     title=f"Monetary policy account {d.isoformat()}",
-                    pdf_url=url,
+                    document_url=url,
                     source_url=year_url,
                     date=d,
                     provenance="bank_site",
@@ -382,7 +382,7 @@ class ECBAdapter(BankAdapter):
                 continue
             yield DocRecord(
                 bank_code="ecb", doc_type=DocType.E4,
-                title=title, pdf_url=pdf,
+                title=title, document_url=pdf,
                 source_url=BULLETIN_INDEX,
                 date=d,
                 provenance="bank_site",
@@ -397,8 +397,8 @@ class ECBAdapter(BankAdapter):
         HTML-only artifacts (no PDF version), same convention as the historical
         212 rows recovered via the old one-off `run_ecb_pub_recovery` path.
 
-        This method always yields normalized single-slash pdf_urls. 15 of the
-        212 historical rows carry a double-slash pdf_url (`europa.eu//press/...`)
+        This method always yields normalized single-slash document_urls. 15 of the
+        212 historical rows carry a double-slash document_url (`europa.eu//press/...`)
         — a one-off artifact of that old scraper. Rather than special-case them
         here, the manifest rows were amended to also index the normalized form
         in alt_urls (see `data: index normalized URL forms for 15 legacy D3
@@ -425,7 +425,7 @@ class ECBAdapter(BankAdapter):
             yield DocRecord(
                 bank_code="ecb", doc_type=DocType.D3,
                 title=title or f"ECB Blog {d.isoformat()}",
-                pdf_url=url,
+                document_url=url,
                 source_url=BLOG_INDEX,
                 date=d,
                 provenance="bank_site",

@@ -28,6 +28,7 @@ from typing import Iterable, Optional
 
 from .config import Config
 from .http import Fetcher
+from .models import row_url
 from .sources.ecb_foedb import discover_ecb_wp, ecb_wp_number, repec_ecb_number
 from .sources.fed_wp import discover_fed_wp, fed_key_from_url, fed_key_from_handle
 from .sources.boj_wp import discover_boj_wp, boj_code
@@ -47,7 +48,7 @@ _NATIVE = {
     "fr": discover_fr_wp,
     "se": discover_riksbank_wp,
 }
-# Per-bank join-key extractors: (pdf_url -> key) and (source_url/handle -> key).
+# Per-bank join-key extractors: (document_url -> key) and (source_url/handle -> key).
 # Native records and manifest rows are matched on equality of these keys. Banks
 # whose manifest rows carry neither a usable number nor URL (de = EconStor copies)
 # lean on the exact-normalized-title tier in build_report().
@@ -108,8 +109,8 @@ def normalize_title(s: str) -> str:
 
 
 def _row_key(bank: str, row: dict):
-    """(doc_type, number) join key for a manifest row: from pdf_url, else handle."""
-    return (_KEY_FROM_PDF[bank](row.get("pdf_url") or "")
+    """(doc_type, number) join key for a manifest row: from document_url, else handle."""
+    return (_KEY_FROM_PDF[bank](row_url(row) or "")
             or _KEY_FROM_HANDLE[bank](row.get("source_url") or ""))
 
 
@@ -127,10 +128,10 @@ def build_report(bank: str, fetcher: Fetcher,
     native_by_url: dict = {}
     title_recs: dict = {}
     for rec in _NATIVE[bank](fetcher):
-        key = key_from_pdf(rec.pdf_url)
+        key = key_from_pdf(rec.document_url)
         if key is not None:
             native_by_key.setdefault(key, rec)
-        native_by_url.setdefault(match_key_url(rec.pdf_url), rec)
+        native_by_url.setdefault(match_key_url(rec.document_url), rec)
         t = normalize_title(rec.title)
         if t:
             title_recs.setdefault(t, []).append(rec)
@@ -152,7 +153,7 @@ def build_report(bank: str, fetcher: Fetcher,
         native = native_by_key.get(key) if key is not None else None
         match_type = "key" if native is not None else ""
         if native is None:
-            native = native_by_url.get(match_key_url(row.get("pdf_url") or ""))
+            native = native_by_url.get(match_key_url(row_url(row) or ""))
             match_type = "url" if native is not None else ""
         if native is None:
             native = native_by_title.get(normalize_title(row.get("title") or ""))
@@ -161,7 +162,7 @@ def build_report(bank: str, fetcher: Fetcher,
             summary["unmatched_manifest"] += 1
             continue
         summary[f"matched_{match_type}"] += 1
-        matched_native_urls.add(match_key_url(native.pdf_url))
+        matched_native_urls.add(match_key_url(native.document_url))
 
         # Already migrated? (idempotent — once a row's date came from the bank
         # site we don't touch it again, whatever its precision: a Fed paper can
@@ -170,7 +171,7 @@ def build_report(bank: str, fetcher: Fetcher,
             summary["already_day"] += 1
             continue
 
-        native_url = native.pdf_url
+        native_url = native.document_url
         new_date = native.date.isoformat() if native.date else row.get("date")
         changes.append({
             "doc_id": row.get("doc_id"),
@@ -184,10 +185,10 @@ def build_report(bank: str, fetcher: Fetcher,
             # date / date_precision / date_source untouched (alt URL + handle only)
             "date_from_native": native.date is not None,
             "match_type": match_type,
-            "old_url": row.get("pdf_url"),
+            "old_url": row_url(row),
             "native_url": native_url,
             "repec_handle": repec_handle_from_source_url(row.get("source_url") or ""),
-            "alt_url_added": native_url if native_url != (row.get("pdf_url") or "") else "",
+            "alt_url_added": native_url if native_url != (row_url(row) or "") else "",
         })
 
     summary["native_only"] = sum(1 for u in native_by_url if u not in matched_native_urls)
@@ -199,7 +200,7 @@ def apply_change(row: dict, change: dict) -> None:
 
     Metadata only: date + precision/source, repec_handle, and the native URL
     registered in alt_urls (so dedup recognises it). doc_id / sha256 / local_path
-    / pdf_url are deliberately left untouched — the file on disk is the same.
+    / document_url are deliberately left untouched — the file on disk is the same.
 
     A change whose native record carried no date (``date_from_native`` False)
     touches NONE of date / year / date_precision / date_source: the row's own
@@ -216,7 +217,7 @@ def apply_change(row: dict, change: dict) -> None:
     if change.get("repec_handle"):
         row["repec_handle"] = change["repec_handle"]
     alt = change.get("alt_url_added")
-    if alt and alt != row.get("pdf_url"):
+    if alt and alt != row_url(row):
         alts = list(row.get("alt_urls") or [])
         if alt not in alts:
             alts.append(alt)

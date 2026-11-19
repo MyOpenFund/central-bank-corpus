@@ -56,7 +56,7 @@ def assert_backfill_agrees(recs):
     assert recs
     for rec in recs:
         plan = plan_row(rec.to_row())
-        assert plan.updates == {}, (rec.pdf_url, plan)
+        assert plan.updates == {}, (rec.document_url, plan)
 
 
 # ---- RBA --------------------------------------------------------------
@@ -109,7 +109,7 @@ def _boc():
 
 
 def test_sitemap_reads_a_month_from_the_url():
-    recs = {r.pdf_url[len(BOC):]: r for r in _boc()._discover_native(DocType.E1, None)}
+    recs = {r.document_url[len(BOC):]: r for r in _boc()._discover_native(DocType.E1, None)}
     # a day in the URL is the day the report was released
     assert _dated(recs["/publications/mpr/mpr-2026-10-28/tariff-assumptions/"]) == (
         "2026-10-28", "day", "publication")
@@ -165,7 +165,7 @@ def test_sitemap_month_fallback_for_a_bank_without_a_rule():
     ad = GenericSitemapAdapter(get_bank("ch"), _Pages({"": xml}),
                                sitemap_url="https://bank.example/sm.xml",
                                patterns={DocType.E2: r"/pub/"})
-    recs = {r.pdf_url.split("/pub/")[1]: r for r in ad._discover_native(DocType.E2, None)}
+    recs = {r.document_url.split("/pub/")[1]: r for r in ad._discover_native(DocType.E2, None)}
     got = {k: (r.date, r.date_precision, r.date_source) for k, r in recs.items()}
     assert got["2023-04/report.pdf"] == (date(2023, 4, 1), "month", "bank_site")
     assert got["2020-05-06-b.pdf"] == (date(2020, 5, 6), "day", "bank_site")
@@ -179,7 +179,7 @@ def test_sitemap_month_fallback_for_a_bank_without_a_rule():
 
 def test_sitemap_since_filter_uses_the_month_date():
     recs = list(_boc()._discover_native(DocType.E1, date(2025, 1, 1)))
-    urls = {r.pdf_url[len(BOC):] for r in recs}
+    urls = {r.document_url[len(BOC):] for r in recs}
     assert "/publications/mpr/mpr-2024-07/global-economy/" not in urls
     assert "/publications/mpr/mpr-2026-10-28/tariff-assumptions/" in urls
 
@@ -206,7 +206,7 @@ def test_boj_date_change_keeps_the_identity():
     ad = get_adapter("jp", _Pages({"minu_2026": BOJ_HTML, "": "<html></html>"}))
     rec = next(iter(ad._discover_native(DocType.A3, None)))
     url = "https://www.boj.or.jp/en/mopo/mpmsche_minu/minu_2026/g260123.pdf"
-    assert rec.pdf_url == url and rec.doc_id == compute_doc_id("jp", "A3", url)
+    assert rec.document_url == url and rec.doc_id == compute_doc_id("jp", "A3", url)
 
 
 def test_listing_date_pattern_then_generic_date_then_title():
@@ -387,7 +387,7 @@ def test_sync_after_the_backfill_leaves_known_rows_alone(tmp_path):
     from cb_corpus.policy_dates import run_policy_dates
     url = "https://www.boj.or.jp/en/mopo/mpmsche_minu/minu_2026/g260123.pdf"
     row = {"bank_code": "jp", "doc_type": "A3",
-           "title": "Minutes [PDF 292KB]", "pdf_url": url,
+           "title": "Minutes [PDF 292KB]", "document_url": url,
            "source_url": "https://www.boj.or.jp/en/mopo/mpmsche_minu/minu_2026/index.htm",
            "date": None, "language": "en", "provenance": "bank_site",
            "mime_type": "application/pdf", "sha256": "aa" * 32,
@@ -418,7 +418,7 @@ def test_sync_after_the_backfill_leaves_known_rows_alone(tmp_path):
     adapter = get_adapter("jp", fetcher)
     adapter._skip_known_url = storage.is_known_url        # what pipeline.run() sets
     recs = list(adapter.discover(DocType.A3))
-    assert [r.pdf_url.rsplit("/", 1)[-1] for r in recs] == ["g260501.pdf"]
+    assert [r.document_url.rsplit("/", 1)[-1] for r in recs] == ["g260501.pdf"]
     # even without the pre-filter, the identity is unchanged: save() skips it
     known = next(iter(get_adapter("jp", fetcher)._discover_native(DocType.A3, None)))
     assert storage.save(known) == "skip:already-indexed"

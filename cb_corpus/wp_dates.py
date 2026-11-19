@@ -34,6 +34,7 @@ from typing import Iterable, Optional
 
 from .config import Config
 from .http import Fetcher
+from .models import row_url
 from .sources.wayback import first_capture
 from .storage import Storage, apply_row_updates
 from .wp_migrate import normalize_title, repec_handle_from_source_url
@@ -207,10 +208,10 @@ def _bare(url: str) -> str:
 
 
 def _url_variants(row: dict) -> list[str]:
-    """Distinct URLs worth querying Wayback for: the pdf_url, its abs/pdf sibling,
+    """Distinct URLs worth querying Wayback for: the document_url, its abs/pdf sibling,
     and any alt_urls (e.g. the native bank URL registered during migration)."""
     out: list[str] = []
-    for u in [row.get("pdf_url"), *(row.get("alt_urls") or [])]:
+    for u in [row_url(row), *(row.get("alt_urls") or [])]:
         if not u:
             continue
         out.append(u)

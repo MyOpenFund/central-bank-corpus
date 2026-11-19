@@ -6,7 +6,7 @@ already knows, so nothing else can fix them. This command runs a reviewed plan,
 a CSV with the columns `doc_id, action, candidates, note`:
 
 * `action=replace`: `candidates` is a space-separated list of URLs and/or the
-  keyword `wayback` (the HTTP-200 PDF captures of the row's OWN `pdf_url`,
+  keyword `wayback` (the HTTP-200 PDF captures of the row's OWN `document_url`,
   newest first, as raw `id_` URLs: `sources.wayback.pdf_captures`, at most
   `wayback_max_captures` of them, one per distinct payload). Each candidate is
   fetched in order with the project's `Fetcher` (throttle, UA, retries) and
@@ -24,10 +24,10 @@ a CSV with the columns `doc_id, action, candidates, note`:
   left alone), then the row is updated under its bank's sidecar lock
   (`storage.merge_rows_locked`): `sha256`, `mime_type` application/pdf, the
   winning URL moved to the front of `alt_urls` when it is not the row's own
-  `pdf_url` (`save()` always tries `pdf_url` first: the winning URL becomes the
+  `document_url` (`save()` always tries `document_url` first: the winning URL becomes the
   FIRST FALLBACK), and one entry appended to the `artifact_replaced` list
   {at, from_url, previous_sha256, note} (history kept; a legacy single dict
-  becomes the list's first entry). `doc_id`, `pdf_url` and `local_path` never
+  becomes the list's first entry). `doc_id`, `document_url` and `local_path` never
   change. Refused (outcome `error`, nothing fetched): an artifact that is not
   a `.pdf` path (PDF bytes over an `.html` artifact would be a lie about the
   file), a path outside `raw/`, a file another manifest row also points at
@@ -40,11 +40,11 @@ a CSV with the columns `doc_id, action, candidates, note`:
   (`os.path.samefile`: same path or a hard link; moving it would take the
   owner's bytes away) and when either doc_id appears more than once in the
   manifests. With `--write`, in this order (each step is idempotent, so a
-  run killed midway is finished by the next one): the retired row's `pdf_url`
+  run killed midway is finished by the next one): the retired row's `document_url`
   and `source_url` are stamped on the owner (`Storage.stamp_duplicates`, the
   nightly duplicate-content machinery: `alt_urls`, `alt_source_urls`, one line
   in `reports/duplicate_stamps.jsonl`) so discovery never mints the row again;
-  the owner row gets a `retired_duplicates` audit entry {doc_id, pdf_url,
+  the owner row gets a `retired_duplicates` audit entry {doc_id, document_url,
   source_url, previous_sha256, at, note}; the retired row's file (and its
   `html_path` sibling, if any) moves to `raw_orphans/` (mirror tree, never
   deleted: `orphans.move_to_orphans`); the row is removed from its bank's
@@ -77,6 +77,7 @@ from typing import Any, Iterator, Optional
 
 from .config import Config
 from .http import Fetcher
+from .models import row_url
 from .orphans import OrphanEntry, _resolve_local_path, _sha256_of, move_to_orphans
 from .pdfcheck import check_pdf_bytes
 from .sources.wayback import pdf_captures, raw_url
@@ -235,7 +236,7 @@ class _Run:
         seen: set[str] = set()
         for tok in tokens:
             if tok.lower() == WAYBACK:
-                target = row.get("pdf_url") or ""
+                target = row_url(row) or ""
                 try:
                     stamps = pdf_captures(self.fetcher, target, max_captures=self.wayback_max)
                 except Exception as exc:  # noqa: BLE001 - reported, never fatal
@@ -322,7 +323,7 @@ class _Run:
         path.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write_bytes(path, body)
         at = self.at()
-        own = normalize_url(row.get("pdf_url") or "")
+        own = normalize_url(row_url(row) or "")
 
         def merge(r: dict) -> bool:
             # previous_sha256 from the row as re-read under the lock.
@@ -417,11 +418,11 @@ class _Run:
 
         st = self.storage()
         _, _, persisted = st.stamp_duplicates(
-            [{"url": row.get("pdf_url") or "", "source_url": row.get("source_url") or "",
+            [{"url": row_url(row) or "", "source_url": row.get("source_url") or "",
               "owner_doc_id": owner_id}], LABEL)
         if owner_id not in persisted:
             raise _RowError(f"owner {owner_id} could not be stamped (row changed?)")
-        entry = {"doc_id": plan.doc_id, "pdf_url": row.get("pdf_url") or "",
+        entry = {"doc_id": plan.doc_id, "document_url": row_url(row) or "",
                  "source_url": row.get("source_url") or "",
                  "previous_sha256": row.get("sha256") or "", "at": self.at(),
                  "note": plan.note}

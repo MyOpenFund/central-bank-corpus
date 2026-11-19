@@ -23,7 +23,7 @@ class _SpyShared:
 
 
 def _rec(bank: str, dt: DocType, url: str) -> DocRecord:
-    return DocRecord(bank_code=bank, doc_type=dt, title="t", pdf_url=url,
+    return DocRecord(bank_code=bank, doc_type=dt, title="t", document_url=url,
                      source_url=url, date=date(2026, 1, 1), language="en",
                      provenance="test")
 

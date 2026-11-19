@@ -146,7 +146,7 @@ def wayback_for_url(fetcher: Fetcher, url: str) -> Optional[str]:
 class WaybackSource(Source):
     """Recover official PDFs a bank took offline — the canonical `Source` example.
 
-    Enumerates archived PDFs under `url_prefix` (CDX); each record's `pdf_url` is
+    Enumerates archived PDFs under `url_prefix` (CDX); each record's `document_url` is
     the original (dead) bank URL (citation + stable id) and `alt_urls` carries the
     Wayback raw snapshot Storage actually downloads. Date is the year in the URL.
     """
@@ -166,7 +166,7 @@ class WaybackSource(Source):
             title = self.title_fn(original) if self.title_fn else original.rsplit("/", 1)[-1]
             yield DocRecord(
                 bank_code=self.bank_code, doc_type=self.doc_type, title=title,
-                pdf_url=original, alt_urls=[raw_url(original, ts)], date=d,
+                document_url=original, alt_urls=[raw_url(original, ts)], date=d,
                 provenance="wayback", mime_type="application/pdf",
                 # Only the year in the archived URL is known (or nothing).
                 date_precision="year" if d else None, date_source="wayback",

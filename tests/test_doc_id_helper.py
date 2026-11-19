@@ -20,7 +20,7 @@ SAMPLES = [
 
 @pytest.mark.parametrize("bank,dt,url", SAMPLES)
 def test_compute_doc_id_equals_docrecord_doc_id(bank, dt, url):
-    rec = DocRecord(bank_code=bank, doc_type=dt, title="t", pdf_url=url)
+    rec = DocRecord(bank_code=bank, doc_type=dt, title="t", document_url=url)
     assert compute_doc_id(bank, dt, url) == rec.doc_id
     # The historical formula, pinned: changing it would orphan every file.
     assert rec.doc_id == hashlib.sha1(f"{bank}|{dt.code}|{url}".encode()).hexdigest()[:16]

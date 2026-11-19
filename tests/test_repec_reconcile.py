@@ -24,13 +24,13 @@ def _series_html(pairs):
     return f"<html><body><ul>{links}</ul></body></html>"
 
 
-def _paper_html(title, pdf_url, pub="2001/01"):
+def _paper_html(title, document_url, pub="2001/01"):
     return (
         "<html><head>"
         f'<meta name="citation_title" content="{title}">'
         f'<meta name="citation_publication_date" content="{pub}">'
         "</head><body>"
-        f'<a href="{pdf_url}">Download PDF</a>'
+        f'<a href="{document_url}">Download PDF</a>'
         "</body></html>"
     )
 
@@ -52,10 +52,10 @@ class FakeFetcher:
         return self.pages[url]
 
 
-def _row(doc_id, title, pdf_url, source_url="", alt_urls=None, doc_type="D1"):
+def _row(doc_id, title, document_url, source_url="", alt_urls=None, doc_type="D1"):
     return {
         "bank_code": "gb", "doc_type": doc_type, "title": title,
-        "pdf_url": pdf_url, "source_url": source_url,
+        "document_url": document_url, "source_url": source_url,
         "alt_urls": alt_urls or [], "date": "2001-01-01", "year": 2001,
         "language": "en", "provenance": "bank_site",
         "mime_type": "application/pdf", "sha256": "deadbeef",
@@ -894,8 +894,8 @@ def test_cli_csv_symlink_alias_of_apply_csv_is_an_argparse_error(tmp_path, capsy
 # -- key tier through _entry_key (arch:series:pid): jp, whose key the old
 #    "series:pid" form never produced --------------------------------------
 
-def _jp_row(doc_id, title, pdf_url, source_url=""):
-    r = _row(doc_id, title, pdf_url, source_url=source_url)
+def _jp_row(doc_id, title, document_url, source_url=""):
+    r = _row(doc_id, title, document_url, source_url=source_url)
     r["bank_code"] = "jp"
     return r
 

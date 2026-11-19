@@ -20,7 +20,7 @@ def _setup(tmp_path, files):
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_bytes(content)
         rows.append({"doc_id": doc_id, "bank_code": "xx", "doc_type": "A1", "title": doc_id,
-                     "pdf_url": f"https://x/{doc_id}", "mime_type": mime,
+                     "document_url": f"https://x/{doc_id}", "mime_type": mime,
                      "local_path": f"data/{rel}"})
     cfg.manifest_dir.mkdir(parents=True, exist_ok=True)
     (cfg.manifest_dir / "xx.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))

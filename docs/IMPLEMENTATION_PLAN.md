@@ -18,7 +18,7 @@ Run the date migration for a bank (`python -m cb_corpus wp-migrate --banks <code
 
 ## Why
 
-- `doc_id` is `sha1(bank|type|pdf_url)` (`models.py`), not a function of the
+- `doc_id` is `sha1(bank|type|document_url)` (`models.py`), not a function of the
   date. A native scraper often finds a paper already in the corpus under a
   **different URL** than its RePEc-era row (Bundesbank blob instead of
   EconStor copy, ECB redirects, Fed revision infixes).
@@ -30,7 +30,7 @@ Run the date migration for a bank (`python -m cb_corpus wp-migrate --banks <code
   (`date`, `year`, `date_precision`, `date_source`), stamps `repec_handle` when
   the row's `source_url` is an IDEAS page, and
   registers the native URL in the row's `alt_urls`. It never changes `doc_id`,
-  `pdf_url`, `sha256` or `local_path`.
+  `document_url`, `sha256` or `local_path`.
 - After that, the pipeline injects `Storage.is_known_url` into the adapter as
   `_skip_known_url`; `BankAdapter.discover` drops every native record whose URL
   is already known (including through `alt_urls`) before any download. Only

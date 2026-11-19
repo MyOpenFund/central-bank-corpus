@@ -23,6 +23,7 @@ from typing import Optional
 
 from .config import Config
 from .htmlpdf import RenderRefused, chrome_print_to_pdf, find_chrome, render_allowed
+from .models import row_url
 from .storage import (apply_row_updates, iter_manifest_rows, pdf_file_problem,
                       render_pdf_checked)
 
@@ -121,7 +122,7 @@ def retry_failed(config: Optional[Config] = None,
             counts["skip"] = counts.get("skip", 0) + 1
             continue
         local = row.get("local_path")
-        url = row.get("pdf_url")
+        url = row_url(row)
         if not local or not url:
             counts["skip"] = counts.get("skip", 0) + 1
             continue
@@ -176,7 +177,7 @@ def retry_failed(config: Optional[Config] = None,
         row, html_path, pdf_path = args
         udd = get_udd()
         try:
-            ok = _try_all_strategies(chrome, row["pdf_url"], pdf_path, udd, cfg,
+            ok = _try_all_strategies(chrome, row_url(row), pdf_path, udd, cfg,
                                      resolver=resolver)
         except RenderRefused as exc:     # DNS changed since the pre-check
             with counts_lock:
@@ -191,12 +192,12 @@ def retry_failed(config: Optional[Config] = None,
                 counts["recovered"] = counts.get("recovered", 0) + 1
         else:
             with failures_lock:
-                failures.append((row["pdf_url"], row.get("bank_code", "?")))
+                failures.append((row_url(row), row.get("bank_code", "?")))
             with counts_lock:
                 counts["still-fail"] = counts.get("still-fail", 0) + 1
         with counts_lock:
             done = (counts.get("recovered", 0) + counts.get("still-fail", 0))
-        print(f"[retry-html] {done}/{len(worklist)} {row['pdf_url'][:80]} -> "
+        print(f"[retry-html] {done}/{len(worklist)} {row_url(row)[:80]} -> "
               f"{'recovered' if ok else 'FAIL'}",
               file=sys.stderr, flush=True)
 

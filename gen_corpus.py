@@ -78,7 +78,7 @@ def build_corpus_md(cfg: Config) -> str:
     W("|---|---|")
     for f, u in [("bank_code", "bank/country **filter**"), ("doc_type", "type **filter**"),
                  ("title", "title / embedding"), ("date / year", "**temporal filter**"),
-                 ("pdf_url", "**citation** (official source)"), ("source_url", "origin page"),
+                 ("document_url", "**citation** (official source)"), ("source_url", "origin page"),
                  ("provenance", "`bis_index` / `bank_site` / `repec_discovery`"),
                  ("mime_type", "`application/pdf` / `text/html`"),
                  ("local_path", "**file path** to read"), ("html_path", "HTML source (if rendered)"),
@@ -136,7 +136,7 @@ def build_corpus_md(cfg: Config) -> str:
 
     W("\n## 6. RAG ingestion notes (see `INGESTION_RAG.md` for detail)\n")
     W("- Filters: `bank_code`, `doc_type`, `year`, `provenance`.")
-    W("- Citation: `pdf_url` + `title` + `date`. Loading: `local_path`.")
+    W("- Citation: `document_url` + `title` + `date`. Loading: `local_path`.")
     W("- Dedup already done (`sha256`). `text/html` rows are indexed documents too.")
     if total:
         W(f"- Composition: speeches {100*bytype['C1']//total}% · working papers "

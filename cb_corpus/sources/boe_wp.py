@@ -108,7 +108,7 @@ def discover_boe_wp(fetcher: Fetcher, since: Optional[date] = None,
             continue
         yield DocRecord(
             bank_code="gb", doc_type=DocType.D1, title=title,
-            pdf_url=pdf or derived, source_url=page, date=d, provenance="bank_site",
+            document_url=pdf or derived, source_url=page, date=d, provenance="bank_site",
             mime_type="application/pdf", date_precision=prec, date_source="bank_site",
         )
 
@@ -209,7 +209,7 @@ def sitemap_pages(fetcher: Fetcher,
     return out
 
 
-# Back-compat: derived-URL-only listing (date, title, pdf_url).
+# Back-compat: derived-URL-only listing (date, title, document_url).
 def sitemap_papers(fetcher: Fetcher,
                    years: Optional[Iterable[int]] = None) -> list[tuple[date, str, str]]:
     out = []
