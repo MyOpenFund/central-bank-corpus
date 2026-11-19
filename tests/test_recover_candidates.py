@@ -20,6 +20,7 @@ from cb_corpus.models import DocRecord
 from cb_corpus.quarantine import Quarantine
 from cb_corpus.storage import Storage, iter_manifest_rows
 from cb_corpus.taxonomy import DocType
+from tests.conftest import pdf_body
 
 
 # ---------------------------------------------------------------------------
@@ -83,7 +84,7 @@ def _write_candidates(tmp_path, candidates: list[dict]) -> Path:
 def _make_local_pdf(tmp_path, name="recovered.pdf", size=25 * 1024) -> Path:
     """A verified-shape local PDF: %PDF magic, bigger than the 20KB floor."""
     path = tmp_path / name
-    body = b"%PDF-1.4 " + b"x" * size
+    body = pdf_body(b"%PDF-1.4 " + b"x" * size)
     path.write_bytes(body)
     return path
 
@@ -286,7 +287,7 @@ def test_duplicate_content_is_deduped_and_orphan_file_removed(tmp_path, monkeypa
     from cb_corpus.recover import run_recover_downloads
 
     cfg = Config(data_dir=tmp_path)
-    dup_bytes = b"%PDF-1.4 duplicate-body " + b"y" * (25 * 1024)
+    dup_bytes = pdf_body(b"%PDF-1.4 duplicate-body " + b"y" * (25 * 1024))
 
     # Pre-seed the corpus with this exact content under a different, live URL.
     seed_storage = Storage(cfg, _NullFetcher())
@@ -352,7 +353,7 @@ def test_candidates_duplicate_stamp_order_dead_then_final(tmp_path, monkeypatch)
     from cb_corpus.recover import run_recover_downloads
 
     cfg = Config(data_dir=tmp_path)
-    dup_bytes = b"%PDF-1.4 duplicate-body-order " + b"y" * (25 * 1024)
+    dup_bytes = pdf_body(b"%PDF-1.4 duplicate-body-order " + b"y" * (25 * 1024))
 
     seed_storage = Storage(cfg, _NullFetcher())
     seed_rec = DocRecord(bank_code="fr", doc_type=DocType.D1, title="Existing copy",
@@ -438,7 +439,7 @@ def test_candidates_converged_dry_run_does_not_release_quarantine(tmp_path, monk
                         pdf_url=dead_url, date=date(2020, 1, 1),
                         mime_type="application/pdf")
     seed_path = tmp_path / "seed.pdf"
-    seed_path.write_bytes(b"%PDF-1.4 " + b"z" * (25 * 1024))
+    seed_path.write_bytes(pdf_body(b"%PDF-1.4 " + b"z" * (25 * 1024)))
     assert seed_storage.reindex(seed_rec, seed_path) == "reindexed"
 
     q_path = cfg.data_dir / "download_quarantine.jsonl"
@@ -491,7 +492,7 @@ def test_bank_site_probe_duplicate_stamps_dead_url_on_alt_urls(tmp_path, monkeyp
                         pdf_url=final_url, date=date(2020, 1, 1),
                         mime_type="application/pdf")
     seed_path = tmp_path / "seed-bs.pdf"
-    seed_path.write_bytes(b"%PDF-1.4 " + b"w" * (25 * 1024))
+    seed_path.write_bytes(pdf_body(b"%PDF-1.4 " + b"w" * (25 * 1024)))
     assert seed_storage.reindex(seed_rec, seed_path) == "reindexed"
 
     q_path = cfg.data_dir / "download_quarantine.jsonl"
@@ -1147,9 +1148,9 @@ def test_stamps_applied_even_if_pass_dies_mid_loop(tmp_path, monkeypatch):
                            pdf_url=final_url_2, date=date(2020, 1, 1),
                            mime_type="application/pdf")
     seed_path_1 = tmp_path / "seed-crash-1.pdf"
-    seed_path_1.write_bytes(b"%PDF-1.4 " + b"c" * (25 * 1024))
+    seed_path_1.write_bytes(pdf_body(b"%PDF-1.4 " + b"c" * (25 * 1024)))
     seed_path_2 = tmp_path / "seed-crash-2.pdf"
-    seed_path_2.write_bytes(b"%PDF-1.4 " + b"d" * (25 * 1024))
+    seed_path_2.write_bytes(pdf_body(b"%PDF-1.4 " + b"d" * (25 * 1024)))
     assert seed_storage.reindex(seed_rec_1, seed_path_1) == "reindexed"
     assert seed_storage.reindex(seed_rec_2, seed_path_2) == "reindexed"
 
@@ -1209,7 +1210,7 @@ def test_candidates_rerun_over_healed_corpus_reports_converged(tmp_path, monkeyp
                         pdf_url=final_url, date=date(2020, 1, 1),
                         mime_type="application/pdf")
     seed_path = tmp_path / "seed-converge.pdf"
-    seed_path.write_bytes(b"%PDF-1.4 " + b"v" * (25 * 1024))
+    seed_path.write_bytes(pdf_body(b"%PDF-1.4 " + b"v" * (25 * 1024)))
     assert seed_storage.reindex(seed_rec, seed_path) == "reindexed"
 
     q_path = cfg.data_dir / "download_quarantine.jsonl"

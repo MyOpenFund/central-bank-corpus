@@ -16,6 +16,10 @@ services:
       DISCOVER_WORKERS: "6"    # banks crawled in parallel (bounds CPU/RAM/bandwidth)
       SYNC_WINDOW_DAYS: "90"   # catalog freshness window Mon-Sat; Sunday sweeps full
       # DISCOVER_BANK_TIMEOUT: "10800"  # s per bank before the crawl is killed
+      # Content check on downloads (deploy/README.md § Content check); invalid -> warning + default
+      # CB_MIN_PDF_BYTES: "1024"          # smallest accepted PDF, 0 = no floor
+      # CB_PDF_REQUIRE_EOF: "1"           # 0 = accept a PDF without a trailing %%EOF
+      # CB_PDF_URL_SERVED_HTML: "reject"  # "accept" = store the HTML a PDF URL served
       AUTOCOMMIT: "1"
     volumes:
       - /mnt/POOL/DATASET:/app/data              # host path of the SMB dataset

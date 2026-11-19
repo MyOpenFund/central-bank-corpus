@@ -116,6 +116,15 @@ def _isolated_cb_data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("CB_DATA_DIR", str(tmp_path / "cb_data"))
 
 
+@pytest.fixture(autouse=True)
+def _default_content_check_env(monkeypatch):
+    """Config reads the content-check knobs from CB_MIN_PDF_BYTES,
+    CB_PDF_REQUIRE_EOF and CB_PDF_URL_SERVED_HTML; a developer's shell
+    exporting one must not change what the suite tests."""
+    for name in ("CB_MIN_PDF_BYTES", "CB_PDF_REQUIRE_EOF", "CB_PDF_URL_SERVED_HTML"):
+        monkeypatch.delenv(name, raising=False)
+
+
 def read_fixture(*parts: str) -> str:
     """Read a recorded page, e.g. `read_fixture("boj", "wps_2026.html")`.
 
@@ -172,6 +181,15 @@ def _storage_render_guard_without_dns(monkeypatch):
     from cb_corpus.storage import Storage
     monkeypatch.setattr(Storage, "render_resolver", staticmethod(_no_dns_resolver))
     monkeypatch.setattr(htmlpdf, "DEFAULT_RESOLVER", _no_dns_resolver)
+
+
+def pdf_body(head: bytes) -> bytes:
+    """`head` (a stub like b"%PDF-1.4 x") turned into bytes with a PDF's
+    shape, so Storage's content check (cb_corpus.pdfcheck, issue #21: magic,
+    >= Config.min_pdf_bytes, %%EOF at the end) lets it through. Deterministic:
+    the same head always gives the same bytes (same sha256), so tests about
+    duplicate content keep working; different heads stay different."""
+    return head + b"\n" + b"0" * 1024 + b"\n%%EOF\n"
 
 
 def public_resolver(host, port, *args, **kwargs):

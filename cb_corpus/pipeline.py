@@ -14,7 +14,7 @@ from .models import DocRecord, compute_doc_id
 from .runreport import RunReport
 from .sources.bis_speeches import BISSpeechIndex, parse_detail
 from .sources.recovery import Source
-from .storage import Storage
+from .storage import Storage, status_key
 from .taxonomy import DocType, FULL_SCOPE
 
 
@@ -220,6 +220,9 @@ def _apply_reindex(recs: Iterable[DocRecord], storage: Storage,
 
     Mutates ``missing`` (pops matched ids) so the caller can report what stayed
     unmatched. Records not on disk are ignored (we only index files we have).
+    Statuses are tallied by `storage.status_key`: an on-disk PDF that fails
+    the content check (`skip:bad-content`, issue #21) gets its own
+    "bad-content" key instead of vanishing into "skip".
     """
     counts: dict[str, int] = {"matched": 0, "reindexed": 0, "skip": 0}
     for rec in recs:
@@ -227,7 +230,7 @@ def _apply_reindex(recs: Iterable[DocRecord], storage: Storage,
         if path is None:
             continue
         counts["matched"] += 1
-        status = storage.reindex(rec, path, dry_run=dry_run).split(":")[0]
+        status = status_key(storage.reindex(rec, path, dry_run=dry_run))
         counts[status] = counts.get(status, 0) + 1
         missing.pop(rec.doc_id, None)
     return counts
@@ -290,7 +293,8 @@ def reindex_native_from_disk(bank_codes: Optional[Iterable[str]] = None,
     _record_discovery_errors(cfg, disc_errors)
     counts["unmatched"] = len(missing)
     print(f"reindex(native): matched={counts['matched']} "
-          f"reindexed={counts.get('reindexed', 0)} dry_run={dry_run} "
+          f"reindexed={counts.get('reindexed', 0)} "
+          f"bad_content={counts.get('bad-content', 0)} dry_run={dry_run} "
           f"unmatched={len(missing)} (unmatched = URL no longer exposed by the "
           f"bank site, or non-native source)", file=sys.stderr, flush=True)
     return counts
@@ -398,7 +402,7 @@ def reindex_bis_from_disk(only_banks: Optional[set[str]] = None,
                         # r<YYMMDD> in the BIS review slug
                         date_precision="day" if meta.date else None,
                     )
-                    status = storage.reindex(rec, hit[1], dry_run=dry_run).split(":")[0]
+                    status = status_key(storage.reindex(rec, hit[1], dry_run=dry_run))
                     counts[status] = counts.get(status, 0) + 1
                     del bucket[cand]
                     break
@@ -408,7 +412,8 @@ def reindex_bis_from_disk(only_banks: Optional[set[str]] = None,
 
     counts["unmatched"] = sum(len(b) for b in missing_by_year.values())
     print(f"reindex: matched={counts['matched']} "
-          f"reindexed={counts.get('reindexed', 0)} dry_run={dry_run} "
+          f"reindexed={counts.get('reindexed', 0)} "
+          f"bad_content={counts.get('bad-content', 0)} dry_run={dry_run} "
           f"unmatched={counts['unmatched']} (unmatched = on disk but not found in "
           f"BIS sitemaps — pre-1996 or non-BIS-sourced)",
           file=sys.stderr, flush=True)

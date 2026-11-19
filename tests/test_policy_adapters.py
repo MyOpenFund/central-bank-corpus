@@ -20,6 +20,7 @@ from cb_corpus.models import DocRecord, compute_doc_id
 from cb_corpus.policy_dates import plan_row
 from cb_corpus.storage import Storage
 from cb_corpus.taxonomy import DocType
+from tests.conftest import pdf_body
 
 
 class _Pages:
@@ -407,7 +408,7 @@ def test_sync_after_the_backfill_leaves_known_rows_alone(tmp_path):
         def get_bytes(self, u):
             assert u != url, "re-downloaded a known document"
             self.fetched.append(u)
-            return (b"%PDF-1.4 new", "application/pdf")
+            return (pdf_body(b"%PDF-1.4 new"), "application/pdf")
 
         def throttle(self, u):
             pass

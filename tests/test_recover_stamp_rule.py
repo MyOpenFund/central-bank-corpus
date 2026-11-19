@@ -15,12 +15,13 @@ from cb_corpus.models import DocRecord
 from cb_corpus.recover import run_recover_downloads
 from cb_corpus.storage import Storage, apply_row_updates, iter_manifest_rows
 from cb_corpus.taxonomy import DocType
+from tests.conftest import pdf_body
 from tests.test_recover_candidates import (_NullFetcher, _entry,
                                            _stub_refresh_metadata, _write_candidates,
                                            _write_inventory)
 from tests.test_recover_downloads import _StubFetcher
 
-DUP = b"%PDF-1.4 shared-body " + b"z" * (25 * 1024)
+DUP = pdf_body(b"%PDF-1.4 shared-body " + b"z" * (25 * 1024))
 OWNER_URL = "https://www.banque-france.fr/existing.pdf"
 DEAD_URL = "https://www.banque-france.fr/dt-alias.pdf"
 SOURCE = "https://ideas.repec.org/p/bfr/banfra/986.html"

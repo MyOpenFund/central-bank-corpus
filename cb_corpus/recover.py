@@ -79,10 +79,11 @@ from .banks import get_bank
 from .config import Config
 from .http import Fetcher
 from .models import DocRecord
+from .pdfcheck import MAGIC_WINDOW, has_pdf_magic
 from .quarantine import Quarantine
 from .sources.repec import IDEAS, _paper_meta, extract_pdf_candidates
 from .sources.wayback import latest_capture, raw_url
-from .storage import Storage
+from .storage import BAD_CONTENT, Storage
 from .taxonomy import by_code
 
 _ACTIONS = ("recoverable", "recovered", "duplicate", "unrecoverable", "converged")
@@ -95,9 +96,10 @@ _DUPLICATE_CONTENT_PREFIX = "skip:duplicate-content"
 
 # --candidates local-file verification: reject anything too small to
 # plausibly be a real working paper (a truncated download, an HTML error
-# page saved with a .pdf extension, etc).
+# page saved with a .pdf extension, etc). Deliberately higher than
+# Config.min_pdf_bytes (storage's floor for any PDF): it judges externally
+# hunted candidates, a different question (integrity wave 2026-11).
 _MIN_CANDIDATE_PDF_BYTES = 20 * 1024
-_PDF_MAGIC = b"%PDF"
 
 
 def _read_inventory(cfg: Config,
@@ -107,19 +109,40 @@ def _read_inventory(cfg: Config,
     overwrites an earlier one for the same url). Optional ``bank_codes``
     filter. A missing file is tolerated: empty inventory, a stderr note, no
     crash (the file is created lazily by the crawler only once a download
-    actually fails)."""
+    actually fails).
+
+    A line that does not parse as a JSON object is skipped with ONE stderr
+    warning naming its line number (same pattern as ``_read_candidates``),
+    the good lines around it still collected (issue #20). The file is
+    appended lock-free by up to 6 parallel discover workers, so a torn line
+    (a writer killed mid-write, or torn mid UTF-8 character) is an expected
+    accident, not a reason to make every later recover-downloads run crash
+    until someone hand-edits it. Unlike ``_apply_seed_quarantine``, which
+    reads the operator's own file and aborts on purpose."""
     path = cfg.data_dir / "download_errors.jsonl"
     if not path.exists():
         print(f"[recover] no {path} -- nothing to recover", file=sys.stderr, flush=True)
         return []
     codes = set(bank_codes) if bank_codes else None
     by_url: dict[str, dict] = {}
-    with path.open() as fh:
-        for line in fh:
+    # errors="replace": a line torn mid multi-byte character must fail ITS
+    # json.loads (and be skipped), not abort the whole read with a
+    # UnicodeDecodeError.
+    with path.open(encoding="utf-8", errors="replace") as fh:
+        for lineno, line in enumerate(fh, start=1):
             line = line.strip()
             if not line:
                 continue
-            entry = json.loads(line)
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError as exc:
+                print(f"[recover] WARNING: malformed JSON on line {lineno} of "
+                      f"{path}, skipped: {exc}", file=sys.stderr, flush=True)
+                continue
+            if not isinstance(entry, dict):
+                print(f"[recover] WARNING: line {lineno} of {path} is not a JSON "
+                      f"object, skipped", file=sys.stderr, flush=True)
+                continue
             if codes is not None and entry.get("bank_code") not in codes:
                 continue
             url = entry.get("pdf_url")
@@ -220,20 +243,24 @@ def _read_candidates(path: str) -> list[dict]:
 
 
 def _verify_local_pdf(path: Path) -> bool:
-    """True iff ``path`` exists, starts with the ``%PDF`` magic, and is
-    bigger than ``_MIN_CANDIDATE_PDF_BYTES`` -- the honesty check before an
+    """True iff ``path`` exists, carries the ``%PDF`` magic (the shared rule,
+    pdfcheck.has_pdf_magic: within the first 1,024 bytes, so a valid file
+    after leading whitespace passes) and is bigger than
+    ``_MIN_CANDIDATE_PDF_BYTES`` -- the honesty check before an
     externally-hunted file is ever registered into the corpus (recover-
-    quarantine design: verified local PDF)."""
+    quarantine design: verified local PDF). The truncation (``%%EOF``) rule
+    is applied afterwards by Storage.reindex, which returns
+    ``skip:bad-content`` for such a file."""
     try:
         if not path.is_file():
             return False
         if path.stat().st_size <= _MIN_CANDIDATE_PDF_BYTES:
             return False
         with path.open("rb") as fh:
-            head = fh.read(len(_PDF_MAGIC))
+            head = fh.read(MAGIC_WINDOW)
     except OSError:
         return False
-    return head == _PDF_MAGIC
+    return has_pdf_magic(head)
 
 
 def _apply_seed_quarantine(quarantine: Quarantine, path: str) -> int:
@@ -499,6 +526,19 @@ def _run_candidates_pass(cfg: Config, storage: Storage, fetcher: Fetcher,
             if date_source:
                 rec.date_source = date_source
 
+            # The probe below (a dry-run reindex) also runs Storage's content
+            # check (issue #21): a candidate that passed _verify_local_pdf
+            # (magic + 20 KB) but that reindex() would refuse -- typically a
+            # truncated file with no %%EOF -- is reported as "bad-file" like
+            # any unusable candidate, in BOTH modes, before anything is copied
+            # into raw/ (a copy would only leave unindexed bytes behind).
+            probe = storage.reindex(rec, file_path, dry_run=True)
+            if probe == BAD_CONTENT:
+                _bump(bank, "bad-file")
+                csv_rows.append({"bank": bank, "pdf_url": dead_url, "action": "bad-file",
+                                 "snapshot_ts": "", "title": fallback_title})
+                continue
+
             _bump(bank, "recoverable")
             action = "recoverable"
             canonical_doc_id = ""
@@ -512,7 +552,7 @@ def _run_candidates_pass(cfg: Config, storage: Storage, fetcher: Fetcher,
             # mode it's also a safety guard -- copying then unlinking on
             # "skip:already-indexed" would DELETE the real canonical file,
             # leaving a dangling manifest row (the exact bug this guards).
-            probe = storage.reindex(rec, file_path, dry_run=True)
+            # (`probe` was computed above, before the content-check exit.)
             if probe == "skip:already-indexed":
                 _bump(bank, "duplicate")
                 action = "duplicate"

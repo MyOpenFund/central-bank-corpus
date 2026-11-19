@@ -125,6 +125,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="actually move duplicates (default: dry-run, report only)")
     so.add_argument("--progress-every", type=int, default=1000,
                     help="stderr progress line every N files examined (default 1000)")
+    so.add_argument("--temp-min-age-hours", type=float, default=24.0,
+                    help="leave alone .part temps younger than this (a running job may "
+                         "still write them); older ones are reported as stale temps "
+                         "and moved with --move (default 24)")
 
     r = sub.add_parser("report")
     r.add_argument("--banks", default="")
@@ -423,6 +427,7 @@ def main(argv: list[str] | None = None) -> int:
             summary = orphans.sweep_orphans(
                 Config(), banks=set(banks) if banks else None, move=args.move,
                 progress_every=args.progress_every,
+                temp_min_age=args.temp_min_age_hours * 3600,
             )
         except (OSError, ValueError) as exc:   # FileNotFoundError is an OSError
             print(f"error: {exc}", file=sys.stderr)
@@ -435,7 +440,8 @@ def main(argv: list[str] | None = None) -> int:
               f"{' (dry-run)' if summary.dry_run else ''}"
               f"{f', {summary.move_failed} move(s) failed' if summary.move_failed else ''}"
               f"{f', {summary.owner_missing} kept (owner file missing)' if summary.owner_missing else ''}"
-              f"{f', {summary.hash_failed} hash failure(s)' if summary.hash_failed else ''}")
+              f"{f', {summary.hash_failed} hash failure(s)' if summary.hash_failed else ''}"
+              f"{f', {summary.temps_stale} stale temp(s)' if summary.temps_stale else ''}")
         return 0
 
     if args.cmd == "cadence-watch":

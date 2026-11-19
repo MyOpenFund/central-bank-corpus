@@ -30,6 +30,7 @@ from cb_corpus.models import DocRecord
 from cb_corpus.config import Config
 from cb_corpus.storage import Storage
 from cb_corpus.completeness import build_matrix, summarize
+from tests.conftest import pdf_body
 
 
 # ---- taxonomy --------------------------------------------------------
@@ -334,7 +335,7 @@ def test_storage_tries_alt_urls_on_download_failure(tmp_path):
         calls.append(url)
         if "preferred" in url:
             raise RuntimeError("403 Forbidden")
-        return (b"%PDF-1.4 fallback", "application/pdf")
+        return (pdf_body(b"%PDF-1.4 fallback"), "application/pdf")
 
     st.fetcher.get_bytes = fake_get_bytes
     rec = DocRecord(bank_code="fr", doc_type=DocType.D1, title="x",
@@ -1055,7 +1056,7 @@ def test_storage_tracks_known_urls_for_rerun_dedup(tmp_path):
     by a REAL save (dry-run must not persist; see the next test)."""
     cfg = Config(data_dir=tmp_path)
     st1 = Storage(cfg)
-    st1.fetcher.get_bytes = lambda url: (b"%PDF-1.4 data", "application/pdf")
+    st1.fetcher.get_bytes = lambda url: (pdf_body(b"%PDF-1.4 data"), "application/pdf")
     rec = DocRecord(bank_code="de", doc_type=DocType.C1, title="x",
                     pdf_url="https://www.bis.org/review/r240315a.pdf",
                     date=date(2024, 3, 15))
@@ -1080,7 +1081,7 @@ def test_dry_run_does_not_persist_and_never_blocks_real_save(tmp_path):
     assert list(iter_manifest_rows(cfg)) == []
     # A fresh Storage (new process) still downloads it.
     st2 = Storage(cfg)
-    st2.fetcher.get_bytes = lambda url: (b"%PDF-1.4 data", "application/pdf")
+    st2.fetcher.get_bytes = lambda url: (pdf_body(b"%PDF-1.4 data"), "application/pdf")
     assert st2.save(rec) == "saved"
     assert len(list(iter_manifest_rows(cfg))) == 1  # exactly 1 row
 
@@ -1092,7 +1093,7 @@ def test_duplicate_content_status_carries_matched_doc_id(tmp_path):
     row to stamp the dead URL onto."""
     cfg = Config(data_dir=tmp_path)
     st = Storage(cfg)
-    st.fetcher.get_bytes = lambda url: (b"%PDF-1.4 same body", "application/pdf")
+    st.fetcher.get_bytes = lambda url: (pdf_body(b"%PDF-1.4 same body"), "application/pdf")
     rec_a = DocRecord(bank_code="fr", doc_type=DocType.D1, title="A",
                       pdf_url="https://www.banque-france.fr/a.pdf",
                       date=date(2020, 1, 1))
@@ -1105,7 +1106,7 @@ def test_duplicate_content_status_carries_matched_doc_id(tmp_path):
     # Same for reindex() (no-fetch path).
     st2 = Storage(cfg)
     local_pdf = tmp_path / "reindex-src.pdf"
-    local_pdf.write_bytes(b"%PDF-1.4 same body")
+    local_pdf.write_bytes(pdf_body(b"%PDF-1.4 same body"))
     rec_c = DocRecord(bank_code="fr", doc_type=DocType.D1, title="C",
                       pdf_url="https://www.banque-france.fr/c.pdf",
                       date=date(2020, 1, 1))
@@ -1118,14 +1119,14 @@ def test_duplicate_content_map_survives_reload(tmp_path):
     write sites."""
     cfg = Config(data_dir=tmp_path)
     st1 = Storage(cfg)
-    st1.fetcher.get_bytes = lambda url: (b"%PDF-1.4 reload body", "application/pdf")
+    st1.fetcher.get_bytes = lambda url: (pdf_body(b"%PDF-1.4 reload body"), "application/pdf")
     rec_a = DocRecord(bank_code="fr", doc_type=DocType.D1, title="A",
                       pdf_url="https://www.banque-france.fr/reload-a.pdf",
                       date=date(2020, 1, 1))
     assert st1.save(rec_a) == "saved"
 
     st2 = Storage(cfg)   # fresh instance, re-reads the manifest
-    st2.fetcher.get_bytes = lambda url: (b"%PDF-1.4 reload body", "application/pdf")
+    st2.fetcher.get_bytes = lambda url: (pdf_body(b"%PDF-1.4 reload body"), "application/pdf")
     rec_b = DocRecord(bank_code="fr", doc_type=DocType.D1, title="B",
                       pdf_url="https://www.banque-france.fr/reload-b.pdf",
                       date=date(2020, 1, 1))
@@ -1135,7 +1136,7 @@ def test_duplicate_content_map_survives_reload(tmp_path):
 def test_stamp_alt_urls_adds_missing_url_and_persists(tmp_path):
     cfg = Config(data_dir=tmp_path)
     st = Storage(cfg)
-    st.fetcher.get_bytes = lambda url: (b"%PDF-1.4 stamp body", "application/pdf")
+    st.fetcher.get_bytes = lambda url: (pdf_body(b"%PDF-1.4 stamp body"), "application/pdf")
     rec = DocRecord(bank_code="fr", doc_type=DocType.D1, title="A",
                     pdf_url="https://www.banque-france.fr/stamp-a.pdf",
                     date=date(2020, 1, 1))
@@ -1153,7 +1154,7 @@ def test_stamp_alt_urls_adds_missing_url_and_persists(tmp_path):
 def test_stamp_alt_urls_skips_url_equal_to_pdf_url(tmp_path):
     cfg = Config(data_dir=tmp_path)
     st = Storage(cfg)
-    st.fetcher.get_bytes = lambda url: (b"%PDF-1.4 stamp body 2", "application/pdf")
+    st.fetcher.get_bytes = lambda url: (pdf_body(b"%PDF-1.4 stamp body 2"), "application/pdf")
     rec = DocRecord(bank_code="fr", doc_type=DocType.D1, title="A",
                     pdf_url="https://www.banque-france.fr/stamp-b.pdf",
                     date=date(2020, 1, 1))
@@ -1168,7 +1169,7 @@ def test_stamp_alt_urls_skips_url_equal_to_pdf_url(tmp_path):
 def test_stamp_alt_urls_skips_already_present_alt(tmp_path):
     cfg = Config(data_dir=tmp_path)
     st = Storage(cfg)
-    st.fetcher.get_bytes = lambda url: (b"%PDF-1.4 stamp body 3", "application/pdf")
+    st.fetcher.get_bytes = lambda url: (pdf_body(b"%PDF-1.4 stamp body 3"), "application/pdf")
     rec = DocRecord(bank_code="fr", doc_type=DocType.D1, title="A",
                     pdf_url="https://www.banque-france.fr/stamp-c.pdf",
                     alt_urls=["https://mirror.example/stamp-c.pdf"],
@@ -1184,7 +1185,7 @@ def test_stamp_alt_urls_skips_already_present_alt(tmp_path):
 def test_stamp_alt_urls_no_op_returns_zero_and_does_not_rewrite(tmp_path, monkeypatch):
     cfg = Config(data_dir=tmp_path)
     st = Storage(cfg)
-    st.fetcher.get_bytes = lambda url: (b"%PDF-1.4 stamp body 4", "application/pdf")
+    st.fetcher.get_bytes = lambda url: (pdf_body(b"%PDF-1.4 stamp body 4"), "application/pdf")
     rec = DocRecord(bank_code="fr", doc_type=DocType.D1, title="A",
                     pdf_url="https://www.banque-france.fr/stamp-d.pdf",
                     date=date(2020, 1, 1))
@@ -1200,7 +1201,7 @@ def test_stamp_alt_urls_no_op_returns_zero_and_does_not_rewrite(tmp_path, monkey
 def test_stamp_alt_urls_ignores_unknown_doc_id(tmp_path):
     cfg = Config(data_dir=tmp_path)
     st = Storage(cfg)
-    st.fetcher.get_bytes = lambda url: (b"%PDF-1.4 stamp body 5", "application/pdf")
+    st.fetcher.get_bytes = lambda url: (pdf_body(b"%PDF-1.4 stamp body 5"), "application/pdf")
     rec = DocRecord(bank_code="fr", doc_type=DocType.D1, title="A",
                     pdf_url="https://www.banque-france.fr/stamp-e.pdf",
                     date=date(2020, 1, 1))
@@ -1215,7 +1216,7 @@ def test_stamp_alt_urls_ignores_unknown_doc_id(tmp_path):
 def test_stamp_alt_urls_returns_urls_and_rows_modified(tmp_path):
     cfg = Config(data_dir=tmp_path)
     st = Storage(cfg)
-    st.fetcher.get_bytes = lambda url: (b"%PDF-1.4 stamp body order", "application/pdf")
+    st.fetcher.get_bytes = lambda url: (pdf_body(b"%PDF-1.4 stamp body order"), "application/pdf")
     rec = DocRecord(bank_code="fr", doc_type=DocType.D1, title="A",
                     pdf_url="https://www.banque-france.fr/stamp-order.pdf",
                     date=date(2020, 1, 1))
@@ -1256,7 +1257,7 @@ def test_storage_html_to_pdf_invokes_renderer(tmp_path, monkeypatch):
     rendered: list = []
     def fake_render(url, output, **kw):
         output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_bytes(b"%PDF-1.4 stub")
+        output.write_bytes(pdf_body(b"%PDF-1.4 stub"))
         rendered.append((url, output))
     monkeypatch.setattr(storage_mod, "render_url_to_pdf", fake_render)
     rec = DocRecord(bank_code="ecb", doc_type=DocType.A3, title="x",
@@ -1332,7 +1333,7 @@ def test_retry_html_recovers_and_records_failures(tmp_path, monkeypatch):
                  **kw):
         if "a.en.html" in url:
             output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_bytes(b"%PDF-1.4 recovered")
+            output.write_bytes(pdf_body(b"%PDF-1.4 recovered"))
             return True
         return False
     monkeypatch.setattr(retry_mod, "_try_strategy", fake_try)
@@ -1382,7 +1383,7 @@ def test_convert_existing_rewrites_manifest(tmp_path, monkeypatch):
     monkeypatch.setattr(convert_mod, "find_chrome", lambda: "/fake/chrome")
     def fake_render(url, output, **kw):
         output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_bytes(b"%PDF-1.4 ok")
+        output.write_bytes(pdf_body(b"%PDF-1.4 ok"))
     monkeypatch.setattr(convert_mod, "render_url_to_pdf", fake_render)
 
     from tests.conftest import public_resolver
@@ -1655,7 +1656,7 @@ def test_is_known_url_matches_slash_variants_both_directions(tmp_path):
     Task 2's write+read normalization from both directions."""
     cfg = Config(data_dir=tmp_path)
     st = Storage(cfg)
-    st.fetcher.get_bytes = lambda url: (f"%PDF-1.4 {url}".encode(), "application/pdf")
+    st.fetcher.get_bytes = lambda url: (pdf_body(f"%PDF-1.4 {url}".encode()), "application/pdf")
 
     rec_a = DocRecord(bank_code="e", doc_type=DocType.D1, title="A",
                       pdf_url="https://e.eu//press//a.pdf", date=date(2024, 1, 1))
@@ -1674,7 +1675,7 @@ def test_known_url_variants_cover_alt_urls_reload_and_source_urls(tmp_path):
     is_known_source_url normalizes the same way as is_known_url."""
     cfg = Config(data_dir=tmp_path)
     st = Storage(cfg)
-    st.fetcher.get_bytes = lambda url: (b"%PDF-1.4 body", "application/pdf")
+    st.fetcher.get_bytes = lambda url: (pdf_body(b"%PDF-1.4 body"), "application/pdf")
 
     rec = DocRecord(bank_code="e", doc_type=DocType.D1, title="A",
                     pdf_url="https://e.eu/press/preferred.pdf",

@@ -299,7 +299,8 @@ def test_convert_existing_preserves_concurrent_append(tmp_path, monkeypatch):
     monkeypatch.setattr(convert_mod, "find_chrome", lambda: "/usr/bin/true")
 
     def fake_render(url, pdf_path, user_data_dir=None, **kw):
-        Path(pdf_path).write_bytes(b"%PDF-1.4 fake")
+        from tests.conftest import pdf_body      # passes the PDF check (#21)
+        Path(pdf_path).write_bytes(pdf_body(b"%PDF-1.4 fake"))
         # An append lands while "Chrome" renders — the heart of issue #18.
         subprocess.run([sys.executable, "-c", APPENDER, str(path), "mid-render"],
                        check=True)

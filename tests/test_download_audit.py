@@ -5,6 +5,7 @@ from cb_corpus.config import Config
 from cb_corpus.models import DocRecord
 from cb_corpus.storage import Storage
 from cb_corpus.taxonomy import DocType
+from tests.conftest import pdf_body
 
 
 class _BoomFetcher:
@@ -49,7 +50,7 @@ def test_dry_run_writes_no_audit_line(tmp_path):
 def test_successful_saves_write_no_audit_line(tmp_path):
     class _OkFetcher:
         def get_bytes(self, url):
-            return b"%PDF-fake", "application/pdf"
+            return pdf_body(b"%PDF-fake"), "application/pdf"
     (tmp_path / "manifest").mkdir(parents=True)
     st = Storage(Config(data_dir=tmp_path), _OkFetcher())
     counts = st.save_many([_rec()], dry_run=False, label="repec:gb")
@@ -68,7 +69,7 @@ def test_save_many_isolates_audit_write_failure_from_the_batch(tmp_path, monkeyp
         def get_bytes(self, url):
             if "dead" in url:
                 raise RuntimeError("HTTP 404: gone")
-            return b"%PDF-fake", "application/pdf"
+            return pdf_body(b"%PDF-fake"), "application/pdf"
 
     (tmp_path / "manifest").mkdir(parents=True)
     st = Storage(Config(data_dir=tmp_path), _MixedFetcher())

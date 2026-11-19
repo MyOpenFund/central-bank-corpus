@@ -19,45 +19,167 @@ content sha256.
 from __future__ import annotations
 
 import atexit
-import contextlib
 import datetime as _dt
-import fcntl
+# Not used directly any more (the lock lives in filelock.py), but kept as a
+# module attribute: tests patch `storage.fcntl.flock` -- the same module
+# object filelock.py calls -- to simulate lock-window races.
+import fcntl  # noqa: F401
 import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import sys
 from pathlib import Path
-from typing import Iterable, Iterator, Mapping, Optional
+from typing import Callable, Iterable, Iterator, Mapping, Optional
 
 from .config import Config
+from .filelock import locked_sidecar
 from .http import Fetcher
 from .htmlpdf import RenderRefused, render_allowed, render_url_to_pdf
 from .models import DocRecord
+from .pdfcheck import check_pdf_bytes
 from .quarantine import Quarantine
 
 
-@contextlib.contextmanager
-def _locked(data_file: Path):
-    """Exclusive flock on the SIDECAR lock file of `data_file`.
+class ContentCheckFailed(RuntimeError):
+    """Every candidate URL of a record failed (issue #21): at least one
+    answered HTTP 200 with bytes that failed the content check (HTML for an
+    expected PDF, a body without the PDF shape -- see pdfcheck), and the
+    others failed the content check too or could not be fetched at all.
 
-    The data file's inode changes on every rewrite (temp + os.replace), so a
-    flock on the data file itself cannot give mutual exclusion between
-    appenders and rewriters — an appender can hold a lock on the OLD inode
-    while a rewriter swaps in a new one, orphaning the appended bytes
-    (issue #18). The sidecar (`.<name>.lock`, created on demand, never
-    replaced or deleted) has a stable inode. Every manifest write path —
-    _append(), _repair_torn_tail(), apply_row_updates() — takes this lock.
-    """
-    lock = data_file.with_name("." + data_file.name + ".lock")
-    lock.parent.mkdir(parents=True, exist_ok=True)
-    with lock.open("a") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)
+    A RuntimeError on purpose: save()'s callers already route any exception
+    to the download-error path (save_many -> download_errors.jsonl with the
+    batch label, and the quarantine night count), so a rejected body is
+    retried on later nights, then quarantined, exactly like a dead URL --
+    never stored, never indexed, never a dedup owner. The message names
+    every candidate URL with its reason."""
+
+
+def _temp_sibling(path: Path) -> Path:
+    """A fresh, unique temp path in `path`'s directory (`.<name>.<random>.part`),
+    created empty. Same directory on purpose: os.replace is atomic only
+    within one filesystem. Hidden and `.part`-suffixed so readers that glob
+    raw/ for `*.pdf` / `*.html` (reindex) never pick up a half-written file;
+    `sweep-orphans` walks every file, dotfiles included: it skips a recent
+    temp and reports an old one (left by a killed process) as a stale temp
+    (orphans.is_temp_part).
+
+    Created with mode 0o666 through os.open, so the process umask applies
+    and the final artifact (renamed from this file) gets the same mode a
+    plain write would give (0644 under umask 022, 0664 under 002) --
+    tempfile.mkstemp would force 0600 on every artifact."""
+    for _ in range(100):
+        tmp = path.with_name(f".{path.name}.{secrets.token_hex(6)}.part")
         try:
-            yield
-        finally:
-            fcntl.flock(fh, fcntl.LOCK_UN)
+            fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
+        except FileExistsError:
+            continue
+        os.close(fd)
+        return tmp
+    raise FileExistsError(f"no free temp name next to {path}")
+
+
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    """Write `data` to `path` so that `path` holds either its previous
+    content (or nothing) or ALL of `data` -- never a prefix (issue #21).
+
+    A plain write_bytes killed mid-way (SIGKILL, ENOSPC, power loss) left a
+    truncated artifact at the final path; the disaster-recovery reindex then
+    indexed it and save()'s doc_id guard meant it was never retried. Here the
+    bytes go to a temp sibling (_temp_sibling), are fsync'ed, then moved
+    into place with os.replace (atomic on POSIX). On any failure the temp
+    file is removed and the exception propagates (save() then fails like any
+    download: download error, quarantine night, retried later). The parent
+    directory itself is not fsync'ed: after a crash the rename may be lost,
+    which leaves no file -- the safe outcome."""
+    tmp = _temp_sibling(path)
+    try:
+        with tmp.open("wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def pdf_file_problem(path: Path, cfg: Config) -> Optional[str]:
+    """Why the on-disk file `path` is not an acceptable PDF (the same check
+    as a download: pdfcheck.check_pdf_bytes with Config.min_pdf_bytes /
+    pdf_require_eof), or None when it is. A missing or unreadable file is a
+    problem too, never an exception."""
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        return f"unreadable ({type(exc).__name__})"
+    return check_pdf_bytes(data, min_bytes=cfg.min_pdf_bytes,
+                           require_eof=cfg.pdf_require_eof)
+
+
+def render_pdf_checked(pdf_path: Path, cfg: Config,
+                       render: Callable[[Path], None], *, url: str,
+                       label: str = "storage") -> None:
+    """Produce `pdf_path` with `render` (one headless-Chrome run writing the
+    path it is given), atomically and checked (issue #21, A3). The one
+    render path of Storage.save(), convert-html and retry-html.
+
+    `render` writes a temp sibling of `pdf_path` (_temp_sibling), never the
+    final path: a Chrome killed or timed out mid-print used to leave a
+    partial PDF there, which a later run then adopted. The output must pass
+    the same PDF check as a download (pdfcheck.check_pdf_bytes with
+    Config.min_pdf_bytes / pdf_require_eof -- a complete Chrome PDF ends
+    with %%EOF) before it is fsync'ed and moved into place. Otherwise one
+    `[<label>] render output rejected` line goes to stderr and a
+    RuntimeError is raised. Whatever `render` raises (RenderRefused,
+    subprocess errors, ...) propagates unchanged. The temp file is removed
+    on every path."""
+    pdf_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _temp_sibling(pdf_path)
+    try:
+        render(tmp)
+        problem = check_pdf_bytes(tmp.read_bytes(), min_bytes=cfg.min_pdf_bytes,
+                                  require_eof=cfg.pdf_require_eof)
+        if problem:
+            print(f"[{label}] render output rejected for {url}: {problem} "
+                  f"(HTML kept as the artifact)", file=sys.stderr, flush=True)
+            raise RuntimeError(f"render output rejected for {url}: {problem}")
+        with tmp.open("rb") as fh:
+            os.fsync(fh.fileno())
+        os.replace(tmp, pdf_path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+# Storage.reindex() status for an on-disk .pdf that fails the PDF check
+# (issue #21, A2). Tallied under its own key by status_key().
+BAD_CONTENT = "skip:bad-content"
+
+
+def status_key(status: str) -> str:
+    """The tally key of a save()/reindex() status: its prefix ("saved",
+    "skip", "dry-run", ...), except `skip:bad-content`, which keeps its own
+    key "bad-content" -- a file that failed the content check is a damage
+    signal, not a routine skip, and must stay visible in the counts."""
+    if status == BAD_CONTENT:
+        return "bad-content"
+    return status.split(":")[0]
+
+
+def _is_html_mime(mime: str) -> bool:
+    m = (mime or "").lower()
+    return m.startswith("text/html") or m.startswith("application/xhtml")
+
+
+# Exclusive flock on the SIDECAR lock file of a manifest (see
+# filelock.locked_sidecar for why a sidecar). Every manifest write path —
+# _append(), _repair_torn_tail(), apply_row_updates(), merge_rows_locked() —
+# takes this lock. Kept under its historical name: the lock moved to
+# cb_corpus/filelock.py so quarantine.py can share it without importing this
+# module.
+_locked = locked_sidecar
 
 
 _EXT_FOR_MIME = {
@@ -515,9 +637,10 @@ class Storage:
         self.cfg.reports_dir.mkdir(parents=True, exist_ok=True)
         # Dead-letter state for the nightly sync loop (recover-quarantine
         # design §3): consulted at the top of save() before any fetch, fed
-        # from _record_download_error() and save()'s success path. Quarantine
-        # writes must only ever happen from THIS serialized loop (never
-        # parallel workers) — see quarantine.py's _append docstring.
+        # from _record_download_error() and save()'s success path. Parallel
+        # discover workers each hold their own Quarantine on the one shared
+        # file; its writes are serialized by a sidecar flock with catch-up
+        # replay (issue #25) — see quarantine.py's module docstring.
         self.quarantine = Quarantine(self.cfg)
         # The quarantine "night" of this run (B7, grit wave 2026-11): the
         # LOCAL date (TZ=Europe/Paris in the stack), computed ONCE here so a
@@ -528,6 +651,10 @@ class Storage:
         # Render guard (B8): renders refused because the URL points at a
         # blocked network (resolver: the `render_resolver` class attribute).
         self.render_refused = 0
+        # Records whose save() raised ContentCheckFailed (issue #21): every
+        # candidate URL served bytes that failed the content check (or could
+        # not be fetched). save_many() prints the batch's own count.
+        self.content_rejected = 0
         # sha256 -> doc_id of the row that owns that content, not just a
         # membership set: a same-bytes save under a different doc_id needs to
         # report WHICH existing doc_id matched (`skip:duplicate-content:<id>`)
@@ -898,6 +1025,65 @@ class Storage:
         return (self.cfg.raw_dir / rec.bank_code / rec.doc_type.code
                 / str(year) / f"{rec.doc_id}.{ext}")
 
+    # -- content check ---------------------------------------------------
+    def _sniffed_mime(self, body: bytes, served_mime: str) -> str:
+        """The mime to judge and store `body` under: "application/pdf" when
+        the server labels it HTML but the bytes pass the PDF check
+        (pdfcheck.check_pdf_bytes with Config.min_pdf_bytes /
+        pdf_require_eof) -- the bytes win over the header, so a mislabelled
+        PDF is stored as a .pdf, not rejected as a wall nor stored and
+        rendered as HTML. Any other answer keeps `served_mime`."""
+        if _is_html_mime(served_mime) and check_pdf_bytes(
+                body, min_bytes=self.cfg.min_pdf_bytes,
+                require_eof=self.cfg.pdf_require_eof) is None:
+            return "application/pdf"
+        return served_mime
+
+    def _content_problem(self, body: bytes, served_mime: str,
+                         expected_mime: str) -> Optional[str]:
+        """Why `body` (served with `served_mime`) must not be stored for a
+        producer that expected `expected_mime`, or None when it may be.
+
+        (1) Expected PDF (`expected_mime` application/pdf) but served HTML:
+            refused when Config.pdf_url_served_html is "reject" (consent
+            walls and error pages are HTML); "accept" lets it through to the
+            HTML path (stored, rendered when html_to_pdf), the old behaviour.
+        (2) Bytes that CLAIM to be a PDF -- the server says application/pdf,
+            or it does not say HTML and the producer expects a PDF (an empty
+            or octet-stream mime) -- must have a PDF's shape
+            (pdfcheck.check_pdf_bytes with Config.min_pdf_bytes /
+            pdf_require_eof). This also catches HTML bytes labelled
+            application/pdf by the server, whatever the producer expected:
+            they would otherwise be stored as a .pdf.
+        HTML producers (`expected_mime` text/html or empty) served HTML are
+        untouched: an HTML page is their document. save() first passes the
+        server's mime through _sniffed_mime, so bytes that ARE a PDF never
+        reach (1) whatever their header says."""
+        expects_pdf = (expected_mime or "").lower() == "application/pdf"
+        served = (served_mime or "").lower()
+        if _is_html_mime(served):
+            if expects_pdf and self.cfg.pdf_url_served_html == "reject":
+                return (f"expected a PDF, the server sent HTML ({served}); "
+                        f"see Config.pdf_url_served_html")
+            return None
+        if served == "application/pdf" or expects_pdf:
+            return check_pdf_bytes(body, min_bytes=self.cfg.min_pdf_bytes,
+                                   require_eof=self.cfg.pdf_require_eof)
+        return None
+
+    def _render_pdf(self, url: str, pdf_path: Path) -> None:
+        """Render `url` with headless Chrome into `pdf_path` through
+        render_pdf_checked (temp sibling, PDF check, atomic move; issue #21,
+        A3). A rejected or failed render raises, so the caller keeps the
+        HTML as the artifact (the existing fallback). RenderRefused (the
+        private-network guard) propagates unchanged."""
+        render_pdf_checked(
+            pdf_path, self.cfg,
+            lambda tmp: render_url_to_pdf(url, tmp,
+                                          user_data_dir=str(self._chrome_profile),
+                                          cfg=self.cfg, resolver=self.render_resolver),
+            url=url)
+
     # -- download --------------------------------------------------------
     def save(self, rec: DocRecord, *, dry_run: bool = False,
              bypass_quarantine: bool = False) -> str:
@@ -932,17 +1118,46 @@ class Storage:
         # Try the preferred URL, then any fallback copies (EconStor/SSRN/cached)
         # so a 403/dead preferred host doesn't lose the document. doc_id stays
         # bound to rec.pdf_url, so dedup/identity are unaffected by which copy won.
+        # Each candidate's bytes go through the content check (issue #21)
+        # BEFORE the sha256 dedup below: an error page served with 200 must
+        # never be stored, nor become the dedup owner that N other URLs
+        # serving the same page would then be filed under. A failing
+        # candidate is skipped like a failed fetch and the next one tried.
+        # The producer's expectation is read BEFORE the server's mime
+        # overwrites rec.mime_type.
+        expected_mime = rec.mime_type
         content = None
         mime = ""
+        failures: list[tuple[str, str]] = []   # (url, short reason)
+        rejected = False
         for url in [rec.pdf_url, *(rec.alt_urls or [])]:
             try:
-                content, mime = self.fetcher.get_bytes(url)
-                break
-            except Exception:
-                content = None
+                body, served = self.fetcher.get_bytes(url)
+            except Exception as exc:
+                failures.append((url, f"fetch failed ({type(exc).__name__})"))
+                continue
+            served = self._sniffed_mime(body, served)
+            problem = self._content_problem(body, served, expected_mime)
+            if problem:
+                rejected = True
+                failures.append((url, problem))
+                print(f"[storage] content check rejected {url}: {problem}",
+                      file=sys.stderr, flush=True)
+                continue
+            content, mime = body, served
+            break
         if content is None:
-            raise RuntimeError(
-                f"all {1 + len(rec.alt_urls or [])} candidate URL(s) failed for {rec.pdf_url}")
+            n = 1 + len(rec.alt_urls or [])
+            if rejected:
+                self.content_rejected += 1
+                # The distinct short reasons FIRST, the per-URL detail after:
+                # download_errors.jsonl cuts `error` at 500 characters, and
+                # a few long URLs must not push the reasons out of it.
+                reasons = " | ".join(dict.fromkeys(r for _, r in failures))
+                raise ContentCheckFailed(
+                    f"content check failed: {reasons} -- {n} candidate URL(s): "
+                    + "; ".join(f"{u}: {r}" for u, r in failures))
+            raise RuntimeError(f"all {n} candidate URL(s) failed for {rec.pdf_url}")
         if mime:
             rec.mime_type = mime
         digest = hashlib.sha256(content).hexdigest()
@@ -958,7 +1173,7 @@ class Storage:
             rec.mime_type = "text/html"
             html_path = self.target_path(rec)
             html_path.parent.mkdir(parents=True, exist_ok=True)
-            html_path.write_bytes(content)
+            _atomic_write_bytes(html_path, content)
             rec.html_path = str(html_path)
 
             refused = None
@@ -985,9 +1200,7 @@ class Storage:
                     # Chrome re-fetches the live URL; share the host's rate
                     # budget so this render + the get_bytes above don't burst.
                     self.fetcher.throttle(rec.pdf_url)
-                    render_url_to_pdf(rec.pdf_url, pdf_path,
-                                      user_data_dir=str(self._chrome_profile),
-                                      cfg=self.cfg, resolver=self.render_resolver)
+                    self._render_pdf(rec.pdf_url, pdf_path)
                     rec.mime_type = "application/pdf"
                     path = pdf_path
                 except RenderRefused as exc:
@@ -1005,7 +1218,7 @@ class Storage:
         else:
             path = self.target_path(rec)
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(content)
+            _atomic_write_bytes(path, content)
 
         rec.sha256 = digest
         rec.local_path = str(path)
@@ -1030,22 +1243,43 @@ class Storage:
         (re-discovered) record. Idempotent: skips a ``doc_id`` already indexed or
         whose content hash is already present. ``dry_run`` reports the action
         without writing (mirrors :meth:`save`'s no-write contract).
+
+        Content check (issue #21, A2): a ``.pdf`` file must pass the same PDF
+        check as a download (pdfcheck.check_pdf_bytes with
+        Config.min_pdf_bytes / pdf_require_eof) BEFORE it is hashed. A
+        truncated file left by a killed process or a full disk, or an error
+        page saved as .pdf, returns ``skip:bad-content`` with one stderr line
+        naming the file: it is never indexed, never a dedup owner, and its
+        quarantine is not released. The file is left in place (evidence; the
+        operator decides). The check also runs in dry run -- reading is not
+        writing, and "would reindex" would be a lie for such a file. An
+        ``.html`` artifact is not checked (an HTML page is its own document).
         """
         if rec.doc_id in self._ids:
             return "skip:already-indexed"
         if not path.is_file():
             return "skip:missing-file"
+        ext = path.suffix.lower().lstrip(".")
+        content: Optional[bytes] = None
+        if ext == "pdf":
+            content = path.read_bytes()
+            problem = check_pdf_bytes(content, min_bytes=self.cfg.min_pdf_bytes,
+                                      require_eof=self.cfg.pdf_require_eof)
+            if problem:
+                print(f"[storage] reindex skipped bad-content {path}: {problem}",
+                      file=sys.stderr, flush=True)
+                return BAD_CONTENT
         if dry_run:
             return "dry-run:would-reindex"
 
-        content = path.read_bytes()
+        if content is None:
+            content = path.read_bytes()
         digest = hashlib.sha256(content).hexdigest()
         if digest in self._hash_docid:
             owner = self._hash_docid[digest]
             self._note_duplicate(rec, owner)
             return f"skip:duplicate-content:{owner}"
 
-        ext = path.suffix.lower().lstrip(".")
         rec.mime_type = {"pdf": "application/pdf", "html": "text/html"}.get(ext, rec.mime_type)
         if ext == "html":
             rec.html_path = str(path)
@@ -1102,11 +1336,22 @@ class Storage:
         only by default, see is_stampable_owner), in a finally so a record
         iterator that raises mid-batch still persists what was learnt; a stamping failure there is only a
         WARNING (never masks the batch). Never written in dry run. One
-        `duplicate-content: N` line, and one `render refused: N` line, on
-        stderr when N > 0 for this batch."""
+        `duplicate-content: N` line, one `render refused: N` line and one
+        `bad-content: N` line on stderr when N > 0 for this batch.
+
+        A record whose every candidate URL failed the content check
+        (ContentCheckFailed, issue #21) is tallied as "error" like any failed
+        download -- it is one (download_errors.jsonl, quarantine, a failed
+        document in the run-report) -- and counted again on the
+        `bad-content` line so a host serving error pages with 200 is visible
+        as such, not lost among dead URLs. The returned counts then also
+        carry a "bad-content" key (a SUB-count of "error", present only when
+        > 0), which RunReport's record_saved_counts folds into the report's
+        `bad_content` counter without counting those records twice."""
         counts: dict[str, int] = {}
         total = 0
         refused_before = self.render_refused
+        rejected_before = self.content_rejected
         try:
             for rec in recs:
                 try:
@@ -1132,6 +1377,13 @@ class Storage:
             prefix = f"[{label}] " if label else ""
             print(f"{prefix}render refused: {refused} (private network or unresolvable host; "
                   f"HTML kept)",
+                  file=sys.stderr, flush=True)
+        rejected = self.content_rejected - rejected_before
+        if rejected:
+            counts["bad-content"] = rejected
+            prefix = f"[{label}] " if label else ""
+            print(f"{prefix}bad-content: {rejected} (every candidate URL failed the "
+                  f"content check; recorded in download_errors.jsonl)",
                   file=sys.stderr, flush=True)
         summary = self.quarantine.summary_line()
         if summary:

@@ -115,6 +115,49 @@ of being rediscovered as `duplicate` forever — but only when that row is a
 real PDF (no `html_path`; `Config.stamp_duplicate_html` relaxes this). With an
 HTML owner (including a page rendered to PDF) the dead URL is neither stamped
 nor released: it stays quarantined and the next recover pass re-evaluates it.
+The parallel discover workers (`DISCOVER_WORKERS`) all write this one file:
+every write takes its sidecar lock (`.download_quarantine.jsonl.lock`, never
+delete it while a job runs) and first replays what the other workers appended,
+so their night counts and releases never overwrite each other. Each process
+still decides what to skip from the state it read at startup.
+
+**Content check (bad-content):** a download that answers HTTP 200 with the
+wrong bytes — a consent wall or error page served as HTML for a PDF URL, an
+HTML page labelled `application/pdf`, a stub under `Config.min_pdf_bytes`
+(1,024), a PDF cut off before its `%%EOF` (`Config.pdf_require_eof`) — is not
+stored: the next fallback URL is tried, and when none passes the document is
+a download error (`ContentCheckFailed` in `download_errors.jsonl`, the short
+reasons first), counted in the quarantine like a dead URL, with one
+`[<label>] bad-content: N` line per batch in the logs and a `bad_content`
+counter (a sub-count of `docs_failed`) per source and in the totals of the
+night's `runs.jsonl` line; the exit code is unchanged. A burst of
+`bad-content` on one bank usually means the site put a wall in front of its
+PDFs. Like any dead URL, a rejected URL is quarantined after
+`QUARANTINE_AFTER_NIGHTS` nights and then re-alerts on every Sunday full
+sweep (`QUARANTINE_RETRY=1`) until the site serves the real document. A body
+that passes the PDF check is stored as a PDF even when the server labels it
+`text/html`.
+
+The three thresholds are set through the stack's `environment:` (Dockge, no
+rebuild; a commented example is in `compose.refresh.example.yml`):
+
+| Variable | Field | Default | Values |
+|---|---|---|---|
+| `CB_MIN_PDF_BYTES` | `Config.min_pdf_bytes` | `1024` | an int >= 0 (`0` disables the size floor) |
+| `CB_PDF_REQUIRE_EOF` | `Config.pdf_require_eof` | `1` | `1`/`0`, `true`/`false`, `yes`/`no`, `on`/`off` |
+| `CB_PDF_URL_SERVED_HTML` | `Config.pdf_url_served_html` | `reject` | `reject`, or `accept` (store the HTML a PDF URL served, the old behaviour) |
+
+An unset or empty variable means the default. An invalid value never stops
+a night: it prints one `[config] WARNING: invalid <VAR>=...` line on stderr
+and the default applies — grep the logs for it after changing one.
+
+`reindex-from-disk` reports an on-disk PDF that fails the same check as
+`skip:bad-content` (`bad_content=N`), never indexes it and leaves the file in
+place for inspection. Rows indexed before this check (2026-11) are not
+re-verified. Artifacts are written to a hidden `.<name>.<random>.part` temp
+in the same directory, then renamed into place (they keep the umask's mode);
+a temp left by a killed process is reported by `sweep-orphans` as a stale
+temp once older than `--temp-min-age-hours` (default 24).
 
 **Migration:** stacks created before 2026-07-15 used the refresh/discover job
 pair — the crontab and job names changed; recreate the stack after re-pulling
@@ -137,6 +180,8 @@ To launch another campaign: re-edit `command:` + Deploy.
 Maintenance example — orphan sweep (see README § Maintenance): first
 `command: ["/app/deploy/run-job.sh", "campaign", "sweep-orphans"]` (dry-run; read
 `reports/orphan_sweep_<ts>.summary.json`), then the same with `"--move"`.
+`temps_stale` there counts `.part` temps older than `--temp-min-age-hours`
+(default 24) left by a killed job; `--move` moves them to `raw_orphans/` too.
 
 Maintenance example — policy-dates backfill (see README § Maintenance: policy-dates
 backfill): first `command: ["/app/deploy/run-job.sh", "campaign", "policy-dates"]`
