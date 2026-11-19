@@ -1080,8 +1080,13 @@ class Storage:
         truncated or too-small one is refused for its real PDF reason
         (never stored and rendered as HTML, never reported as "the server
         sent HTML"), whatever the producer and Config.pdf_url_served_html.
+        Here the body must START with the magic (after a byte-order mark or
+        whitespace): an HTML page that merely mentions "%PDF" in its first KB
+        (a title, a meta tag) stays HTML. The 1 KB tolerance of has_pdf_magic
+        applies to bytes already judged a PDF, not to this sniff.
         Any other answer keeps `served_mime`."""
-        if _is_html_mime(served_mime) and has_pdf_magic(body):
+        head = body[:1024].lstrip(b"\xef\xbb\xbf \t\r\n\x00")
+        if _is_html_mime(served_mime) and head.startswith(b"%PDF"):
             return "application/pdf"
         return served_mime
 

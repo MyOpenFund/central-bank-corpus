@@ -511,3 +511,13 @@ def test_quarantine_load_falls_back_to_unlocked_read_when_lock_unavailable(
     assert q.is_quarantined(url)
     err = capsys.readouterr().err
     assert err.count("WARNING") == 1 and "unlocked" in err
+
+
+def test_html_page_mentioning_pdf_magic_stays_html(tmp_path):
+    """The sniff needs %PDF at the start: an HTML page that names "%PDF" in its head is HTML."""
+    from cb_corpus.config import Config
+    from cb_corpus.storage import Storage
+    st = Storage(Config(data_dir=tmp_path))
+    page = b"<!doctype html><html><head><title>What is %PDF-1.7?</title></head><body>x</body></html>"
+    assert st._sniffed_mime(page, "text/html; charset=utf-8") == "text/html; charset=utf-8"
+    assert st._sniffed_mime(b"\xef\xbb\xbf\n %PDF-1.4\n...", "text/html") == "application/pdf"
