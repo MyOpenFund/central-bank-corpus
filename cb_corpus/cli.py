@@ -130,6 +130,17 @@ def main(argv: list[str] | None = None) -> int:
                          "still write them); older ones are reported as stale temps "
                          "and moved with --move (default 24)")
 
+    ap = sub.add_parser("audit-pdfs",
+                        help="Read-only: check every .pdf artifact of the manifests against the "
+                             "content rules (magic, size floor, %%%%EOF window); CSV of the "
+                             "failing rows and a JSON summary. Writes nothing else (reading the manifests "
+                             "may repair a torn final line, like every command).")
+    ap.add_argument("--banks", default="", help="restrict to bank codes")
+    ap.add_argument("--csv", default="", help="CSV of failing rows (default reports/pdf_audit.csv)")
+    ap.add_argument("--tail-bytes", type=int, default=None,
+                    help="trailing bytes searched for the last %%%%EOF of a failing file "
+                         "(default 1 MiB, at least 2048)")
+
     r = sub.add_parser("report")
     r.add_argument("--banks", default="")
     r.add_argument("--years", type=_years, default=_years("2015-2025"))
@@ -418,6 +429,22 @@ def main(argv: list[str] | None = None) -> int:
         else:
             from .repec_check import run_repec_reconcile
             run_repec_reconcile(bank_codes=banks, write=args.write, csv_path=args.csv or None)
+        return 0
+
+    if args.cmd == "audit-pdfs":
+        import json as _json
+        from . import pdf_audit
+        try:
+            summary = pdf_audit.audit_pdfs(
+                Config(), banks=banks or None, csv_path=args.csv or None,
+                tail_bytes=(pdf_audit.DEFAULT_TAIL_BYTES if args.tail_bytes is None
+                            else args.tail_bytes))
+        except (OSError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print(_json.dumps(asdict(summary)))
+        print(f"audit-pdfs: {summary.rows_checked} PDF rows, {summary.ok} ok, "
+              f"{summary.failing} failing {summary.by_reason} -> {summary.csv_path}")
         return 0
 
     if args.cmd == "sweep-orphans":
