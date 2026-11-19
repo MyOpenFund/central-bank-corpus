@@ -337,7 +337,7 @@ class RePEcDiscovery:
                             if stats is not None:
                                 stats.record_skip("paper_no_pdf", paper_url)
                             continue
-                        title, pub_date = _paper_meta(paper_html)
+                        title, pub_date, pub_precision = _paper_meta(paper_html)
                         yield DocRecord(
                             bank_code=bank_code,
                             doc_type=doc_type,
@@ -349,10 +349,12 @@ class RePEcDiscovery:
                             provenance="repec_discovery",
                             mime_type="application/pdf",
                             # RePEc's Creation-Date is month-only (YYYY-MM, padded to day 1
-                            # by _iso_date) — record that honestly so the date-recovery
-                            # waterfall and repec-check can target these rows. No date on
-                            # the IDEAS page -> no precision and no date source (None).
-                            date_precision="month" if pub_date else None,
+                            # by _iso_date), or year-only on the citation_year fallback
+                            # (padded to 1 January) — _paper_meta says which, recorded
+                            # honestly so the date-recovery waterfall, repec-check and
+                            # the cadence watchdog can tell. No date on the IDEAS page ->
+                            # no precision and no date source (None).
+                            date_precision=pub_precision,
                             date_source="repec" if pub_date else None,
                         )
                     if stop_on_known and unknown_on_page == 0:
@@ -388,18 +390,36 @@ def _iso_date(s: str) -> Optional[date]:
         return None
 
 
-def _paper_meta(paper_html: str) -> tuple[str, Optional[date]]:
-    """Extract (title, publication date) from an IDEAS paper page.
+def _citation_precision(content: str) -> str:
+    """Precision of a `citation_publication_date`: `year` when it names only
+    the year (`_iso_date` pads it to 1 January), else `month`. IDEAS writes
+    YYYY/MM; a rarer YYYY/MM/DD is still labelled `month` (the RePEc-dated
+    rows are the ones the day-recovery waterfall targets, and a day from the
+    RePEc record is not trusted as a release day)."""
+    parts = [p for p in content.strip().replace("/", "-").split("-") if p]
+    return "year" if len(parts) == 1 else "month"
+
+
+def _paper_meta(paper_html: str) -> tuple[str, Optional[date], Optional[str]]:
+    """Extract (title, publication date, date precision) from an IDEAS page.
 
     IDEAS embeds Highwire `citation_*` meta tags. Use `citation_publication_date`
     (YYYY/MM — the real publication date), then `citation_year`. The bare `date`
     meta is deliberately ignored: on IDEAS it is the RePEc record/index date
     (uniformly YYYY-02-02), which previously dated ~16k papers to 2 February.
     Falls back to the <h1> for the title.
+
+    The precision says what the date really carries (issue #23 a): `month`
+    for a citation date, `year` for the `citation_year` fallback (or a
+    citation date naming only the year) -- the 1 January it is padded to is a
+    placeholder, not an asserted January. Labelling it `month` made wp-dates'
+    month constraint reject the true day and accept a wrong January capture,
+    and fed a fake date to the cadence watchdog. None when there is no date.
     """
     soup = BeautifulSoup(paper_html, "lxml")
     title = ""
     full: Optional[date] = None
+    full_precision: Optional[str] = None
     year: Optional[int] = None
     for m in soup.find_all("meta"):
         name = (m.get("name") or m.get("property") or "").lower()
@@ -413,7 +433,13 @@ def _paper_meta(paper_html: str) -> tuple[str, Optional[date]]:
             # meta: on IDEAS that is the RePEc record/index date (uniformly
             # YYYY-02-02), which silently dated ~16k papers to 2 February.
             full = _iso_date(content)
+            full_precision = _citation_precision(content) if full else None
         elif name == "citation_year" and year is None and content.isdigit():
             year = int(content)
-    pub_date = full or (date(year, 1, 1) if year else None)
-    return (title or _title_of(paper_html)), pub_date
+    if full is not None:
+        pub_date, precision = full, full_precision
+    elif year:
+        pub_date, precision = date(year, 1, 1), "year"
+    else:
+        pub_date, precision = None, None
+    return (title or _title_of(paper_html)), pub_date, precision

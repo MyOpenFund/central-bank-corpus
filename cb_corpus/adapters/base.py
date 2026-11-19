@@ -40,12 +40,83 @@ def register(*bank_codes: str) -> Callable[[type["BankAdapter"]], type["BankAdap
     return deco
 
 
+# ---- expected counts: a flat int, or eras keyed by first year -------------
+#: In `banks_sources.toml` an era count of this string means "no expectation"
+#: (TOML has no null); in Python tables the same is written `None`.
+TOML_NO_EXPECTATION = "none"
+
+Eras = tuple[tuple[int, Optional[int]], ...]
+
+
+def _count(value, where: str) -> Optional[int]:
+    if value is None or value == TOML_NO_EXPECTATION:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"expected_per_year: {where}: count must be an int >= 0, "
+                         f"None or {TOML_NO_EXPECTATION!r}, got {value!r}")
+    return value
+
+
+def normalize_expected(value) -> "Optional[int] | Eras":
+    """Validate one `expected_per_year` value and return its canonical form.
+
+    Accepted shapes (issue #23: a cadence changes over a bank's history, and a
+    flat constant judged every year by today's rhythm):
+      - `None` -- unknown (count the listing at runtime);
+      - an `int` >= 0 -- the same expectation for every year;
+      - a list of `(from_year, count)` eras -- `count` applies from `from_year`
+        until the next era starts; `count` may be `None` (or the TOML string
+        `"none"`) for "no expectation" in that era. Returned as a tuple sorted
+        by `from_year`.
+    A repeated `from_year`, a negative or non-int count, a bool, or an era that
+    is not a pair raises ValueError, so a malformed TOML table aborts the load
+    (reported by `load_toml`) instead of silently judging with garbage."""
+    if value is None or (isinstance(value, int) and not isinstance(value, bool)):
+        return _count(value, "flat value")
+    if isinstance(value, (list, tuple)) and value:
+        eras = []
+        for era in value:
+            if not isinstance(era, (list, tuple)) or len(era) != 2:
+                raise ValueError(f"expected_per_year: era must be (from_year, count), "
+                                 f"got {era!r}")
+            y, n = era
+            if isinstance(y, bool) or not isinstance(y, int):
+                raise ValueError(f"expected_per_year: from_year must be an int, got {y!r}")
+            eras.append((y, _count(n, f"era {y}")))
+        eras.sort(key=lambda e: e[0])
+        years = [y for y, _ in eras]
+        if len(set(years)) != len(years):
+            raise ValueError(f"expected_per_year: repeated from_year in {value!r}")
+        return tuple(eras)
+    raise ValueError(f"expected_per_year: expected an int, None or a non-empty list "
+                     f"of (from_year, count) eras, got {value!r}")
+
+
+def expected_for_year(value, year: int) -> Optional[int]:
+    """The expectation `value` (any shape `normalize_expected` accepts) gives
+    for `year`: the flat int, or the count of the last era starting on or
+    before `year`. A year BEFORE the first era has no expectation (None): an
+    era table starts when the series does (RBA A1: statements only when the
+    rate moved before 2008; ECB A1: the ECB from 1999), so earlier years are
+    "unknown", never judged against the first era."""
+    v = normalize_expected(value)
+    if not isinstance(v, tuple):
+        return v
+    found: Optional[int] = None
+    for from_year, count in v:
+        if from_year > year:
+            break
+        found = count
+    return found
+
+
 class BankAdapter(ABC):
     #: doc types this adapter can pull directly from the bank's own site
     native_types: tuple[DocType, ...] = ()
-    #: expected items per year per native type (from meeting calendar/archive);
+    #: expected items per year per native type (from meeting calendar/archive):
+    #: an int, or eras `[(from_year, count), ...]` (see `normalize_expected`);
     #: None => "count the listing at runtime"
-    expected_per_year: dict[DocType, Optional[int]] = {}
+    expected_per_year: dict[DocType, object] = {}
 
     def __init__(self, bank: Bank, fetcher: Optional[Fetcher] = None):
         self.bank = bank
@@ -160,9 +231,12 @@ class BankAdapter(ABC):
         """Expected number of `doc_type` documents in `year`.
 
         Returns None when unknown (the matrix then falls back to the listing
-        count crawled at runtime).
+        count crawled at runtime). The year matters (issue #23): an era table
+        gives the count in force that year (`expected_for_year`), so a pre-2015
+        ECB year is judged against the monthly-meeting cadence, not today's
+        six-weekly one.
         """
-        return self.expected_per_year.get(doc_type)
+        return expected_for_year(self.expected_per_year.get(doc_type), year)
 
 
 @register(*[b.code for b in BIS_63])

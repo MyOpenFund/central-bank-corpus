@@ -7,7 +7,13 @@ hit that satisfies the **month constraint** (recovered day must fall in the row'
 asserted YYYY-MM, and not be the 1st):
 
   0. committed index  — `data/wp_dates_index.jsonl` short-circuits everything
-                        (run-once, replay-forever; no network on a re-build)
+                        (run-once, replay-forever; no network on a re-build).
+                        A replayed hit passes the SAME month constraint against
+                        the row it is applied to (issue #22): the index is joined
+                        by key, and a key can match a row the entry was not
+                        resolved for (a shared title, a stale entry). A hit that
+                        fails is counted `index_rejected` and the row falls
+                        through to rungs 1-2 like a miss.
   1. PDF `/CreationDate` — read from the on-disk file (zero network)
   2. Wayback first capture of the PDF URL (then the abs/landing variant)
 
@@ -40,7 +46,9 @@ def index_path(cfg: Config):
 
 
 def load_index(cfg: Config) -> dict:
-    """key -> entry. Key = RePEc handle when known, else 't:'+normalized title."""
+    """key -> entry (last line wins for a repeated key). Key = RePEc handle when
+    known, else a title key (`row_key`: bank-scoped `t:<bank>:<title>` for new
+    entries, the legacy global `t:<title>` form for older ones)."""
     p = index_path(cfg)
     idx: dict = {}
     if p.exists():
@@ -55,12 +63,76 @@ def load_index(cfg: Config) -> dict:
 
 def row_key(row: dict) -> Optional[str]:
     """Stable join key for the index: the RePEc handle if derivable, else the
-    normalized title (prefixed 't:')."""
+    bank-scoped normalized title `t:<bank_code>:<title>`.
+
+    Why scoped (issue #22): the title tier is a fuzzy identity -- generic
+    working-paper titles recur across banks, and `normalize_title` strips
+    accents and punctuation, widening collisions further. A global title key
+    let one bank's resolved day be replayed onto another bank's paper. The
+    bank scope cannot collide with the legacy form: a normalized title holds
+    no ':' (non-alphanumerics become spaces). Handle keys are unique per
+    paper and stay unchanged."""
     h = repec_handle_from_source_url(row.get("source_url") or "") or (row.get("repec_handle") or "")
     if h:
         return h
     t = normalize_title(row.get("title") or "")
+    if not t:
+        return None
+    bank = (row.get("bank_code") or "").strip().lower()
+    return f"t:{bank}:{t}"
+
+
+def legacy_title_key(row: dict) -> Optional[str]:
+    """The pre-#22 global title key `t:<title>`, for a row that has no handle
+    (None otherwise). Only READ: entries written before the bank scope keep
+    replaying (the committed index is never rewritten), always month-checked
+    against the row; new entries are only ever written under `row_key`."""
+    if (repec_handle_from_source_url(row.get("source_url") or "")
+            or row.get("repec_handle")):
+        return None
+    t = normalize_title(row.get("title") or "")
     return "t:" + t if t else None
+
+
+#: Separator between a shared key and a row's doc_id in a disambiguated key.
+#: Neither a RePEc handle nor a normalized title contains it.
+DOC_KEY_SEP = "#"
+
+
+def doc_key(row: dict) -> Optional[str]:
+    """`<row_key>#<doc_id>`: the key a row's fresh resolution is written under
+    when its own `row_key` already holds an entry for ANOTHER paper (one that
+    failed the month check against this row).
+
+    Why (real case on the committed manifests): FEDS 2025-101 and its r1
+    revision share one RePEc handle. Writing the revision's day under the
+    handle would shadow the original's entry (last line wins): the next
+    rebuild rejects the original, re-recovers it, overwrites the handle again
+    -- a flip-flop that grows the index on every run. None when the row has
+    no `row_key` or no `doc_id`."""
+    key, did = row_key(row), row.get("doc_id")
+    return f"{key}{DOC_KEY_SEP}{did}" if key and did else None
+
+
+def lookup_index(idx: dict, row: dict) -> tuple[Optional[dict], bool]:
+    """Find the committed-index entry that may be replayed onto `row`.
+
+    Tries `doc_key` (this row's own disambiguated entry), then `row_key`, then
+    `legacy_title_key`; the first entry whose date passes `month_ok` against
+    THIS row wins. Returns `(entry, rejected)`: `entry` is None when nothing
+    usable was found, and `rejected` is True when at least one keyed entry
+    existed but every one failed the month check (or carried an unparseable
+    date) -- the caller counts it and treats the row as a miss.
+    """
+    rejected = False
+    for key in (doc_key(row), row_key(row), legacy_title_key(row)):
+        hit = idx.get(key) if key else None
+        if hit is None:
+            continue
+        if month_ok(_iso_date(hit.get("date")), row):
+            return hit, False
+        rejected = True
+    return None, rejected
 
 
 def _row_ym(row: dict) -> Optional[tuple[int, int]]:
@@ -69,9 +141,29 @@ def _row_ym(row: dict) -> Optional[tuple[int, int]]:
 
 
 def month_ok(cand: Optional[date], row: dict) -> bool:
-    """Candidate day is in the row's asserted YYYY-MM and not the 1st."""
+    """Candidate day is in the row's asserted YYYY-MM and not the 1st.
+
+    A row whose `date_precision` is `year` NEVER passes: its 1 January is a
+    placeholder (RePEc `citation_year` fallback, E4 bulletins), not an
+    asserted January, so reading it as "January" would reject the true day
+    and accept a wrong January capture (issue #23 a). There is deliberately
+    no year-level check instead: a Wayback first capture or a PDF
+    /CreationDate anywhere in the year is too weak to stamp a day on it
+    (digitisation snapshots, revision-era PDFs). Such rows keep year
+    precision, on fresh recovery and on index replay alike."""
+    if row.get("date_precision") == "year":
+        return False
     ym = _row_ym(row)
     return bool(cand and ym and (cand.year, cand.month) == ym and cand.day != 1)
+
+
+def _iso_date(value) -> Optional[date]:
+    """An index entry's ISO `date` -> date; None when missing or malformed (a
+    hand-edited index line must reject the hit, not crash the replay)."""
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except (TypeError, ValueError):
+        return None
 
 
 def _ts_date(ts: Optional[str]) -> Optional[date]:
@@ -159,7 +251,14 @@ def run_wp_dates(bank_codes: Optional[Iterable[str]] = None,
     matched manifest rows (date/date_precision=day/date_source) and appends new
     resolutions to the committed index. `since_year` skips Wayback for very old
     rows whose first capture is always a later-era digitisation (still tried via
-    PDF meta). Idempotent: day rows are skipped; index entries short-circuit."""
+    PDF meta). Idempotent: day rows are skipped; index entries short-circuit.
+
+    Every index hit is month-checked against the row before it is applied
+    (`lookup_index`); a rejected hit is counted in `index_rejected` and the row
+    goes on to fresh recovery like a miss (in `apply_only`, it stays
+    unresolved). Year-precision rows are skipped before the lookup and any
+    recovery (they can never pass `month_ok`) and counted in `year_skipped`,
+    outside `candidates`. Returns the counts dict."""
     cfg = config or Config()
     fetcher = Fetcher(cfg)
     storage = Storage(cfg, fetcher)
@@ -173,20 +272,33 @@ def run_wp_dates(bank_codes: Optional[Iterable[str]] = None,
 
     by_id: dict[str, dict] = {}          # doc_id -> {date, date_source} to apply
     new_count = 0
-    counts = {"candidates": 0, "from_index": 0, "pdf_meta": 0, "wayback": 0, "unresolved": 0}
+    counts = {"candidates": 0, "year_skipped": 0, "from_index": 0, "index_rejected": 0,
+              "pdf_meta": 0, "wayback": 0, "unresolved": 0}
 
     try:
         for row in storage.iter_manifest():
             if (row.get("bank_code") not in codes or row.get("doc_type") not in ("D1", "D2")
                     or row.get("date_precision") == "day"):
                 continue
+            if row.get("date_precision") == "year":
+                # never passes month_ok (no asserted month): skip before the
+                # index lookup and any PDF read / Wayback call -- counted, not a
+                # candidate, not a rejection, not unresolved.
+                counts["year_skipped"] += 1
+                continue
             counts["candidates"] += 1
             key = row_key(row)
-            hit = idx.get(key) if key else None
+            hit, rejected = lookup_index(idx, row)
+            if rejected:
+                counts["index_rejected"] += 1
             if hit is None and not apply_only:
                 yr = (_row_ym(row) or (0, 0))[0]
                 # PDF meta is free (any year); Wayback only from ~the online era.
                 r = recover(fetcher, row, use_wayback=(use_wayback and yr >= since_year))
+                if key and key in idx:
+                    # this row's own key belongs to another paper (its entry
+                    # failed the month check here): never shadow it -- see doc_key
+                    key = doc_key(row)
                 if r and key:
                     hit = {"key": key, "title_norm": normalize_title(row.get("title") or ""),
                            **r, "date_precision": "day", "resolved_at": date.today().isoformat()}

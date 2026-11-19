@@ -74,7 +74,7 @@ class GenericSitemapAdapter(BankAdapter):
     def __init__(self, bank, fetcher=None, *,
                  sitemap_url: str,
                  patterns: dict[DocType, str],
-                 expected_per_year: Optional[dict[DocType, int]] = None,
+                 expected_per_year: Optional[dict[DocType, object]] = None,
                  max_sitemap_depth: int = 2):
         super().__init__(bank, fetcher)
         self.sitemap_url = sitemap_url

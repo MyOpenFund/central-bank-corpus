@@ -25,6 +25,9 @@ exist anywhere in RePEc** (IDEAS meta tags, EconPapers, API — all carry
 For each legacy paper, try in order; stop at the first hit. Every recovered
 date must satisfy the **month constraint**: RePEc's `YYYY-MM` is authoritative
 for the month — a candidate date in a different month is rejected (next rung).
+A row with `date_precision="year"` (RePEc `citation_year` fallback, dated
+1 January) asserts no month, so nothing passes the constraint: it keeps year
+precision (there is deliberately no year-level check).
 
 ### 1. Wayback Machine CDX — first capture of the PDF (best signal)
 
@@ -109,13 +112,33 @@ listings (`bank_site`) are **never** indexed — they are cheaply
 re-derivable by the native scrapers and would bloat the file.
 
 - **`key`** = the RePEc handle (stable, universal join key). For records that
-  never had a handle, the key is the normalized title prefixed `t:` (as built,
-  `wp_dates.row_key`); `title_norm` is stored alongside. `evidence_url` is a
+  never had a handle, the key is the normalized title scoped by bank,
+  `t:<bank_code>:<title>` (`wp_dates.row_key`, since the 2026-11 integrity
+  wave: a global title key let one bank's day land on another bank's paper
+  with the same generic title). Entries written earlier under the global
+  `t:<title>` form are still read as a fallback; the committed index is never
+  rewritten. `title_norm` is stored alongside. `evidence_url` is a
   `file://` path to the on-disk PDF for `pdf_meta` hits.
 - **`evidence_url`** records *where* the date was found, so any entry can be
   re-audited by a human.
 - `wp-dates` consults the index **first**: a keyed entry short-circuits the
   whole waterfall (zero network). Fresh resolutions are appended to the index.
+- A replayed entry passes the **same month constraint** against the row it
+  is applied to (bank-scoped key first, then the legacy title key). One that
+  fails is counted `index_rejected` and the row goes on to fresh recovery
+  like a miss (in `--apply-only`, it stays as it is). On the committed
+  manifests (2026-11-18) this rejects exactly one replay: a Fed FEDS
+  revision (`2025-101r1`, row dated 2026-06) whose handle entry holds the
+  original paper's 2025-11 day.
+- When a row's own key already holds an entry for another paper (it failed
+  the month check here), the row's fresh resolution is written under
+  `<key>#<doc_id>` (`wp_dates.doc_key`), which is looked up first for that
+  row. Writing it under the shared key would shadow the other paper's entry
+  (last line wins) and flip-flop on every rebuild; with the doc key, both
+  papers keep their own day and a re-run appends nothing.
+- Rows with `date_precision="year"` are skipped before the index lookup and
+  any recovery (they can never pass the month constraint) and counted as
+  `year_skipped`.
 - Result: the expensive crawl runs once; every re-build of the corpus from
   scratch (new machine, CI, collaborator) replays dates instantly and
   identically — even if Wayback/bank pages have since changed or died.

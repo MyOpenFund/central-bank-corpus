@@ -208,6 +208,36 @@ alert noise on recovery). `run-job.sh` routes the cadence job's stderr into
 summary `cadence: N overdue (M new)` land there — not just the container
 console.
 
+**Date precision:** rows whose `date_precision` is `year` are dropped before the
+median and `last` — their date is a 1 January placeholder, not a release day (ECB
+E4 bulletins, RePEc year-only fallbacks). Month-precision rows are kept: they sit
+on the 1st but still carry the cadence at monthly granularity (a quarterly report
+dated by its period, monthly-dated minutes). A row without the field counts as
+before. The output fields do not change; the table shows the dropped rows per
+series in a `coarse` column, lists series left with no judgeable rows as
+`unjudged`, and the job writes one stderr line per affected series (`cadence: ecb
+E4: 109 year-precision row(s) dropped; series not judged`) into `nas_runs.log`. These lines are a
+report, not an alert (no ntfy push). `CADENCE_DROP_PRECISIONS` sets which
+precisions are dropped: default `year`; `month,year` judges day rows only (on the
+committed manifests it leaves `au E1`, `ca A3`, `ecb E1`, `gb A3` and `gb E1`
+unjudged and turns `ca D1` and `nl D1` overdue); `none` drops nothing; an invalid
+value falls back to the default. In a series that has at least one dropped row,
+rows WITHOUT a precision (field missing or null) dated 1 January are dropped too
+and counted with them: they are the same placeholders written before the field
+existed, and keeping them while the new ones are dropped would freeze `last` (ECB
+E4: its new bulletins are labelled `year`, its legacy ones are not, so from 2027
+the series would read overdue while publishing). A series with no dropped row
+keeps its unlabelled rows. On the committed manifests (2026-11-18) the only change
+versus before is `ecb E4`: `unjudged` (109 placeholder rows dropped) instead of
+`soon` on a 366-day interval; every other series keeps its status.
+
+**Known coverage gap:** a series with fewer than `CADENCE_MIN_DOCS` dated rows in
+the lookback window, or fewer than 2 distinct dates, is not judged at all — no
+status, never overdue. That covers the sparsest series and every series whose
+recent rows are all of a dropped precision. A silent discovery failure on an
+unjudged series is caught only by the completeness report
+(`python -m cb_corpus report`) or by a human.
+
 **Muting:** Deliberately-closed series (e.g. a future decision) are silenced
 by seeding a `{"bank_code", "doc_type", "muted": true, "reason"}` line in
 the state file — muted series are still written to cadence.jsonl (dashboard
@@ -217,7 +247,8 @@ transparency) but never alerted.
 weekly run reads corrected dates. Expect exactly this, and nothing else:
 
 - `gb A3` and `gb E1` get real intervals — about 46 and 92 days instead of 366 (all their rows
-  used to sit on 1 January). No alert.
+  used to sit on 1 January). No alert. (Month precision is kept by the default
+  `CADENCE_DROP_PRECISIONS=year`; with `month,year` both series become `unjudged`.)
 - **One new series, `jp A3`, is reported overdue** (`NEW OVERDUE jp A3`, logged once). It was
   not judged before (too few dated rows). It is structural, not a silence: BoJ minutes are
   dated at their meeting and released after the following meeting, so the newest row is
@@ -235,7 +266,7 @@ weekly run reads corrected dates. Expect exactly this, and nothing else:
 **Tuning:** Env vars override thresholds (no hard-coded constants):
 `CADENCE_OVERDUE_GRACE_DAYS` (default 7), `CADENCE_SOON_DAYS` (default 60),
 `CADENCE_MIN_DOCS` (default 6, minimum to detect a median), `CADENCE_LOOKBACK_YEARS`
-(default 3).
+(default 3), `CADENCE_DROP_PRECISIONS` (default `year`, see Date precision).
 
 ## 5. Sanity checks
 

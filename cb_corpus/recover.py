@@ -181,8 +181,10 @@ def _refresh_metadata(fetcher: Fetcher, entry: dict) -> tuple[str, object, Optio
 
     When ``source_url`` is an IDEAS page, fetch it once and take title/date/
     candidates via the existing ``_paper_meta``/``extract_pdf_candidates``
-    (month precision, ``date_source="repec"`` -- same honesty as RePEc
-    discovery -- but only when the page actually carries a date). On any
+    (the precision ``_paper_meta`` reports -- ``month`` for a citation date,
+    ``year`` for the year-only fallback -- and ``date_source="repec"``: same
+    honesty as RePEc discovery, and only when the page actually carries a
+    date). On any
     fetch failure, when ``source_url`` isn't IDEAS, or when the IDEAS page
     has no date, the date is ``None`` and so are ``date_precision`` and
     ``date_source``: the caller then records an undated row as precision
@@ -194,11 +196,11 @@ def _refresh_metadata(fetcher: Fetcher, entry: dict) -> tuple[str, object, Optio
     if source_url.startswith(IDEAS):
         try:
             html = fetcher.get_text(source_url)
-            fresh_title, fresh_date = _paper_meta(html)
+            fresh_title, fresh_date, fresh_precision = _paper_meta(html)
             cands = extract_pdf_candidates(html, _bank_homepage(entry.get("bank_code") or ""))
             if fresh_date is None:
                 return (fresh_title or title, None, None, None, cands)
-            return (fresh_title or title, fresh_date, "month", "repec", cands)
+            return (fresh_title or title, fresh_date, fresh_precision, "repec", cands)
         except Exception:
             pass
     return (title, None, None, None, [])

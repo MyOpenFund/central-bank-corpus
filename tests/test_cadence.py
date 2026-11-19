@@ -399,3 +399,262 @@ def test_run_cadence_watch_return_value_matches_compute_series(tmp_path):
     _write(cfg, [_rec("us", DocType.D1, d) for d in dates])
     entries = run_cadence_watch(cfg, write=False, today=dates[-1])
     assert entries == compute_series(cfg, today=dates[-1])
+
+
+# -- date precision (issue #23): coarse rows never feed the median ----------
+
+def _day_series(start: date, n: int, step: int) -> list[date]:
+    return [start + timedelta(days=step * i) for i in range(n)]
+
+
+def _mixed_series(cfg):
+    """A day-precision series (every 30 days) with RePEc-style month rows on the
+    1st and a year-only Jan-1 placeholder that sorts AFTER the last real day."""
+    days = _day_series(date(2024, 2, 10), 10, 30)
+    recs = [_rec("us", DocType.D1, d, _i=i) for i, d in enumerate(days)]
+    recs += [_rec("us", DocType.D1, date(2024, m, 1), date_precision="month", _i=100 + m)
+             for m in range(3, 12)]
+    recs.append(_rec("us", DocType.D1, date(2025, 1, 1), date_precision="year", _i=999))
+    _write(cfg, recs)
+    return days
+
+
+def test_year_placeholder_is_dropped_by_default_month_rows_are_kept(tmp_path):
+    """Default (`year`): the later-year Jan-1 placeholder would become `last`
+    and push `next_expected` off a date that is no release; it is dropped. The
+    month rows carry the cadence at monthly granularity and are kept."""
+    cfg = _mk_cfg(tmp_path)
+    days = _mixed_series(cfg)
+    today = days[-1] + timedelta(days=5)
+    dropped: dict = {}
+    [e] = compute_series(cfg, today=today, dropped=dropped)
+    assert e["last"] == days[-1].isoformat()          # not 2025-01-01
+    assert e["n_3y"] == 19                            # 10 day + 9 month rows
+    assert dropped == {("us", "D1"): 1}
+
+
+def test_month_and_year_rows_are_dropped_when_configured(tmp_path, monkeypatch):
+    """`CADENCE_DROP_PRECISIONS=month,year`: the series reads exactly as its day
+    rows (the month rows on the 1st no longer drag the median)."""
+    monkeypatch.setenv("CADENCE_DROP_PRECISIONS", "month,year")
+    cfg = _mk_cfg(tmp_path)
+    days = _mixed_series(cfg)
+    today = days[-1] + timedelta(days=5)
+    dropped: dict = {}
+    entries = compute_series(cfg, today=today, dropped=dropped)
+    assert len(entries) == 1
+    e = entries[0]
+    assert e["interval_days"] == 30
+    assert e["last"] == days[-1].isoformat()
+    assert e["n_3y"] == 10
+    assert dropped == {("us", "D1"): 10}
+    # the same day rows alone give the same entry: nothing else moved
+    cfg2 = _mk_cfg(tmp_path / "only_days")
+    _write(cfg2, [_rec("us", DocType.D1, d, _i=i) for i, d in enumerate(days)])
+    assert compute_series(cfg2, today=today) == entries
+
+
+def test_output_field_set_is_unchanged_by_the_precision_filter(tmp_path):
+    cfg = _mk_cfg(tmp_path)
+    days = _day_series(date(2025, 1, 5), 8, 20)
+    recs = [_rec("ecb", DocType.D3, d, _i=i) for i, d in enumerate(days)]
+    recs.append(_rec("ecb", DocType.D3, date(2025, 3, 1), date_precision="month", _i=50))
+    _write(cfg, recs)
+    e = compute_series(cfg, today=days[-1])[0]
+    assert set(e) == {"bank_code", "doc_type", "last", "interval_days", "next_expected",
+                      "days_until", "status", "expected_per_year", "n_3y"}
+
+
+def test_all_year_precision_series_is_not_judged_and_reported(tmp_path, capsys):
+    """ECB E4 shape: every row a Jan-1 placeholder (year precision). Judged, it
+    would read as a ~365-day cadence; dropped, it is unmonitored -- and the
+    table and stderr say so instead of silently omitting it."""
+    cfg = _mk_cfg(tmp_path)
+    recs = [_rec("ecb", DocType.E4, date(y, 1, 1), date_precision="year", _i=i)
+            for y in (2023, 2024, 2025, 2026) for i in range(8)]
+    recs += [_rec("us", DocType.D1, d, _i=i)
+             for i, d in enumerate(_day_series(date(2025, 6, 1), 8, 14))]
+    _write(cfg, recs)
+    entries = run_cadence_watch(cfg, write=False, today=date(2026, 2, 1))
+    assert [(e["bank_code"], e["doc_type"]) for e in entries] == [("us", "D1")]
+    out, err = capsys.readouterr()
+    assert any(ln.split()[:2] == ["ecb", "E4"] and "32" in ln for ln in out.splitlines())
+    assert "cadence: ecb E4: 32 year-precision row(s) dropped" in err
+    assert "series not judged" in err
+
+
+def test_all_coarse_and_no_coarse_tables(tmp_path, capsys):
+    """Only coarse rows anywhere: no judged series, the table still lists the
+    dropped counts. Nothing coarse: no stderr line at all."""
+    cfg = _mk_cfg(tmp_path)
+    _write(cfg, [_rec("ecb", DocType.E4, date(2025, 1, 1), date_precision="year", _i=i)
+                 for i in range(3)])
+    assert run_cadence_watch(cfg, write=False, today=date(2026, 2, 1)) == []
+    out, err = capsys.readouterr()
+    assert "no series with enough history to judge" in out
+    assert "ecb E4: 3" in err
+
+    cfg2 = _mk_cfg(tmp_path / "clean")
+    _write(cfg2, [_rec("us", DocType.D1, d, _i=i)
+                  for i, d in enumerate(_day_series(date(2025, 6, 1), 8, 14))])
+    run_cadence_watch(cfg2, write=False, today=date(2025, 9, 1))
+    out, err = capsys.readouterr()
+    assert "dropped" not in err
+
+
+def test_rows_without_precision_key_count_as_before(tmp_path):
+    """Legacy rows predate `date_precision`: a missing key (or null) is kept."""
+    cfg = _mk_cfg(tmp_path)
+    days = _day_series(date(2025, 1, 1), 7, 10)
+    rows = []
+    for i, d in enumerate(days):
+        r = _rec("jp", DocType.D1, d, _i=i).to_row()
+        if i % 2:
+            r.pop("date_precision", None)
+        else:
+            r["date_precision"] = None
+        rows.append(r)
+    _write_per_bank_unlocked(cfg, rows)
+    dropped: dict = {}
+    e = compute_series(cfg, today=days[-1], dropped=dropped)[0]
+    assert e["n_3y"] == 7 and dropped == {}
+
+
+def _quarterly_period_series(cfg):
+    """A quarterly report dated by its period (month precision, the 1st), the
+    shape of ecb/gb/au E1, plus a year-precision placeholder."""
+    recs = [_rec("gb", DocType.E1, date(y, m, 1), date_precision="month", _i=y * 100 + m)
+            for y in (2024, 2025) for m in (2, 5, 8, 11)]
+    recs.append(_rec("gb", DocType.E1, date(2026, 1, 1), date_precision="year", _i=1))
+    _write(cfg, recs)
+
+
+def test_drop_precisions_env_override(tmp_path, monkeypatch):
+    """Default `year` keeps judging month-precision series (a quarterly report
+    dated by its period); `month,year` drops them too (unjudged); `none` drops
+    nothing; garbage falls back to the default (never a crash)."""
+    cfg = _mk_cfg(tmp_path)
+    _quarterly_period_series(cfg)
+    today = date(2026, 1, 10)
+
+    dropped: dict = {}
+    [e] = compute_series(cfg, today=today, dropped=dropped)               # default
+    assert e["n_3y"] == 8 and e["last"] == "2025-11-01" and dropped == {("gb", "E1"): 1}
+    default = e
+
+    monkeypatch.setenv("CADENCE_DROP_PRECISIONS", "month,year")
+    dropped = {}
+    assert compute_series(cfg, today=today, dropped=dropped) == []
+    assert dropped == {("gb", "E1"): 9}
+
+    monkeypatch.setenv("CADENCE_DROP_PRECISIONS", "none")
+    dropped = {}
+    [e] = compute_series(cfg, today=today, dropped=dropped)
+    assert e["n_3y"] == 9 and e["last"] == "2026-01-01" and dropped == {}
+
+    for bad in ("day", "month,daily", ",", "MONTH;YEAR"):
+        monkeypatch.setenv("CADENCE_DROP_PRECISIONS", bad)
+        dropped = {}
+        assert compute_series(cfg, today=today, dropped=dropped) == [default], bad
+        assert dropped == {("gb", "E1"): 1}
+
+
+def test_stderr_label_follows_the_setting(tmp_path, monkeypatch, capsys):
+    cfg = _mk_cfg(tmp_path)
+    _quarterly_period_series(cfg)
+    run_cadence_watch(cfg, write=False, today=date(2026, 1, 10))
+    assert "cadence: gb E1: 1 year-precision row(s) dropped" in capsys.readouterr().err
+    monkeypatch.setenv("CADENCE_DROP_PRECISIONS", "month,year")
+    run_cadence_watch(cfg, write=False, today=date(2026, 1, 10))
+    err = capsys.readouterr().err
+    assert "cadence: gb E1: 9 month/year-precision row(s) dropped; series not judged" in err
+
+
+def test_dropped_count_shown_in_the_table_row(tmp_path, capsys):
+    cfg = _mk_cfg(tmp_path)
+    days = _day_series(date(2025, 1, 5), 8, 20)
+    recs = [_rec("fr", DocType.D1, d, _i=i) for i, d in enumerate(days)]
+    recs += [_rec("fr", DocType.D1, date(2025, 1, 1), date_precision="year", _i=60 + i)
+             for i in range(3)]
+    _write(cfg, recs)
+    run_cadence_watch(cfg, write=False, today=days[-1])
+    out, err = capsys.readouterr()
+    header, row = out.splitlines()[:2]
+    assert header.rstrip().endswith("coarse")
+    assert row.split()[0] == "fr" and row.split()[-1] == "3"
+    assert "cadence: fr D1: 3 year-precision row(s) dropped" in err
+
+
+# -- unlabelled 1 January rows in a series that has coarse rows -------------
+
+def _unlabelled(bank, dtype, d, i):
+    r = _rec(bank, dtype, d, _i=i).to_row()
+    r.pop("date_precision", None)
+    if i % 2:
+        r["date_precision"] = None          # null counts as unlabelled too
+    return r
+
+
+def _ecb_e4_rows():
+    """The committed ecb E4 shape: legacy bulletins on 1 January with no
+    `date_precision` (2024: 8, 2025: 8, 2026: 3) and new rows labelled `year`
+    (2026: 4, then the 2027 issues)."""
+    rows = [_unlabelled("ecb", DocType.E4, date(y, 1, 1), y * 100 + i)
+            for y, n in ((2024, 8), (2025, 8), (2026, 3)) for i in range(n)]
+    rows += [_rec("ecb", DocType.E4, date(y, 1, 1), date_precision="year", _i=y * 1000 + i)
+             .to_row() for y, n in ((2026, 4), (2027, 2)) for i in range(n)]
+    return rows
+
+
+def test_e4_with_labelled_and_legacy_placeholders_is_unjudged_not_overdue(tmp_path, capsys):
+    """Without the rule, the labelled 2027 rows are dropped while the legacy
+    unlabelled 1 January rows are kept: `last` freezes on 2026-01-01 and on
+    2027-03-10 the series reads ~70 days overdue for a bulletin published six
+    weeks ago. With it, the unlabelled 1 January rows are recognised as the
+    same placeholders and dropped too: the series is unjudged."""
+    cfg = _mk_cfg(tmp_path)
+    _write_per_bank_unlocked(cfg, _ecb_e4_rows())
+    today = date(2027, 3, 10)
+    dropped: dict = {}
+    assert compute_series(cfg, today=today, dropped=dropped) == []
+    assert dropped == {("ecb", "E4"): 25}
+    run_cadence_watch(cfg, write=False, today=today)
+    err = capsys.readouterr().err
+    assert "cadence: ecb E4: 25 year-precision row(s) dropped; series not judged" in err
+
+
+def test_unlabelled_rows_are_kept_when_the_series_has_no_coarse_row(tmp_path):
+    """No coarse row in the series: an unlabelled 1 January row is an ordinary
+    (legacy) row, kept as before."""
+    cfg = _mk_cfg(tmp_path)
+    rows = [_unlabelled("jp", DocType.E2, date(y, 1, 1), y * 10 + i)
+            for y in range(2023, 2027) for i in range(2)]
+    _write_per_bank_unlocked(cfg, rows)
+    dropped: dict = {}
+    [e] = compute_series(cfg, today=date(2026, 6, 1), dropped=dropped)
+    assert e["last"] == "2026-01-01" and dropped == {}
+
+
+def test_only_unlabelled_first_of_january_rows_go_with_the_coarse_ones(tmp_path):
+    """In a series with a coarse row: unlabelled rows on other days and
+    day-labelled 1 January rows are real dates, kept."""
+    cfg = _mk_cfg(tmp_path)
+    days = _day_series(date(2025, 1, 10), 8, 20)
+    rows = [_unlabelled("us", DocType.D1, d, i) for i, d in enumerate(days)]
+    rows.append(_rec("us", DocType.D1, date(2025, 1, 1), date_precision="day", _i=50).to_row())
+    rows.append(_unlabelled("us", DocType.D1, date(2025, 1, 1), 60))
+    rows.append(_rec("us", DocType.D1, date(2024, 1, 1), date_precision="year", _i=70).to_row())
+    _write_per_bank_unlocked(cfg, rows)
+    dropped: dict = {}
+    [e] = compute_series(cfg, today=days[-1], dropped=dropped)
+    assert e["n_3y"] == 9                       # 8 unlabelled days + the day-labelled 1 Jan
+    assert dropped == {("us", "D1"): 2}         # the year row + the unlabelled 1 Jan
+
+
+def test_none_setting_disables_the_placeholder_rule(tmp_path, monkeypatch):
+    monkeypatch.setenv("CADENCE_DROP_PRECISIONS", "none")
+    cfg = _mk_cfg(tmp_path)
+    _write_per_bank_unlocked(cfg, _ecb_e4_rows())
+    dropped: dict = {}
+    [e] = compute_series(cfg, today=date(2027, 3, 10), dropped=dropped)
+    assert e["last"] == "2027-01-01" and dropped == {}

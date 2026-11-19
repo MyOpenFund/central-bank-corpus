@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from typing import Optional
+from urllib.parse import quote, urldefrag
 
 from ..http import Fetcher
 from .recovery import Source
@@ -18,14 +19,32 @@ from .recovery import Source
 CDX = "http://web.archive.org/cdx/search/cdx"
 
 
+def _cdx_target(url: str) -> str:
+    """The target URL as a CDX `url=` query value: its fragment dropped, then
+    fully percent-encoded (`safe=""`, so `/`, `:`, `?`, `&`, `%` and spaces
+    are all escaped).
+
+    Interpolated raw (issue #24), a target's own `&` split it into extra
+    top-level CDX parameters (every Bank of England media URL ends in
+    `?la=en&hash=...`), a `#` cut the request at the fragment, and the callers'
+    blanket `except` reported the garbled query as "not archived". The Fetcher
+    sends a built query as given, so the encoding has to happen here. The
+    fragment (`#toc3` on an ECB row) is client-side: never sent to a server,
+    so archive.org indexes the URL without it, and an encoded `%23toc3` would
+    only make the exact-URL match miss. `raw_url` keeps the original URL."""
+    return quote(urldefrag(url).url, safe="")
+
+
 def cdx_pdfs(fetcher: Fetcher, url_prefix: str,
              mimetype: str = "application/pdf") -> list[tuple[str, str]]:
     """Return [(original_url, timestamp)] for archived docs under `url_prefix`.
 
     One CDX query, collapsed to the latest unique snapshot per URL (HTTP 200,
-    filtered to `mimetype`, e.g. "application/pdf" or "text/html").
+    filtered to `mimetype`, e.g. "application/pdf" or "text/html"). The prefix
+    is percent-encoded (`_cdx_target`); prefix matching is the `matchType`
+    parameter, never a `*` appended to the URL.
     """
-    q = (f"{CDX}?url={url_prefix}&matchType=prefix&filter=statuscode:200"
+    q = (f"{CDX}?url={_cdx_target(url_prefix)}&matchType=prefix&filter=statuscode:200"
          f"&filter=mimetype:{mimetype}&collapse=urlkey"
          f"&output=json&fl=original,timestamp")
     try:
@@ -51,7 +70,8 @@ def first_capture(fetcher: Fetcher, url: str) -> Optional[str]:
     (DATE_RECOVERY.md rung 1) we accept it only when it lands in the paper's
     RePEc month (the caller enforces that month constraint).
     """
-    q = (f"{CDX}?url={url}&filter=statuscode:200&output=json&fl=timestamp&limit=1")
+    q = (f"{CDX}?url={_cdx_target(url)}&filter=statuscode:200"
+         f"&output=json&fl=timestamp&limit=1")
     try:
         rows = json.loads(fetcher.get_text(q))
     except Exception:
@@ -70,7 +90,7 @@ def latest_capture(fetcher: Fetcher, url: str,
     same convention `wayback_for_url` already relied on. Filtered to `mimetype`
     (default the PDF the recovery flows care about).
     """
-    q = (f"{CDX}?url={url}&filter=statuscode:200&filter=mimetype:{mimetype}"
+    q = (f"{CDX}?url={_cdx_target(url)}&filter=statuscode:200&filter=mimetype:{mimetype}"
          f"&output=json&fl=timestamp&limit=-1")
     try:
         rows = json.loads(fetcher.get_text(q))

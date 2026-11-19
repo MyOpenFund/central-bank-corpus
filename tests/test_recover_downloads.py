@@ -46,7 +46,8 @@ def test_latest_capture_parses_and_uses_exact_url_no_prefix():
     assert len(f.queries) == 1
     q = f.queries[0]
     assert "matchType=prefix" not in q
-    assert "url=https://www.banque-france.fr/dt986.pdf" in q
+    # percent-encoded target (issue #24; see tests/test_wayback_cdx.py)
+    assert "url=https%3A%2F%2Fwww.banque-france.fr%2Fdt986.pdf&" in q
     assert "mimetype:application/pdf" in q
 
 

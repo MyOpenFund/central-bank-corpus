@@ -965,12 +965,13 @@ def test_wp_dates_apply_only_replays_index(tmp_path):
     cfg.manifest_file("ecb").parent.mkdir(parents=True, exist_ok=True)
     cfg.manifest_file("ecb").write_text(json.dumps(row) + "\n")
     index_path(cfg).write_text(json.dumps({
-        "key": row_key(row), "date": "2010-03-15", "date_source": "wayback",
+        "key": row_key(row), "date": "2010-01-15", "date_source": "wayback",
         "date_precision": "day", "evidence_url": "https://web.archive.org/x"}) + "\n")
 
     wp_dates.run_wp_dates(bank_codes=["ecb"], write=True, apply_only=True, config=cfg)
     after = json.loads(cfg.manifest_file("ecb").read_text().splitlines()[0])
-    assert after["date"] == "2010-03-15" and after["date_precision"] == "day"
+    # in the row's own month (2010-01): a replayed hit is month-checked (#22)
+    assert after["date"] == "2010-01-15" and after["date_precision"] == "day"
     assert after["date_source"] == "wayback" and after["year"] == 2010
     assert after["doc_id"] == "d1" and after["pdf_url"] == row["pdf_url"]   # identity intact
 
