@@ -221,6 +221,15 @@ backfill): first `command: ["/app/deploy/run-job.sh", "campaign", "policy-dates"
 report `unchanged` only. The image must be the one built from the commit that ships the
 command (§7) before the stack is deployed.
 
+Migration example — the `pdf_url` -> `document_url` field rename (README § Maintenance:
+migrate-document-url), run once, before `cb-refresh` is updated to the image that writes the
+new name: first `command: ["/app/deploy/run-job.sh", "campaign", "migrate-document-url"]`
+(dry-run: per-file counts in the container log, nothing written; expect `both=0`), then the
+same with `"--write"` (every manifest and `download_errors.jsonl` rewritten under its sidecar
+lock; the autocommit pushes the manifests), then the dry-run once more: `renamed=0`
+everywhere. Exit 1 means a row carries both names: it was left untouched, read its `doc_id`
+in the log.
+
 ## 4a. Weekly cadence watchdog (automated)
 
 The cadence watchdog detects silent series — banks/doc-types with no new

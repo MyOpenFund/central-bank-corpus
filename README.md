@@ -320,6 +320,31 @@ the plan ran, 1 when the plan itself is unusable. The dry run fetches the candid
 writes only the report, line by line (a killed run leaves a partial report). The plan is
 read as UTF-8 (a BOM is accepted); doc_ids are stripped and lowercased.
 
+### Maintenance: migrate-document-url (one-shot, 2026-11-19)
+
+The manifest field `pdf_url` was renamed `document_url` (same value, so no `doc_id` moves).
+New rows are written with `document_url`; until the stored rows are migrated, every reader
+accepts the old name (`models.row_url`, a transition to remove once the NAS manifests are
+migrated). The one-shot renames the stored key:
+
+```bash
+python -m cb_corpus migrate-document-url            # dry-run: counts per file, writes nothing
+python -m cb_corpus migrate-document-url --write    # rename, then re-run: renamed=0 everywhere
+```
+
+Per-bank manifests and `data/download_errors.jsonl` (the recover-downloads inventory), each
+under its sidecar lock, re-read fresh under it: the key is renamed in place (same position,
+every value unchanged; a row already migrated is kept byte-identical; the file is rewritten
+only when a row changed, so a rerun does nothing). Per file: `renamed`, `already_new`,
+`both` (both names on one row: left untouched, listed by `doc_id`, exit 1, never guessed),
+`no_url`, `torn` (a torn final manifest line: dropped on `--write`, fragment saved to
+`<file>.torn`, like every manifest rewrite), `unparsed` (a download-error log line that does
+not parse: kept verbatim). `--banks` restricts to those manifests (the log is then skipped).
+Not migrated: `wp_dates_index.jsonl` and `download_quarantine.jsonl` never stored the key;
+CSV reports are rewritten by their command; a recover-downloads `--candidates` file is read
+with `dead_pdf_url` as a fallback. On the committed data (2026-11-19) the dry run counts
+61 manifests, 39,665 rows, all `renamed`.
+
 ## Use
 
 ```bash
@@ -450,6 +475,7 @@ cb_corpus/
   orphans.py         sweep-orphans (quarantine on-disk duplicates)
   pdf_audit.py       audit-pdfs (stored PDFs against the content check, read-only)
   replace_artifact.py  replace-artifact (re-fetch or retire a bad artifact from a plan CSV)
+  document_url_migrate.py  migrate-document-url (one-shot: stored key pdf_url -> document_url)
   convert.py / retry_html.py   HTML -> PDF migration and retries
   wp_migrate.py      WP v3 date migration (native bank-site dates, zero re-download)
   wp_dates.py        WP v3 day recovery (PDF /CreationDate + Wayback, committed index)
