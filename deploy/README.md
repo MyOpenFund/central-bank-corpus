@@ -182,7 +182,9 @@ Maintenance example — orphan sweep (see README § Maintenance): first
 `command: ["/app/deploy/run-job.sh", "campaign", "sweep-orphans"]` (dry-run; read
 `reports/orphan_sweep_<ts>.summary.json`), then the same with `"--move"`.
 `temps_stale` there counts `.part` temps older than `--temp-min-age-hours`
-(default 24) left by a killed job; `--move` moves them to `raw_orphans/` too.
+(default 24) left by a killed job; `--move` moves them to `raw_orphans/` too,
+counted in `temps_moved` / `temps_move_failed` (`moved` / `move_failed` stay
+the duplicates').
 
 Measurement example — stored PDFs against the content check (issue #21; read-only, no
 network): `command: ["/app/deploy/run-job.sh", "campaign", "audit-pdfs"]`. Read the JSON

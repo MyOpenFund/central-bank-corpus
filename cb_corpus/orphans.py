@@ -26,6 +26,10 @@ Rules (see the design note of 2026-09-03):
   is skipped (``temps_fresh``); an older one was left by a killed process
   and is reported as ``stale-temp`` (``temps_stale``), moved to
   ``raw_orphans/`` only with ``--move`` like a duplicate, never deleted.
+  Its moves are counted apart (``temps_moved`` / ``temps_move_failed``;
+  ``moved`` / ``move_failed`` count duplicates only), and one that cannot be
+  hashed gets the same ``hash-failed`` line (and ``hash_failed`` count) as
+  an orphan, still counted in ``temps_stale``, never moved.
 
 The manifest is read once, through :func:`storage.iter_manifest_rows` (no
 ``Storage()`` side effects). On the NAS the run-job global lock guarantees no
@@ -101,6 +105,10 @@ class SweepSummary:
     banks: Optional[list[str]] = None
     temps_fresh: int = 0      # `.part` temps younger than temp_min_age: skipped
     temps_stale: int = 0      # older `.part` temps: reported (moved with --move)
+    # Stale temps moved / whose move failed with --move; `moved` and
+    # `move_failed` count duplicates only.
+    temps_moved: int = 0
+    temps_move_failed: int = 0
 
 
 @dataclass
@@ -349,7 +357,7 @@ def sweep_orphans(cfg: Config, *, banks: Optional[set[str]] = None, move: bool =
     owner_hash_cache: dict[Path, str] = {}
     files_seen = orphans_n = dups = unindexed = moved = failed = 0
     hash_failed = owner_missing = 0
-    temps_fresh = temps_stale = 0
+    temps_fresh = temps_stale = temps_moved = temps_failed = 0
     bytes_dups = 0
 
     install_handler = threading.current_thread() is threading.main_thread()
@@ -372,15 +380,21 @@ def sweep_orphans(cfg: Config, *, banks: Optional[set[str]] = None, move: bool =
                     temps_stale += 1
                     try:
                         entry = classify(path, cfg.raw_dir, index)
-                    except OSError:
-                        continue
-                    entry.action, entry.dest = "stale-temp", entry.rel
-                    if move:
-                        move_to_orphans(entry, cfg)
-                        if entry.action == "moved":
-                            moved += 1
-                        else:
-                            failed += 1
+                    except OSError as exc:
+                        # Same report line as an orphan that cannot be
+                        # hashed; never moved.
+                        rel = path.relative_to(cfg.raw_dir).as_posix()
+                        bank, doc_type, year_dir = _parts(rel)
+                        entry = _hash_failed_entry(path, rel, bank, doc_type, year_dir, exc)
+                        hash_failed += 1
+                    else:
+                        entry.action, entry.dest = "stale-temp", entry.rel
+                        if move:
+                            move_to_orphans(entry, cfg)
+                            if entry.action == "moved":
+                                temps_moved += 1
+                            else:
+                                temps_failed += 1
                     out.write(json.dumps(asdict(entry), ensure_ascii=True) + "\n")
                     out.flush()
                     continue
@@ -426,6 +440,7 @@ def sweep_orphans(cfg: Config, *, banks: Optional[set[str]] = None, move: bool =
             finished_at=finished.isoformat(), hash_failed=hash_failed, owner_missing=owner_missing,
             banks=sorted(banks) if banks is not None else None,
             temps_fresh=temps_fresh, temps_stale=temps_stale,
+            temps_moved=temps_moved, temps_move_failed=temps_failed,
         )
         report_path.with_suffix(".summary.json").write_text(
             json.dumps(asdict(summary), indent=2) + "\n", encoding="utf-8")

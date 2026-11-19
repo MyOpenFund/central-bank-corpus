@@ -273,7 +273,10 @@ scope. Indexed files are never touched; symlinks are ignored; an unreadable
 file is reported (`hash-failed`), never moved. A hidden `.part` temp (an
 atomic write in progress) younger than `--temp-min-age-hours` (default 24) is
 skipped; an older one, left by a killed process, is reported as `stale-temp`
-(`temps_stale`) and moved only with `--move`. A `kept-owner-missing` row
+(`temps_stale`) and moved only with `--move`, counted apart from the duplicates
+(`temps_moved` / `temps_move_failed`; `moved` / `move_failed` count duplicates
+only); a stale temp that cannot be hashed gets a `hash-failed` row like any
+orphan and is never moved. A `kept-owner-missing` row
 carries the reason (`error`) and the resolved `owner_path`. Every run writes
 `data/reports/orphan_sweep_<ts>.jsonl` (one line per orphan) and
 `orphan_sweep_<ts>.summary.json`. Exit 0 when the sweep completed (failed

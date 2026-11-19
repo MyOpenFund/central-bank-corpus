@@ -428,9 +428,41 @@ def test_stale_temp_moved_only_with_move(tmp_path):
     fresh = _temp(cfg, "xx/C1/2025/.a.pdf.111111111111.part", b"%PDF half", 60)
     stale = _temp(cfg, "xx/C1/2025/.b.pdf.222222222222.part", b"%PDF half2", 3 * 86400)
     s = orphans.sweep_orphans(cfg, move=True, now=_NOW)
-    assert s.temps_stale == 1 and s.moved == 1
+    assert s.temps_stale == 1 and s.temps_moved == 1 and s.temps_move_failed == 0
+    assert (s.moved, s.move_failed) == (0, 0)          # duplicates only
     assert fresh.exists() and not stale.exists()
     assert (cfg.orphans_dir / "xx/C1/2025/.b.pdf.222222222222.part").read_bytes() == b"%PDF half2"
+
+
+def test_temp_move_failure_has_its_own_counter(tmp_path):
+    cfg = _sweep_cfg(tmp_path)
+    stale = _temp(cfg, "xx/C1/2025/.b.pdf.222222222222.part", b"%PDF half2", 3 * 86400)
+    clash = cfg.orphans_dir / "xx/C1/2025/.b.pdf.222222222222.part"
+    clash.parent.mkdir(parents=True)
+    clash.write_bytes(b"other bytes")
+    s = orphans.sweep_orphans(cfg, move=True, now=_NOW)
+    assert (s.temps_moved, s.temps_move_failed) == (0, 1)
+    assert (s.moved, s.move_failed) == (0, 0)
+    assert stale.exists()
+    [entry] = _report(s)
+    assert entry["action"] == "move-failed"
+
+
+def test_stale_temp_that_cannot_be_hashed_gets_a_hash_failed_line(tmp_path, monkeypatch):
+    cfg = _sweep_cfg(tmp_path)
+    stale = _temp(cfg, "xx/C1/2025/.b.pdf.222222222222.part", b"%PDF half2", 3 * 86400)
+
+    def _boom(path, raw_dir, index):
+        raise PermissionError(13, "Permission denied", str(path))
+    monkeypatch.setattr(orphans, "classify", _boom)
+    s = orphans.sweep_orphans(cfg, move=True, now=_NOW)
+    assert s.temps_stale == 1 and s.hash_failed == 1
+    assert (s.temps_moved, s.temps_move_failed, s.moved) == (0, 0, 0)
+    assert stale.exists()                                   # never moved
+    [entry] = _report(s)
+    assert entry["rel"] == "xx/C1/2025/.b.pdf.222222222222.part"
+    assert entry["action"] == "hash-failed" and entry["sha256"] == ""
+    assert entry["size"] == len(b"%PDF half2") and "PermissionError" in entry["error"]
 
 
 def test_temp_min_age_is_configurable(tmp_path):
@@ -454,6 +486,9 @@ def test_cli_sweep_orphans_temp_min_age_flag(tmp_path, monkeypatch, capsys):
     assert cli.main(["sweep-orphans", "--temp-min-age-hours", "1"]) == 0
     out = capsys.readouterr().out
     assert '"temps_stale": 1' in out and "1 stale temp" in out
+    assert cli.main(["sweep-orphans", "--temp-min-age-hours", "1", "--move"]) == 0
+    out = capsys.readouterr().out
+    assert '"temps_moved": 1' in out and "1 stale temp(s) (1 moved)" in out
 
 
 # -- quarantine: startup load on a read-only data dir ---------------------
