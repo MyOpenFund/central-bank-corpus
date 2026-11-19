@@ -206,6 +206,10 @@ def migrate_document_url(cfg: Config, *, write: bool = False,
         if cfg.manifest_path.exists():
             print(f"[migrate-document-url] WARNING: legacy {cfg.manifest_path} not "
                   f"handled (split it first: any Storage start does)", file=sys.stderr)
+    for f in files:
+        if not f.exists():
+            print(f"[migrate-document-url] WARNING: no manifest {f} (unknown bank code?)",
+                  file=sys.stderr)
     results = [_migrate_file(f, write=write, manifest=True) for f in files if f.exists()]
     errors = cfg.data_dir / DOWNLOAD_ERRORS
     if not bank_codes and errors.exists():
