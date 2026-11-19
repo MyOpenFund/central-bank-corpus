@@ -13,8 +13,8 @@ import pytest
 from cb_corpus import storage as storage_mod
 from cb_corpus.storage import _atomic_write_bytes
 from tests.conftest import public_resolver
-from tests.test_content_integrity import (U, _rec, _render_storage, _storage,
-                                          make_pdf)
+from tests.test_content_integrity import (U, _raw_files, _rec, _render_storage,
+                                          _storage, make_pdf)
 
 
 @pytest.fixture
@@ -74,6 +74,26 @@ def test_pdf_bytes_served_as_html_are_stored_as_pdf(tmp_path, producer_mime, ser
     assert rec.mime_type == "application/pdf"
     assert rec.local_path.endswith(".pdf") and rec.html_path is None
     assert Path(rec.local_path).read_bytes() == body
+
+
+@pytest.mark.parametrize("mode", ["reject", "accept"])
+@pytest.mark.parametrize("producer_mime", ["application/pdf", "text/html", ""])
+@pytest.mark.parametrize("body,reason", [
+    (b"%PDF-1.7\n" + b"x" * 5000, "truncated PDF"),            # no %%EOF
+    (b"%PDF-1.7 tiny\n%%EOF\n", "too small for a PDF"),
+])
+def test_broken_pdf_served_as_html_is_rejected_with_its_pdf_reason(
+        tmp_path, mode, producer_mime, body, reason):
+    """PDF magic is enough to judge the bytes as a PDF: a truncated or tiny
+    PDF served as text/html is refused for its real PDF reason, never stored
+    as .html (and rendered) nor reported as 'the server sent HTML'."""
+    from cb_corpus.storage import ContentCheckFailed
+    st = _storage(tmp_path, {U: (body, "text/html")}, pdf_url_served_html=mode)
+    with pytest.raises(ContentCheckFailed) as exc:
+        st.save(_rec(U, mime=producer_mime))
+    assert reason in str(exc.value)
+    assert "the server sent HTML" not in str(exc.value)
+    assert _raw_files(tmp_path) == []
 
 
 def test_html_bytes_served_as_html_still_rejected_for_a_pdf_producer(tmp_path):

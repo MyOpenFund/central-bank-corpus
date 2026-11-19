@@ -135,8 +135,9 @@ night's `runs.jsonl` line; the exit code is unchanged. A burst of
 PDFs. Like any dead URL, a rejected URL is quarantined after
 `QUARANTINE_AFTER_NIGHTS` nights and then re-alerts on every Sunday full
 sweep (`QUARANTINE_RETRY=1`) until the site serves the real document. A body
-that passes the PDF check is stored as a PDF even when the server labels it
-`text/html`.
+that starts with `%PDF` is judged as a PDF even when the server labels it
+`text/html`: stored as a PDF when it passes the check, refused for its PDF
+reason (truncated, too small) when it does not — never stored as HTML.
 
 The three thresholds are set through the stack's `environment:` (Dockge, no
 rebuild; a commented example is in `compose.refresh.example.yml`):
