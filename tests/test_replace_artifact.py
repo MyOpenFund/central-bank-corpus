@@ -187,9 +187,11 @@ def test_committed_plan_loads():
     assert all(r.note for r in rows)
 
 
-def test_committed_plan_matches_the_committed_manifests():
-    """Every plan doc_id and every retire owner is a manifest row; an owner is
-    a real PDF owner as far as the manifest tells (mime pdf, no html_path)."""
+def test_committed_plans_match_the_committed_manifests():
+    """Every committed plan's doc_id is a manifest row, or a row a later run
+    retired: gone from the manifests, with a `retired_duplicates` entry on an
+    owner that is still there. A retire owner is a real PDF owner as far as the
+    manifest tells (mime pdf, no html_path) and shares the retired row's bank."""
     from pathlib import Path
     root = Path(__file__).resolve().parents[1]
     rows = {}
@@ -198,12 +200,22 @@ def test_committed_plan_matches_the_committed_manifests():
             if line.strip():
                 r = json.loads(line)
                 rows[r["doc_id"]] = r
-    for p in load_plan(root / "deploy/plans/2026-11-19-audit-pdfs.csv"):
-        assert p.doc_id in rows, p.doc_id
-        if p.action == "retire":
-            owner = rows[p.candidates[0][len("duplicate-of:"):]]
-            assert owner["mime_type"] == "application/pdf" and not owner.get("html_path")
-            assert owner["bank_code"] == rows[p.doc_id]["bank_code"]
+    retired_onto = {e["doc_id"]: owner_id for owner_id, r in rows.items()
+                    for e in r.get("retired_duplicates") or [] if isinstance(e, dict)}
+    plans = sorted((root / "deploy/plans").glob("*.csv"))
+    assert plans
+    for plan in plans:
+        for p in load_plan(plan):
+            if p.doc_id not in rows:
+                assert p.doc_id in retired_onto, (plan.name, p.doc_id)
+                continue
+            if p.action == "retire":
+                owner = rows[p.candidates[0][len("duplicate-of:"):]]
+                assert owner["mime_type"] == "application/pdf" and not owner.get("html_path")
+                assert owner["bank_code"] == rows[p.doc_id]["bank_code"]
+    for p in load_plan(root / "deploy/plans/2026-11-19-unresolved.csv"):
+        assert p.action == "retire"
+        assert retired_onto.get(p.doc_id) == p.candidates[0][len("duplicate-of:"):]
 
 
 def test_committed_plan_ships_in_the_image():
