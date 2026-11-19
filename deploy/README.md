@@ -208,8 +208,11 @@ sha256s and `tried` (every candidate with its reason). Then the same `command:` 
 `"--write"` appended: the files are replaced in place, the retired file goes to
 `raw_orphans/`, and the autocommit pushes the manifest changes. A third run (dry or
 `--write`) must report only `already-fixed` / `already-retired` (plus whatever stayed
-`unresolved`). Finally re-run `audit-pdfs`: it should report only the rows still
-unresolved (e.g. Banque de France WP 101 when no Wayback capture passes).
+`unresolved`); `already-fixed` assumes the winning URL still serves the same bytes, so a
+`would-replace` there means the live file changed, not that the write was lost. Finally
+re-run `audit-pdfs`: it should report only the rows still unresolved (in this plan, Banque
+de France WP 101 and Riksbank WP 397 when no Wayback capture passes; WP 397 then goes to a
+later plan as `retire,duplicate-of:c8d8705ae2aaa19d`).
 
 Maintenance example — policy-dates backfill (see README § Maintenance: policy-dates
 backfill): first `command: ["/app/deploy/run-job.sh", "campaign", "policy-dates"]`

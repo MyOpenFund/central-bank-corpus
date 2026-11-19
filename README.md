@@ -294,13 +294,17 @@ python -m cb_corpus replace-artifact --plan deploy/plans/2026-11-19-audit-pdfs.c
 - `replace`: `candidates` = space-separated URLs and/or `wayback` (the newest HTTP-200 PDF
   captures of the row's own `pdf_url`, one per distinct payload, at most
   `--wayback-max-captures`, default 10). The first candidate passing the content check
-  (same rule as a download) wins; it is refused as `duplicate-of:<doc_id>` when another row
-  already owns those bytes. `--write` replaces the file atomically at the same path (an
+  (same rule as a download) whose bytes no other row owns wins; a candidate another row
+  already owns is noted in `tried` and the search goes on (outcome `duplicate-of:<doc_id>`
+  only when nothing else won). `--write` replaces the file atomically at the same path (an
   `html_path` sibling is untouched) and updates the row: `sha256`, `mime_type`, the winning
-  URL first in `alt_urls`, an `artifact_replaced` audit key. `doc_id`, `pdf_url`,
-  `local_path` never change. Only `.pdf` artifacts can be replaced.
+  URL first in `alt_urls` (a download still tries `pdf_url` first: the winning URL becomes
+  the first fallback), one more entry in the `artifact_replaced` history list. `doc_id`,
+  `pdf_url`, `local_path` never change. Only `.pdf` artifacts can be replaced, and not a
+  file another row also points at.
 - `retire`: `candidates` = `duplicate-of:<owner doc_id>`, a real PDF owner whose file passes
-  the content check and matches its `sha256`. `--write` stamps the retired row's `pdf_url`
+  the content check and matches its `sha256` (and is not the retired row's file itself, nor
+  a hard link of it). `--write` stamps the retired row's `pdf_url`
   / `source_url` on the owner (`alt_urls` / `alt_source_urls`, as duplicate-content
   stamping does) plus a `retired_duplicates` audit entry, moves the file to
   `data/raw_orphans/` and removes the row from its manifest. The vault soft-deletes it at
@@ -309,8 +313,12 @@ python -m cb_corpus replace-artifact --plan deploy/plans/2026-11-19-audit-pdfs.c
 Outcomes per row (JSON on stdout, `data/reports/replace_artifact.csv`): `replaced` /
 `would-replace`, `retired` / `would-retire`, `already-fixed` / `already-retired` (a rerun
 changes nothing), `unresolved` (every candidate failed, nothing written), `duplicate-of:…`,
-`error` (unknown doc_id or action, refused owner, ...). Exit 0 when the plan ran, 1 when
-the plan itself is unusable. The dry run fetches the candidates but writes only the report.
+`error` (unknown doc_id or action, refused owner, ...). A rerun says `already-fixed` only
+if the winning candidate still serves the same bytes: a live URL whose file changed since
+(a revision, a regenerated PDF) is replaced again, with one more history entry. Exit 0 when
+the plan ran, 1 when the plan itself is unusable. The dry run fetches the candidates but
+writes only the report, line by line (a killed run leaves a partial report). The plan is
+read as UTF-8 (a BOM is accepted); doc_ids are stripped and lowercased.
 
 ## Use
 
