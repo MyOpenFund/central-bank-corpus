@@ -1,0 +1,72 @@
+"""audit-pdfs: read-only measure of the stored PDFs against the content rules (#21)."""
+import json
+import os
+
+from cb_corpus.cli import main
+from cb_corpus.config import Config
+from cb_corpus.pdf_audit import audit_file, audit_pdfs
+from tests.conftest import pdf_body
+
+
+def _setup(tmp_path, files):
+    """files: doc_id -> (bytes or None for missing, mime, ext). One bank 'xx', type A1."""
+    data = tmp_path / "data"
+    cfg = Config(data_dir=data)
+    rows = []
+    for doc_id, (content, mime, ext) in files.items():
+        rel = f"raw/xx/A1/2020/{doc_id}.{ext}"
+        if content is not None:
+            p = data / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(content)
+        rows.append({"doc_id": doc_id, "bank_code": "xx", "doc_type": "A1", "title": doc_id,
+                     "pdf_url": f"https://x/{doc_id}", "mime_type": mime,
+                     "local_path": f"data/{rel}"})
+    cfg.manifest_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.manifest_dir / "xx.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    return cfg
+
+
+def _snapshot(root):
+    return {p: (p.stat().st_size, p.stat().st_mtime_ns) for p in root.rglob("*") if p.is_file()}
+
+
+def test_reasons_and_eof_distance(tmp_path):
+    good = pdf_body(b"%PDF-1.4 good")
+    junk_tail = pdf_body(b"%PDF-1.4 padded") + b"\0" * 5000          # %%EOF 5,000 bytes from the end
+    cfg = _setup(tmp_path, {
+        "good": (good, "application/pdf", "pdf"),
+        "padded": (junk_tail, "application/pdf", "pdf"),
+        "truncated": (pdf_body(b"%PDF-1.4 cut")[:600] + b"0" * 900, "application/pdf", "pdf"),
+        "html": (b"<!doctype html>" + b" " * 2000, "application/pdf", "pdf"),
+        "small": (b"%PDF-1.4\n%%EOF\n", "application/pdf", "pdf"),
+        "gone": (None, "application/pdf", "pdf"),
+        "page": (b"<html>not checked</html>", "text/html", "html"),   # HTML artifact: out of scope
+    })
+    before = _snapshot(tmp_path / "data" / "raw")
+    s = audit_pdfs(cfg, progress_every=0)
+    assert _snapshot(tmp_path / "data" / "raw") == before                    # read-only
+    assert (s.rows_checked, s.ok, s.failing) == (6, 1, 5)
+    assert s.by_reason == {"no-eof-in-window": 2, "not-pdf": 1, "too-small": 1, "missing": 1}
+    assert s.eof_from_end == {"<= 16384": 1, "none in tail": 1}
+    lines = (cfg.reports_dir / "pdf_audit.csv").read_text().splitlines()
+    by_id = {line.split(",")[2]: line.split(",") for line in lines[1:]}
+    assert set(by_id) == {"padded", "truncated", "html", "small", "gone"}
+    assert by_id["padded"][5] == "5001"                               # "\n" + 5,000 zero bytes
+    assert by_id["truncated"][5] == ""
+
+
+def test_audit_file_reads_only_head_and_tail(tmp_path):
+    p = tmp_path / "big.pdf"
+    p.write_bytes(b"%PDF-1.7\n" + os.urandom(3 * 1024 * 1024) + b"\n%%EOF\n")
+    assert audit_file(p, min_bytes=1024, tail_bytes=4096) == (None, p.stat().st_size, 1)
+
+
+def test_banks_filter_and_cli(tmp_path, monkeypatch, capsys):
+    cfg = _setup(tmp_path, {"a": (pdf_body(b"%PDF-1.4 a"), "application/pdf", "pdf")})
+    monkeypatch.chdir(tmp_path)                                      # Config() reads ./data
+    assert audit_pdfs(cfg, banks=["yy"], progress_every=0).rows_checked == 0
+    assert main(["audit-pdfs", "--csv", str(tmp_path / "out.csv")]) == 0
+    out = capsys.readouterr().out
+    assert '"rows_checked": 1' in out and "1 ok, 0 failing" in out
+    assert (tmp_path / "out.csv").read_text().count("\n") == 1         # header only
