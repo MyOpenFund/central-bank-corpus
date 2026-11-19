@@ -189,7 +189,12 @@ summary in the container log (`by_reason`, `by_series`, and `eof_from_end`: wher
 `%%EOF` of each `no-eof-in-window` file sits) and `reports/pdf_audit.csv` (one line per
 failing row). `no-eof-in-window` rows are the files `CB_PDF_REQUIRE_EOF=1` would refuse
 at their next download or reindex; `not-pdf` and `too-small` rows are stored documents
-that are not the document (error pages, truncated files) and need a re-download.
+that are not the document (error pages, truncated files) and need a re-download
+(or a re-render when the CSV's `rendered` column says `yes`); `unreadable` rows name the
+error (e.g. a permission the container's PUID lacks). The exit code is 0 whatever the
+findings (it is a measure). Set `AUTOCOMMIT=0` in the one-shot's environment if nothing at
+all may be pushed: reading the manifests repairs a torn final line in place, like every
+command that reads them.
 
 Maintenance example — policy-dates backfill (see README § Maintenance: policy-dates
 backfill): first `command: ["/app/deploy/run-job.sh", "campaign", "policy-dates"]`

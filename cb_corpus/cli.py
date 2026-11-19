@@ -436,7 +436,8 @@ def main(argv: list[str] | None = None) -> int:
         try:
             summary = pdf_audit.audit_pdfs(
                 Config(), banks=banks or None, csv_path=args.csv or None,
-                tail_bytes=args.tail_bytes or pdf_audit.DEFAULT_TAIL_BYTES)
+                tail_bytes=(pdf_audit.DEFAULT_TAIL_BYTES if args.tail_bytes is None
+                            else args.tail_bytes))
         except (OSError, ValueError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1

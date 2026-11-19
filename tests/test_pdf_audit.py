@@ -59,7 +59,56 @@ def test_reasons_and_eof_distance(tmp_path):
 def test_audit_file_reads_only_head_and_tail(tmp_path):
     p = tmp_path / "big.pdf"
     p.write_bytes(b"%PDF-1.7\n" + os.urandom(3 * 1024 * 1024) + b"\n%%EOF\n")
-    assert audit_file(p, min_bytes=1024, tail_bytes=4096) == (None, p.stat().st_size, 1)
+    assert audit_file(p, min_bytes=1024, tail_bytes=4096) == (None, p.stat().st_size, None, "")
+
+
+def test_verdict_is_the_write_path_verdict(tmp_path):
+    """audit_file and check_pdf_bytes decide through the same pdf_problem."""
+    from cb_corpus.pdfcheck import check_pdf_bytes
+    cases = {"ok": pdf_body(b"%PDF-1.4 x"), "html": b"<html>" + b" " * 3000,
+             "small": b"%PDF-1.4\n%%EOF\n", "cut": pdf_body(b"%PDF-1.4 y")[:-7] + b"0" * 2100}
+    for name, data in cases.items():
+        p = tmp_path / f"{name}.pdf"
+        p.write_bytes(data)
+        reason = audit_file(p, min_bytes=1024)[0]
+        assert (reason is None) == (check_pdf_bytes(data, min_bytes=1024, require_eof=True) is None), name
+
+
+def test_unreadable_file_is_reported_not_fatal_and_no_temp_left(tmp_path):
+    cfg = _setup(tmp_path, {"ok": (pdf_body(b"%PDF-1.4 ok"), "application/pdf", "pdf"),
+                            "dir": (None, "application/pdf", "pdf")})
+    (tmp_path / "data/raw/xx/A1/2020/dir.pdf").mkdir()          # open() raises IsADirectoryError
+    s = audit_pdfs(cfg, progress_every=0)
+    assert (s.ok, s.by_reason) == (1, {"unreadable": 1})
+    row = (cfg.reports_dir / "pdf_audit.csv").read_text().splitlines()[1].split(",")
+    assert row[2] == "dir" and row[7].startswith("IsADirectoryError")
+    assert [p.name for p in cfg.reports_dir.iterdir()] == ["pdf_audit.csv"]
+
+
+def test_temp_file_removed_when_the_audit_fails(tmp_path, monkeypatch):
+    import cb_corpus.pdf_audit as pa
+    cfg = _setup(tmp_path, {"ok": (pdf_body(b"%PDF-1.4 ok"), "application/pdf", "pdf")})
+
+    def boom(*a, **k):
+        raise RuntimeError("disk gone")
+    monkeypatch.setattr(pa, "audit_file", boom)
+    try:
+        audit_pdfs(cfg, progress_every=0)
+    except RuntimeError:
+        pass
+    assert list(cfg.reports_dir.iterdir()) == []
+
+
+def test_small_file_outside_window_and_rows_without_a_pdf_artifact(tmp_path):
+    small_cut = b"%PDF-1.4\n%%EOF\n" + b"0" * 2100 + b"x" * 400   # 2.5 KB, marker before the window
+    cfg = _setup(tmp_path, {"cut": (small_cut, "application/pdf", "pdf"),
+                            "page": (b"<html></html>", "application/pdf", "html")})
+    rows = (cfg.manifest_dir / "xx.jsonl").read_text() + json.dumps(
+        {"doc_id": "nofile", "bank_code": "xx", "doc_type": "A1", "mime_type": "application/pdf"}) + "\n"
+    (cfg.manifest_dir / "xx.jsonl").write_text(rows)
+    s = audit_pdfs(cfg, progress_every=0)
+    assert (s.rows_checked, s.by_reason) == (1, {"no-eof-in-window": 1})   # the .html and the pathless row are out
+    assert s.eof_from_end == {"<= 4096": 1}
 
 
 def test_banks_filter_and_cli(tmp_path, monkeypatch, capsys):

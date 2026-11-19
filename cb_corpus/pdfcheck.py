@@ -45,20 +45,41 @@ def has_pdf_magic(head: bytes) -> bool:
     return PDF_MAGIC in head[:MAGIC_WINDOW]
 
 
+def pdf_problem(head: bytes, tail: bytes, size: int, *, min_bytes: int,
+                require_eof: bool) -> Optional[str]:
+    """The ONE rule order, on parts of a file: None when it has the shape of
+    a PDF, else a reason code: "not-pdf", "too-small" or "no-eof-in-window".
+
+    `head` holds at least the first MAGIC_WINDOW bytes (or the whole file),
+    `tail` at least the last EOF_WINDOW bytes (or the whole file), `size` the
+    full length. `check_pdf_bytes` (new writes) and `pdf_audit` (stored files,
+    read by head and tail only) both decide through here, so they cannot
+    drift apart."""
+    if not has_pdf_magic(head):
+        return "not-pdf"
+    if size < min_bytes:
+        return "too-small"
+    if require_eof and EOF_MARKER not in tail[-EOF_WINDOW:]:
+        return "no-eof-in-window"
+    return None
+
+
 def check_pdf_bytes(data: bytes, *, min_bytes: int,
                     require_eof: bool) -> Optional[str]:
     """None when `data` has the shape of a PDF, else a one-line reason.
 
-    Rules, in order: `%PDF` within the first MAGIC_WINDOW bytes (an HTML page
-    fails here); at least `min_bytes` long (a stub or a cut-off body); and,
-    when `require_eof`, `%%EOF` within the last EOF_WINDOW bytes (a
-    truncated download). The thresholds come from Config (min_pdf_bytes,
-    pdf_require_eof) so an operator can relax them without a code change."""
-    if not has_pdf_magic(data):
+    Rules, in order (`pdf_problem`): `%PDF` within the first MAGIC_WINDOW
+    bytes (an HTML page fails here); at least `min_bytes` long (a stub or a
+    cut-off body); and, when `require_eof`, `%%EOF` within the last
+    EOF_WINDOW bytes (a truncated download). The thresholds come from Config
+    (min_pdf_bytes, pdf_require_eof) so an operator can relax them without a
+    code change."""
+    code = pdf_problem(data, data, len(data), min_bytes=min_bytes, require_eof=require_eof)
+    if code == "not-pdf":
         return f"not a PDF (no {PDF_MAGIC.decode()} in the first {MAGIC_WINDOW} bytes)"
-    if len(data) < min_bytes:
+    if code == "too-small":
         return f"too small for a PDF ({len(data)} bytes < {min_bytes})"
-    if require_eof and EOF_MARKER not in data[-EOF_WINDOW:]:
+    if code == "no-eof-in-window":
         return (f"truncated PDF (no {EOF_MARKER.decode()} in the last "
                 f"{EOF_WINDOW} bytes)")
     return None

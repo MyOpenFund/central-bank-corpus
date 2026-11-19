@@ -16,8 +16,16 @@ both, on every manifest row whose artifact is a `.pdf`:
 
 It only reads: a file's first `pdfcheck.MAGIC_WINDOW` bytes and its last
 `tail_bytes` bytes (never the whole file), and writes one CSV of the failing
-rows (`reports/pdf_audit.csv` by default). Nothing in the manifests, `raw/`,
-the quarantine or the run reports is touched, and no network is used.
+rows (`reports/pdf_audit.csv` by default, written to a temp file then renamed;
+the temp file is removed after an error). Nothing in `raw/`, the quarantine or
+the run reports is touched, and no network is used. One exception, shared by
+every command that reads the manifests: a torn final manifest line is repaired
+in place by `storage.iter_manifest_rows` (a campaign's autocommit would then
+push that repair; run the one-shot with `AUTOCOMMIT=0` to rule it out).
+
+The `%%EOF` rule is always measured, whatever `Config.pdf_require_eof` says:
+the point is to know what it would refuse. The exit code is 0 when files fail
+(it is a measure); 1 only when the audit itself cannot run.
 """
 from __future__ import annotations
 
@@ -31,7 +39,7 @@ from typing import Iterable, Optional
 
 from .config import Config
 from .orphans import _resolve_local_path
-from .pdfcheck import EOF_MARKER, EOF_WINDOW, MAGIC_WINDOW, has_pdf_magic
+from .pdfcheck import EOF_MARKER, EOF_WINDOW, MAGIC_WINDOW, pdf_problem
 from .storage import iter_manifest_rows
 
 #: Default number of trailing bytes searched for the last `%%EOF` of a file
@@ -39,7 +47,7 @@ from .storage import iter_manifest_rows
 DEFAULT_TAIL_BYTES = 1024 * 1024
 
 CSV_FIELDS = ("bank_code", "doc_type", "doc_id", "reason", "size", "eof_from_end",
-              "local_path")
+              "rendered", "error", "local_path")
 
 
 @dataclass
@@ -56,9 +64,9 @@ class AuditSummary:
 
 
 def _is_pdf_row(row: dict, path: Optional[Path]) -> bool:
-    mime = (row.get("mime_type") or "").split(";")[0].strip().lower()
-    if mime == "application/pdf":
-        return True
+    """The artifact is a `.pdf` file (downloaded or rendered). Decided on the
+    path, not the mime: a row labelled PDF whose artifact is an `.html` file
+    would otherwise be reported `not-pdf` and read as "needs a re-download"."""
     lp = row.get("local_path") or ""
     return lp.lower().endswith(".pdf") or bool(path and path.suffix.lower() == ".pdf")
 
@@ -74,30 +82,35 @@ def _bucket(distance: Optional[int]) -> str:
 
 
 def audit_file(path: Path, *, min_bytes: int, tail_bytes: int = DEFAULT_TAIL_BYTES
-               ) -> tuple[Optional[str], int, Optional[int]]:
-    """(reason or None, size, eof_from_end) for one file, by today's rules.
+               ) -> tuple[Optional[str], int, Optional[int], str]:
+    """(reason or None, size, eof_from_end, error) for one file, by today's rules.
 
-    Same order as `pdfcheck.check_pdf_bytes`: magic, size floor, `%%EOF` in the
-    last EOF_WINDOW bytes. `eof_from_end` is the distance from the end of the
-    file to the end of its last `%%EOF` within the last `tail_bytes` bytes
-    (None when there is none there); computed for every file."""
+    The verdict is `pdfcheck.pdf_problem` on the file's first MAGIC_WINDOW and
+    last EOF_WINDOW bytes, the rules new writes go through. Only a failing
+    file is read further: its last `tail_bytes` bytes, to find where its last
+    `%%EOF` sits (`eof_from_end`, the distance from the end of the file to the
+    end of that marker; None when there is none there). A file that cannot be
+    read is `unreadable` (the error class and message in `error`), never an
+    abort: one bad file must not cost the measure of the 36,000 others."""
     try:
         size = path.stat().st_size
+        with path.open("rb") as fh:
+            head = fh.read(MAGIC_WINDOW)
+            fh.seek(max(0, size - EOF_WINDOW))
+            tail = fh.read()
+            reason = pdf_problem(head, tail, size, min_bytes=min_bytes, require_eof=True)
+            if reason is None:
+                return None, size, None, ""
+            if tail_bytes > EOF_WINDOW and size > EOF_WINDOW:
+                fh.seek(max(0, size - tail_bytes))
+                tail = fh.read()
     except FileNotFoundError:
-        return "missing", 0, None
-    with path.open("rb") as fh:
-        head = fh.read(MAGIC_WINDOW)
-        fh.seek(max(0, size - max(tail_bytes, EOF_WINDOW)))
-        tail = fh.read()
+        return "missing", 0, None, ""
+    except OSError as exc:
+        return "unreadable", 0, None, f"{type(exc).__name__}: {exc}"[:200]
     pos = tail.rfind(EOF_MARKER)
     eof_from_end = None if pos < 0 else len(tail) - (pos + len(EOF_MARKER))
-    if not has_pdf_magic(head):
-        return "not-pdf", size, eof_from_end
-    if size < min_bytes:
-        return "too-small", size, eof_from_end
-    if EOF_MARKER not in tail[-EOF_WINDOW:]:
-        return "no-eof-in-window", size, eof_from_end
-    return None, size, eof_from_end
+    return reason, size, eof_from_end, ""
 
 
 def audit_pdfs(cfg: Config, *, banks: Optional[Iterable[str]] = None,
@@ -114,6 +127,20 @@ def audit_pdfs(cfg: Config, *, banks: Optional[Iterable[str]] = None,
     series: Counter = Counter()
     buckets: Counter = Counter()
     tmp = out.with_name(f".{out.name}.{os.getpid()}.tmp")
+    try:
+        _write_audit(cfg, wanted, tmp, tail_bytes, progress_every, summary,
+                     reasons, series, buckets)
+        os.replace(tmp, out)
+    finally:
+        tmp.unlink(missing_ok=True)       # no-op after the replace; cleans up after an error
+    summary.by_reason = dict(reasons.most_common())
+    summary.by_series = dict(series.most_common())
+    summary.eof_from_end = dict(sorted(buckets.items()))
+    return summary
+
+
+def _write_audit(cfg, wanted, tmp, tail_bytes, progress_every, summary,
+                 reasons, series, buckets) -> None:
     with tmp.open("w", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=CSV_FIELDS)
         writer.writeheader()
@@ -127,10 +154,10 @@ def audit_pdfs(cfg: Config, *, banks: Optional[Iterable[str]] = None,
                 continue
             summary.rows_checked += 1
             if path is None:
-                reason, size, eof = "missing", 0, None
+                reason, size, eof, error = "missing", 0, None, ""
             else:
-                reason, size, eof = audit_file(path, min_bytes=cfg.min_pdf_bytes,
-                                               tail_bytes=tail_bytes)
+                reason, size, eof, error = audit_file(path, min_bytes=cfg.min_pdf_bytes,
+                                                      tail_bytes=tail_bytes)
             if reason is None:
                 summary.ok += 1
             else:
@@ -142,12 +169,8 @@ def audit_pdfs(cfg: Config, *, banks: Optional[Iterable[str]] = None,
                 writer.writerow({"bank_code": bank, "doc_type": row.get("doc_type") or "",
                                  "doc_id": row.get("doc_id") or "", "reason": reason,
                                  "size": size, "eof_from_end": "" if eof is None else eof,
-                                 "local_path": lp})
+                                 "rendered": "yes" if row.get("html_path") else "",
+                                 "error": error, "local_path": lp})
             if progress_every and summary.rows_checked % progress_every == 0:
                 print(f"[audit-pdfs] {summary.rows_checked} checked, {summary.failing} failing",
                       file=sys.stderr, flush=True)
-    os.replace(tmp, out)
-    summary.by_reason = dict(reasons.most_common())
-    summary.by_series = dict(series.most_common())
-    summary.eof_from_end = dict(sorted(buckets.items()))
-    return summary
