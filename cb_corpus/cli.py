@@ -133,12 +133,13 @@ def main(argv: list[str] | None = None) -> int:
     ap = sub.add_parser("audit-pdfs",
                         help="Read-only: check every .pdf artifact of the manifests against the "
                              "content rules (magic, size floor, %%%%EOF window); CSV of the "
-                             "failing rows and a JSON summary. Writes nothing else.")
+                             "failing rows and a JSON summary. Writes nothing else (reading the manifests "
+                             "may repair a torn final line, like every command).")
     ap.add_argument("--banks", default="", help="restrict to bank codes")
     ap.add_argument("--csv", default="", help="CSV of failing rows (default reports/pdf_audit.csv)")
     ap.add_argument("--tail-bytes", type=int, default=None,
                     help="trailing bytes searched for the last %%%%EOF of a failing file "
-                         "(default 1 MiB)")
+                         "(default 1 MiB, at least 2048)")
 
     r = sub.add_parser("report")
     r.add_argument("--banks", default="")

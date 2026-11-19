@@ -64,14 +64,18 @@ def test_audit_file_reads_only_head_and_tail(tmp_path):
 
 def test_verdict_is_the_write_path_verdict(tmp_path):
     """audit_file and check_pdf_bytes decide through the same pdf_problem."""
-    from cb_corpus.pdfcheck import check_pdf_bytes
+    from cb_corpus.pdfcheck import EOF_WINDOW, check_pdf_bytes, pdf_problem
+    straddle = b"%PDF-1.4\n" + b"0" * 3000 + b"%%EOF" + b"0" * (EOF_WINDOW - 3)  # marker cut by the window
     cases = {"ok": pdf_body(b"%PDF-1.4 x"), "html": b"<html>" + b" " * 3000,
-             "small": b"%PDF-1.4\n%%EOF\n", "cut": pdf_body(b"%PDF-1.4 y")[:-7] + b"0" * 2100}
+             "small": b"%PDF-1.4\n%%EOF\n", "cut": pdf_body(b"%PDF-1.4 y")[:-7] + b"0" * 2100,
+             "straddle": straddle}
     for name, data in cases.items():
         p = tmp_path / f"{name}.pdf"
         p.write_bytes(data)
         reason = audit_file(p, min_bytes=1024)[0]
+        assert reason == pdf_problem(data, data, len(data), min_bytes=1024, require_eof=True), name
         assert (reason is None) == (check_pdf_bytes(data, min_bytes=1024, require_eof=True) is None), name
+    assert audit_file(tmp_path / "straddle.pdf", min_bytes=1024)[0] == "no-eof-in-window"
 
 
 def test_unreadable_file_is_reported_not_fatal_and_no_temp_left(tmp_path):
@@ -119,3 +123,10 @@ def test_banks_filter_and_cli(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert '"rows_checked": 1' in out and "1 ok, 0 failing" in out
     assert (tmp_path / "out.csv").read_text().count("\n") == 1         # header only
+
+
+def test_cli_refuses_a_tail_smaller_than_the_window(tmp_path, monkeypatch, capsys):
+    _setup(tmp_path, {"a": (pdf_body(b"%PDF-1.4 a"), "application/pdf", "pdf")})
+    monkeypatch.chdir(tmp_path)
+    assert main(["audit-pdfs", "--tail-bytes", "0"]) == 1
+    assert "tail_bytes must be >=" in capsys.readouterr().err

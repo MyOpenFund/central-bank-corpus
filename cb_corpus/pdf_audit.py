@@ -63,12 +63,12 @@ class AuditSummary:
     csv_path: str = ""
 
 
-def _is_pdf_row(row: dict, path: Optional[Path]) -> bool:
+def _is_pdf_row(row: dict) -> bool:
     """The artifact is a `.pdf` file (downloaded or rendered). Decided on the
     path, not the mime: a row labelled PDF whose artifact is an `.html` file
     would otherwise be reported `not-pdf` and read as "needs a re-download"."""
     lp = row.get("local_path") or ""
-    return lp.lower().endswith(".pdf") or bool(path and path.suffix.lower() == ".pdf")
+    return lp.lower().endswith(".pdf")
 
 
 def _bucket(distance: Optional[int]) -> str:
@@ -92,6 +92,7 @@ def audit_file(path: Path, *, min_bytes: int, tail_bytes: int = DEFAULT_TAIL_BYT
     end of that marker; None when there is none there). A file that cannot be
     read is `unreadable` (the error class and message in `error`), never an
     abort: one bad file must not cost the measure of the 36,000 others."""
+    size = 0
     try:
         size = path.stat().st_size
         with path.open("rb") as fh:
@@ -107,7 +108,7 @@ def audit_file(path: Path, *, min_bytes: int, tail_bytes: int = DEFAULT_TAIL_BYT
     except FileNotFoundError:
         return "missing", 0, None, ""
     except OSError as exc:
-        return "unreadable", 0, None, f"{type(exc).__name__}: {exc}"[:200]
+        return "unreadable", size, None, f"{type(exc).__name__}: {exc}"[:200]
     pos = tail.rfind(EOF_MARKER)
     eof_from_end = None if pos < 0 else len(tail) - (pos + len(EOF_MARKER))
     return reason, size, eof_from_end, ""
@@ -150,7 +151,7 @@ def _write_audit(cfg, wanted, tmp, tail_bytes, progress_every, summary,
                 continue
             lp = row.get("local_path") or ""
             path = _resolve_local_path(cfg, lp) if lp else None
-            if not lp or not _is_pdf_row(row, path):
+            if not lp or not _is_pdf_row(row):
                 continue
             summary.rows_checked += 1
             if path is None:
