@@ -274,13 +274,15 @@ report, not an alert (no ntfy push). `CADENCE_DROP_PRECISIONS` sets which
 precisions are dropped: default `year`; `month,year` judges day rows only (on the
 committed manifests it leaves `au E1`, `ca A3`, `ecb E1`, `gb A3` and `gb E1`
 unjudged and turns `ca D1` and `nl D1` overdue); `none` drops nothing; an invalid
-value falls back to the default. In a series that has at least one dropped row,
-rows WITHOUT a precision (field missing or null) dated 1 January are dropped too
-and counted with them: they are the same placeholders written before the field
+value falls back to the default. When `year` is dropped, in a series that has at
+least one dropped row, rows WITHOUT a precision (field missing or null) dated
+1 January are dropped too and counted with them: they are the same placeholders written before the field
 existed, and keeping them while the new ones are dropped would freeze `last` (ECB
 E4: its new bulletins are labelled `year`, its legacy ones are not, so from 2027
 the series would read overdue while publishing). A series with no dropped row
-keeps its unlabelled rows. On the committed manifests (2026-11-18) the only change
+keeps its unlabelled rows, and so does every series when `year` is kept
+(`month` or `none`): the unlabelled 1 January rows always share the fate of the
+rows labelled `year`. On the committed manifests (2026-11-18) the only change
 versus before is `ecb E4`: `unjudged` (109 placeholder rows dropped) instead of
 `soon` on a 366-day interval; every other series keeps its status.
 
