@@ -280,6 +280,38 @@ moves are counted in the summary), 1 on a fatal error.
 once the vault confirms nothing is missing. Run it under the NAS job lock
 (`run-job.sh campaign sweep-orphans …`) or outside the nightly sync window.
 
+### Maintenance: replace or retire a bad artifact
+
+`audit-pdfs` lists stored PDFs that are not the document; `save()` never re-downloads
+a known `doc_id`, so they are fixed from a reviewed plan CSV
+(`doc_id,action,candidates,note`; example: `deploy/plans/2026-11-19-audit-pdfs.csv`):
+
+```bash
+python -m cb_corpus replace-artifact --plan deploy/plans/2026-11-19-audit-pdfs.csv          # dry-run
+python -m cb_corpus replace-artifact --plan deploy/plans/2026-11-19-audit-pdfs.csv --write
+```
+
+- `replace`: `candidates` = space-separated URLs and/or `wayback` (the newest HTTP-200 PDF
+  captures of the row's own `pdf_url`, one per distinct payload, at most
+  `--wayback-max-captures`, default 10). The first candidate passing the content check
+  (same rule as a download) wins; it is refused as `duplicate-of:<doc_id>` when another row
+  already owns those bytes. `--write` replaces the file atomically at the same path (an
+  `html_path` sibling is untouched) and updates the row: `sha256`, `mime_type`, the winning
+  URL first in `alt_urls`, an `artifact_replaced` audit key. `doc_id`, `pdf_url`,
+  `local_path` never change. Only `.pdf` artifacts can be replaced.
+- `retire`: `candidates` = `duplicate-of:<owner doc_id>`, a real PDF owner whose file passes
+  the content check and matches its `sha256`. `--write` stamps the retired row's `pdf_url`
+  / `source_url` on the owner (`alt_urls` / `alt_source_urls`, as duplicate-content
+  stamping does) plus a `retired_duplicates` audit entry, moves the file to
+  `data/raw_orphans/` and removes the row from its manifest. The vault soft-deletes it at
+  its next full ingest (the row stops being seen).
+
+Outcomes per row (JSON on stdout, `data/reports/replace_artifact.csv`): `replaced` /
+`would-replace`, `retired` / `would-retire`, `already-fixed` / `already-retired` (a rerun
+changes nothing), `unresolved` (every candidate failed, nothing written), `duplicate-of:…`,
+`error` (unknown doc_id or action, refused owner, ...). Exit 0 when the plan ran, 1 when
+the plan itself is unusable. The dry run fetches the candidates but writes only the report.
+
 ## Use
 
 ```bash
@@ -408,6 +440,8 @@ cb_corpus/
   quarantine.py      per-URL download quarantine (dead-letter state; one local night per Storage instance = per process run of a command; locked writes, parallel-worker safe)
   recover.py         recover-downloads (inventory-driven Wayback recovery)
   orphans.py         sweep-orphans (quarantine on-disk duplicates)
+  pdf_audit.py       audit-pdfs (stored PDFs against the content check, read-only)
+  replace_artifact.py  replace-artifact (re-fetch or retire a bad artifact from a plan CSV)
   convert.py / retry_html.py   HTML -> PDF migration and retries
   wp_migrate.py      WP v3 date migration (native bank-site dates, zero re-download)
   wp_dates.py        WP v3 day recovery (PDF /CreationDate + Wayback, committed index)
