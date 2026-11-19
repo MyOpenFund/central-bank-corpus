@@ -637,6 +637,20 @@ def test_retire_refused_when_retired_file_is_a_hard_link_of_the_owner(tmp_path):
     assert _file(cfg, ghost).exists()
 
 
+def test_retire_refused_when_a_third_row_shares_the_retired_file(tmp_path):
+    owner = _row("owner", "it", content=OWNER, doc_type="C1")
+    ghost = _row("ghost", "it", content=TRUNCATED, doc_type="C1")
+    third = _row("third", "it", content=TRUNCATED, doc_type="C1")
+    third["local_path"] = ghost["local_path"]                  # a third row on the ghost's file
+    cfg = _setup(tmp_path, [(owner, OWNER), (ghost, TRUNCATED), (third, None)])
+    before = _tree(cfg.data_dir)
+    r = _one(replace_artifacts(cfg, _plan(tmp_path, [["ghost", "retire",
+                                                      "duplicate-of:owner", "n"]]),
+                               write=True, fetcher=FakeFetcher()), "ghost")
+    assert r["outcome"] == "error" and "also the file of third" in r["error"]
+    assert {k: v for k, v in _tree(cfg.data_dir).items() if not k.startswith("reports/")} == before
+
+
 def test_replace_refused_when_another_row_shares_the_file(tmp_path):
     row = _row("r", "fr", content=TRUNCATED)
     twin = _row("twin", "nl", content=TRUNCATED)

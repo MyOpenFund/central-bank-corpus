@@ -404,6 +404,10 @@ class _Run:
                 if same:
                     raise _RowError(f"{key} {p} is the owner's file ({opath}): moving it "
                                     f"would take the owner's bytes away")
+                sharers = sorted(self.users_of.get(self._path_key(lp), set()) - {plan.doc_id})
+                if sharers:
+                    raise _RowError(f"{key} {p} is also the file of {', '.join(sharers)}: "
+                                    f"moving it would take their bytes away")
                 paths.append(p)
         size = _disk(paths[0])[0] if paths else None
         res["old_size"], res["old_sha256"] = size, row.get("sha256") or ""
@@ -471,7 +475,7 @@ def replace_artifacts(cfg: Config, plan_path, *, write: bool = False, fetcher=No
     summary = ReplaceSummary(dry_run=not write, plan=str(plan_path), csv_path=str(out))
     seen: set[str] = set()
     out.parent.mkdir(parents=True, exist_ok=True)
-    with out.open("w", newline="") as report:
+    with out.open("w", newline="", encoding="utf-8") as report:
         writer = csv.DictWriter(report, fieldnames=CSV_FIELDS)
         writer.writeheader()
         report.flush()
