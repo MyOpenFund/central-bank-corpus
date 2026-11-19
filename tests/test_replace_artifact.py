@@ -47,7 +47,7 @@ class FakeFetcher:
         body = self.bodies.get(url)
         if body is None:
             raise RuntimeError(f"GET bytes failed (HTTP 404, not retried): {url}")
-        if isinstance(body, Exception):
+        if isinstance(body, BaseException):
             raise body
         if isinstance(body, tuple):
             return body
@@ -176,13 +176,34 @@ def test_committed_plan_loads():
     from pathlib import Path
     rows = load_plan(Path(__file__).resolve().parents[1] / "deploy/plans/2026-11-19-audit-pdfs.csv")
     assert [(r.doc_id, r.action) for r in rows] == [
-        ("a9d3a210bc14458b", "replace"), ("10d9d3155d5bed16", "replace"),
+        ("a9d3a210bc14458b", "retire"), ("10d9d3155d5bed16", "replace"),
         ("580580d322cdcdd0", "replace"), ("52ea76c564cfae62", "replace"),
         ("d38a1aaf9c69d723", "retire")]
+    assert rows[0].candidates == ["duplicate-of:27f643622f2158b6"]
+    assert rows[2].candidates == ["wayback"]
+    assert "duplicate-of:c8d8705ae2aaa19d" in rows[2].note
     assert rows[3].candidates == ["wayback"]
     assert rows[4].candidates == ["duplicate-of:e30216a289c89f04"]
-    assert "2021" in rows[2].note
     assert all(r.note for r in rows)
+
+
+def test_committed_plan_matches_the_committed_manifests():
+    """Every plan doc_id and every retire owner is a manifest row; an owner is
+    a real PDF owner as far as the manifest tells (mime pdf, no html_path)."""
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    rows = {}
+    for f in sorted((root / "data/manifest").glob("*.jsonl")):
+        for line in f.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                r = json.loads(line)
+                rows[r["doc_id"]] = r
+    for p in load_plan(root / "deploy/plans/2026-11-19-audit-pdfs.csv"):
+        assert p.doc_id in rows, p.doc_id
+        if p.action == "retire":
+            owner = rows[p.candidates[0][len("duplicate-of:"):]]
+            assert owner["mime_type"] == "application/pdf" and not owner.get("html_path")
+            assert owner["bank_code"] == rows[p.doc_id]["bank_code"]
 
 
 def test_committed_plan_ships_in_the_image():
@@ -228,10 +249,10 @@ def test_fallback_candidate_after_a_failing_one_write(tmp_path):
     assert new["local_path"] == row["local_path"]
     assert new["sha256"] == sha(GOOD) and new["mime_type"] == "application/pdf"
     assert new["alt_urls"] == ["https://a/good"]
-    assert new["artifact_replaced"] == {"at": "2026-11-19T10:00:00+00:00",
-                                        "from_url": "https://a/good",
-                                        "previous_sha256": sha(TRUNCATED),
-                                        "note": "BdF current file"}
+    assert new["artifact_replaced"] == [{"at": "2026-11-19T10:00:00+00:00",
+                                         "from_url": "https://a/good",
+                                         "previous_sha256": sha(TRUNCATED),
+                                         "note": "BdF current file"}]
     assert cfg.manifest_file("nl").read_bytes() == nl_before     # other bank untouched
     assert f.calls == ["https://a/dead", "https://a/html", "https://a/cut", "https://a/good"]
     # The report CSV names the row.
@@ -274,19 +295,36 @@ def test_all_candidates_fail_unresolved_nothing_written(tmp_path):
     assert s.counts == {"unresolved": 1}
 
 
-def test_duplicate_sha_refused(tmp_path):
+def test_duplicate_candidate_skipped_search_continues(tmp_path):
     row = _row("ghost", "fr", content=TRUNCATED)
     owner = _row("owner", "it", content=GOOD, doc_type="C1")
     cfg = _setup(tmp_path, [(row, TRUNCATED), (owner, GOOD)])
-    before = _tree(cfg.data_dir)
     f = FakeFetcher({"https://a/good": GOOD, "https://a/good2": GOOD2})
     s = replace_artifacts(cfg, _plan(tmp_path, [["ghost", "replace",
                                                   "https://a/good https://a/good2", "n"]]),
                           write=True, fetcher=f)
     r = _one(s, "ghost")
-    assert r["outcome"] == "duplicate-of:owner"
-    assert r["new_sha256"] == sha(GOOD)
-    assert f.calls == ["https://a/good"]                 # the first passing candidate decides
+    assert r["outcome"] == "replaced" and r["winning_url"] == "https://a/good2"
+    assert r["tried"][0] == {"url": "https://a/good", "reason": "duplicate-of:owner"}
+    assert _file(cfg, row).read_bytes() == GOOD2
+
+
+def test_only_duplicate_candidates_refused_first_owner_reported(tmp_path):
+    row = _row("ghost", "fr", content=TRUNCATED)
+    o1 = _row("owner1", "it", content=GOOD, doc_type="C1")
+    o2 = _row("owner2", "it", content=GOOD2, doc_type="C1")
+    cfg = _setup(tmp_path, [(row, TRUNCATED), (o1, GOOD), (o2, GOOD2)])
+    before = _tree(cfg.data_dir)
+    f = FakeFetcher({"https://a/good": GOOD, "https://a/good2": GOOD2,
+                     "https://a/cut": TRUNCATED})
+    s = replace_artifacts(cfg, _plan(tmp_path, [["ghost", "replace",
+                                                  "https://a/cut https://a/good https://a/good2",
+                                                  "n"]]),
+                          write=True, fetcher=f)
+    r = _one(s, "ghost")
+    assert r["outcome"] == "duplicate-of:owner1" and r["owner_doc_id"] == "owner1"
+    assert r["new_sha256"] == sha(GOOD) and r["winning_url"] == ""
+    assert f.calls == ["https://a/cut", "https://a/good", "https://a/good2"]
     assert {k: v for k, v in _tree(cfg.data_dir).items() if not k.startswith("reports/")} == before
     assert s.counts == {"duplicate-of": 1}
 
@@ -495,7 +533,7 @@ def test_replace_finishes_a_run_killed_between_file_and_row(tmp_path):
     assert _one(s, "wp895")["outcome"] == "replaced"
     new = _rows(cfg)["wp895"]
     assert new["sha256"] == sha(GOOD)
-    assert new["artifact_replaced"]["previous_sha256"] == sha(TRUNCATED)
+    assert [e["previous_sha256"] for e in new["artifact_replaced"]] == [sha(TRUNCATED)]
 
 
 def test_retire_finishes_a_run_killed_after_the_move(tmp_path):
@@ -544,3 +582,113 @@ def test_replace_refuses_an_artifact_outside_raw(tmp_path):
                                write=True, fetcher=FakeFetcher({"https://a/good": GOOD})), "x")
     assert r["outcome"] == "error" and "outside" in r["error"]
     assert outside.read_bytes() == TRUNCATED
+
+
+# -- review fixes: history, shared files, plan encoding, partial report ----------
+
+def test_artifact_replaced_keeps_history(tmp_path):
+    row = _row("r", "fr", content=TRUNCATED)
+    cfg = _setup(tmp_path, [(row, TRUNCATED)])
+    replace_artifacts(cfg, _plan(tmp_path, [["r", "replace", "https://a/good", "one"]]),
+                      write=True, fetcher=FakeFetcher({"https://a/good": GOOD}))
+    s = replace_artifacts(cfg, _plan(tmp_path, [["r", "replace", "https://a/good2", "two"]]),
+                          write=True, fetcher=FakeFetcher({"https://a/good2": GOOD2}))
+    assert _one(s, "r")["outcome"] == "replaced"
+    hist = _rows(cfg)["r"]["artifact_replaced"]
+    assert [(e["note"], e["previous_sha256"]) for e in hist] == [
+        ("one", sha(TRUNCATED)), ("two", sha(GOOD))]
+    assert _rows(cfg)["r"]["alt_urls"] == ["https://a/good2", "https://a/good"]
+
+
+def test_legacy_dict_artifact_replaced_becomes_a_list(tmp_path):
+    row = _row("r", "fr", content=TRUNCATED)
+    row["artifact_replaced"] = {"at": "old", "from_url": "u", "previous_sha256": "p",
+                                "note": "n"}
+    cfg = _setup(tmp_path, [(row, TRUNCATED)])
+    replace_artifacts(cfg, _plan(tmp_path, [["r", "replace", "https://a/good", "new"]]),
+                      write=True, fetcher=FakeFetcher({"https://a/good": GOOD}))
+    hist = _rows(cfg)["r"]["artifact_replaced"]
+    assert [e["note"] for e in hist] == ["n", "new"]
+
+
+def test_retire_refused_when_retired_file_is_the_owner_file(tmp_path):
+    owner = _row("owner", "it", content=OWNER, doc_type="C1")
+    ghost = _row("ghost", "it", content=OWNER, doc_type="C1")
+    ghost["local_path"] = owner["local_path"]                 # same file
+    cfg = _setup(tmp_path, [(owner, OWNER), (ghost, None)])
+    before = _tree(cfg.data_dir)
+    r = _one(replace_artifacts(cfg, _plan(tmp_path, [["ghost", "retire",
+                                                      "duplicate-of:owner", "n"]]),
+                               write=True, fetcher=FakeFetcher()), "ghost")
+    assert r["outcome"] == "error" and "owner's file" in r["error"]
+    assert {k: v for k, v in _tree(cfg.data_dir).items() if not k.startswith("reports/")} == before
+
+
+def test_retire_refused_when_retired_file_is_a_hard_link_of_the_owner(tmp_path):
+    import os
+    owner = _row("owner", "it", content=OWNER, doc_type="C1")
+    ghost = _row("ghost", "it", content=OWNER, doc_type="C1")
+    cfg = _setup(tmp_path, [(owner, OWNER), (ghost, None)])
+    os.link(_file(cfg, owner), _file(cfg, ghost))
+    r = _one(replace_artifacts(cfg, _plan(tmp_path, [["ghost", "retire",
+                                                      "duplicate-of:owner", "n"]]),
+                               write=True, fetcher=FakeFetcher()), "ghost")
+    assert r["outcome"] == "error" and "owner's file" in r["error"]
+    assert _file(cfg, ghost).exists()
+
+
+def test_replace_refused_when_another_row_shares_the_file(tmp_path):
+    row = _row("r", "fr", content=TRUNCATED)
+    twin = _row("twin", "nl", content=TRUNCATED)
+    twin["local_path"] = "data/raw/fr/D1/2020/../2020/r.pdf"   # same file once resolved
+    cfg = _setup(tmp_path, [(row, TRUNCATED), (twin, None)])
+    before = _tree(cfg.data_dir)
+    f = FakeFetcher({"https://a/good": GOOD})
+    r = _one(replace_artifacts(cfg, _plan(tmp_path, [["r", "replace", "https://a/good", "n"]]),
+                               write=True, fetcher=f), "r")
+    assert r["outcome"] == "error" and "twin" in r["error"]
+    assert f.calls == []
+    assert {k: v for k, v in _tree(cfg.data_dir).items() if not k.startswith("reports/")} == before
+
+
+def test_row_duplicated_in_its_bank_file_is_refused_precisely(tmp_path):
+    row = _row("r", "fr", content=TRUNCATED)
+    cfg = _setup(tmp_path, [(row, TRUNCATED), (dict(row), None)])
+    before = _tree(cfg.data_dir)
+    r = _one(replace_artifacts(cfg, _plan(tmp_path, [["r", "replace", "https://a/good", "n"]]),
+                               write=True, fetcher=FakeFetcher({"https://a/good": GOOD})), "r")
+    assert r["outcome"] == "error" and "duplicated" in r["error"]
+    assert {k: v for k, v in _tree(cfg.data_dir).items() if not k.startswith("reports/")} == before
+
+
+def test_plan_with_bom_and_uppercase_doc_id(tmp_path):
+    row = _row("abcdef0123456789", "fr", content=TRUNCATED)
+    cfg = _setup(tmp_path, [(row, TRUNCATED)])
+    plan = tmp_path / "bom.csv"
+    plan.write_bytes("doc_id,action,candidates,note\n  ABCDEF0123456789 ,Replace,"
+                     "https://a/good,n\n".encode("utf-8-sig"))
+    assert load_plan(plan)[0].doc_id == "abcdef0123456789"
+    s = replace_artifacts(cfg, plan, write=True, fetcher=FakeFetcher({"https://a/good": GOOD}))
+    assert _one(s, "abcdef0123456789")["outcome"] == "replaced"
+
+
+def test_owner_id_lowercased(tmp_path):
+    ghost = _row("ghost", "it", content=EMPTY, doc_type="C1")
+    owner = _row("owner", "it", content=OWNER, doc_type="C1")
+    cfg = _setup(tmp_path, [(ghost, EMPTY), (owner, OWNER)])
+    s = replace_artifacts(cfg, _plan(tmp_path, [["ghost", "retire", "duplicate-of:OWNER", "n"]]),
+                          fetcher=FakeFetcher())
+    assert _one(s, "ghost")["outcome"] == "would-retire"
+
+
+def test_killed_run_leaves_a_partial_report(tmp_path):
+    a = _row("a", "fr", content=TRUNCATED)
+    b = _row("b", "fr", content=TRUNCATED)
+    cfg = _setup(tmp_path, [(a, TRUNCATED), (b, TRUNCATED)])
+    f = FakeFetcher({"https://a/good": GOOD, "https://b/kill": KeyboardInterrupt()})
+    with pytest.raises(KeyboardInterrupt):
+        replace_artifacts(cfg, _plan(tmp_path, [["a", "replace", "https://a/good", "n"],
+                                                ["b", "replace", "https://b/kill", "n"]]),
+                          fetcher=f)
+    lines = list(csv.DictReader((cfg.reports_dir / "replace_artifact.csv").open()))
+    assert [(x["doc_id"], x["outcome"]) for x in lines] == [("a", "would-replace")]
