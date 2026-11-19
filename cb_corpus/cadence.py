@@ -193,16 +193,21 @@ def compute_series(cfg: Config, *, today: Optional[date] = None,
         unlabelled_jan1 = precision is None and (d.month, d.day) == (1, 1)
         rows_by_series.setdefault((bank, dtype), []).append((d, unlabelled_jan1))
 
-    # Placeholder rule: in a series that has at least one coarse row, the
-    # unlabelled rows dated 1 January are the same placeholders written before
-    # `date_precision` existed (legacy ECB E4 bulletins): indistinguishable from
-    # the labelled ones, they go too and are counted with them. Kept, they
-    # froze `last` on the last legacy 1 January once new rows were labelled
-    # `year` -- the series then read overdue a year later while publishing.
-    # A series with no coarse row keeps its unlabelled rows as always.
+    # Placeholder rule: when `year` is among the dropped precisions, in a
+    # series that has at least one dropped (coarse) row, the unlabelled rows
+    # dated 1 January are the same year placeholders written before
+    # `date_precision` existed (legacy ECB E4 bulletins): indistinguishable
+    # from the labelled ones, they go too and are counted with them. Kept,
+    # they froze `last` on the last legacy 1 January once new rows were
+    # labelled `year` -- the series then read overdue a year later while
+    # publishing. They share the fate of the `year` rows: when `year` is kept
+    # (`CADENCE_DROP_PRECISIONS=month` or `none`) they are kept too, whatever
+    # else the series drops. A series with no coarse row keeps its unlabelled
+    # rows as always.
+    drop_placeholders = "year" in coarse
     by_series: dict[tuple[str, str], list[date]] = {}
     for key, pairs in rows_by_series.items():
-        if n_coarse.get(key):
+        if drop_placeholders and n_coarse.get(key):
             kept = [d for d, placeholder in pairs if not placeholder]
             n_coarse[key] += len(pairs) - len(kept)
         else:

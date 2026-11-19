@@ -102,8 +102,10 @@ no machine-translated or model-generated text.
   `Config.min_pdf_bytes` (default 1,024) and, with `Config.pdf_require_eof` (default true), hold
   `%%EOF` in their last 2,048 bytes (the three fields default from the environment variables
   `CB_MIN_PDF_BYTES`, `CB_PDF_REQUIRE_EOF`, `CB_PDF_URL_SERVED_HTML`; an invalid value warns on
-  stderr and keeps the default — see deploy/README.md). Bytes that pass that check are stored
-  as a PDF even when the server says `text/html`. A producer that expects a PDF but gets HTML (consent wall,
+  stderr and keeps the default — see deploy/README.md). Bytes holding `%PDF` in their first
+  1,024 bytes are judged as a PDF even when the server says `text/html`: they pass that check
+  and are stored as a PDF, or fail it and are refused for their PDF reason (truncated, too
+  small), whatever the producer and `pdf_url_served_html`. A producer that expects a PDF but gets HTML (consent wall,
   error or "moved" page) is refused with `Config.pdf_url_served_html="reject"` (default;
   `"accept"` = the old behaviour, the HTML is stored and rendered). A failing candidate is
   skipped and the next fallback URL tried; when none passes, `save()` raises
@@ -271,7 +273,10 @@ scope. Indexed files are never touched; symlinks are ignored; an unreadable
 file is reported (`hash-failed`), never moved. A hidden `.part` temp (an
 atomic write in progress) younger than `--temp-min-age-hours` (default 24) is
 skipped; an older one, left by a killed process, is reported as `stale-temp`
-(`temps_stale`) and moved only with `--move`. A `kept-owner-missing` row
+(`temps_stale`) and moved only with `--move`, counted apart from the duplicates
+(`temps_moved` / `temps_move_failed`; `moved` / `move_failed` count duplicates
+only); a stale temp that cannot be hashed gets a `hash-failed` row like any
+orphan and is never moved. A `kept-owner-missing` row
 carries the reason (`error`) and the resolved `owner_path`. Every run writes
 `data/reports/orphan_sweep_<ts>.jsonl` (one line per orphan) and
 `orphan_sweep_<ts>.summary.json`. Exit 0 when the sweep completed (failed

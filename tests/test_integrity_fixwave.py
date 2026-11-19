@@ -13,8 +13,8 @@ import pytest
 from cb_corpus import storage as storage_mod
 from cb_corpus.storage import _atomic_write_bytes
 from tests.conftest import public_resolver
-from tests.test_content_integrity import (U, _rec, _render_storage, _storage,
-                                          make_pdf)
+from tests.test_content_integrity import (U, _raw_files, _rec, _render_storage,
+                                          _storage, make_pdf)
 
 
 @pytest.fixture
@@ -74,6 +74,26 @@ def test_pdf_bytes_served_as_html_are_stored_as_pdf(tmp_path, producer_mime, ser
     assert rec.mime_type == "application/pdf"
     assert rec.local_path.endswith(".pdf") and rec.html_path is None
     assert Path(rec.local_path).read_bytes() == body
+
+
+@pytest.mark.parametrize("mode", ["reject", "accept"])
+@pytest.mark.parametrize("producer_mime", ["application/pdf", "text/html", ""])
+@pytest.mark.parametrize("body,reason", [
+    (b"%PDF-1.7\n" + b"x" * 5000, "truncated PDF"),            # no %%EOF
+    (b"%PDF-1.7 tiny\n%%EOF\n", "too small for a PDF"),
+])
+def test_broken_pdf_served_as_html_is_rejected_with_its_pdf_reason(
+        tmp_path, mode, producer_mime, body, reason):
+    """PDF magic is enough to judge the bytes as a PDF: a truncated or tiny
+    PDF served as text/html is refused for its real PDF reason, never stored
+    as .html (and rendered) nor reported as 'the server sent HTML'."""
+    from cb_corpus.storage import ContentCheckFailed
+    st = _storage(tmp_path, {U: (body, "text/html")}, pdf_url_served_html=mode)
+    with pytest.raises(ContentCheckFailed) as exc:
+        st.save(_rec(U, mime=producer_mime))
+    assert reason in str(exc.value)
+    assert "the server sent HTML" not in str(exc.value)
+    assert _raw_files(tmp_path) == []
 
 
 def test_html_bytes_served_as_html_still_rejected_for_a_pdf_producer(tmp_path):
@@ -408,9 +428,41 @@ def test_stale_temp_moved_only_with_move(tmp_path):
     fresh = _temp(cfg, "xx/C1/2025/.a.pdf.111111111111.part", b"%PDF half", 60)
     stale = _temp(cfg, "xx/C1/2025/.b.pdf.222222222222.part", b"%PDF half2", 3 * 86400)
     s = orphans.sweep_orphans(cfg, move=True, now=_NOW)
-    assert s.temps_stale == 1 and s.moved == 1
+    assert s.temps_stale == 1 and s.temps_moved == 1 and s.temps_move_failed == 0
+    assert (s.moved, s.move_failed) == (0, 0)          # duplicates only
     assert fresh.exists() and not stale.exists()
     assert (cfg.orphans_dir / "xx/C1/2025/.b.pdf.222222222222.part").read_bytes() == b"%PDF half2"
+
+
+def test_temp_move_failure_has_its_own_counter(tmp_path):
+    cfg = _sweep_cfg(tmp_path)
+    stale = _temp(cfg, "xx/C1/2025/.b.pdf.222222222222.part", b"%PDF half2", 3 * 86400)
+    clash = cfg.orphans_dir / "xx/C1/2025/.b.pdf.222222222222.part"
+    clash.parent.mkdir(parents=True)
+    clash.write_bytes(b"other bytes")
+    s = orphans.sweep_orphans(cfg, move=True, now=_NOW)
+    assert (s.temps_moved, s.temps_move_failed) == (0, 1)
+    assert (s.moved, s.move_failed) == (0, 0)
+    assert stale.exists()
+    [entry] = _report(s)
+    assert entry["action"] == "move-failed"
+
+
+def test_stale_temp_that_cannot_be_hashed_gets_a_hash_failed_line(tmp_path, monkeypatch):
+    cfg = _sweep_cfg(tmp_path)
+    stale = _temp(cfg, "xx/C1/2025/.b.pdf.222222222222.part", b"%PDF half2", 3 * 86400)
+
+    def _boom(path, raw_dir, index):
+        raise PermissionError(13, "Permission denied", str(path))
+    monkeypatch.setattr(orphans, "classify", _boom)
+    s = orphans.sweep_orphans(cfg, move=True, now=_NOW)
+    assert s.temps_stale == 1 and s.hash_failed == 1
+    assert (s.temps_moved, s.temps_move_failed, s.moved) == (0, 0, 0)
+    assert stale.exists()                                   # never moved
+    [entry] = _report(s)
+    assert entry["rel"] == "xx/C1/2025/.b.pdf.222222222222.part"
+    assert entry["action"] == "hash-failed" and entry["sha256"] == ""
+    assert entry["size"] == len(b"%PDF half2") and "PermissionError" in entry["error"]
 
 
 def test_temp_min_age_is_configurable(tmp_path):
@@ -434,6 +486,9 @@ def test_cli_sweep_orphans_temp_min_age_flag(tmp_path, monkeypatch, capsys):
     assert cli.main(["sweep-orphans", "--temp-min-age-hours", "1"]) == 0
     out = capsys.readouterr().out
     assert '"temps_stale": 1' in out and "1 stale temp" in out
+    assert cli.main(["sweep-orphans", "--temp-min-age-hours", "1", "--move"]) == 0
+    out = capsys.readouterr().out
+    assert '"temps_moved": 1' in out and "1 stale temp(s) (1 moved)" in out
 
 
 # -- quarantine: startup load on a read-only data dir ---------------------
@@ -456,3 +511,13 @@ def test_quarantine_load_falls_back_to_unlocked_read_when_lock_unavailable(
     assert q.is_quarantined(url)
     err = capsys.readouterr().err
     assert err.count("WARNING") == 1 and "unlocked" in err
+
+
+def test_html_page_mentioning_pdf_magic_stays_html(tmp_path):
+    """The sniff needs %PDF at the start: an HTML page that names "%PDF" in its head is HTML."""
+    from cb_corpus.config import Config
+    from cb_corpus.storage import Storage
+    st = Storage(Config(data_dir=tmp_path))
+    page = b"<!doctype html><html><head><title>What is %PDF-1.7?</title></head><body>x</body></html>"
+    assert st._sniffed_mime(page, "text/html; charset=utf-8") == "text/html; charset=utf-8"
+    assert st._sniffed_mime(b"\xef\xbb\xbf\n %PDF-1.4\n...", "text/html") == "application/pdf"

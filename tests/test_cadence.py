@@ -658,3 +658,50 @@ def test_none_setting_disables_the_placeholder_rule(tmp_path, monkeypatch):
     dropped: dict = {}
     [e] = compute_series(cfg, today=date(2027, 3, 10), dropped=dropped)
     assert e["last"] == "2027-01-01" and dropped == {}
+
+
+def _month_series_with_jan1_rows():
+    """A month-precision series (the 1st of every month, 2024-2025) plus one
+    unlabelled and one `year`-labelled 1 January 2026 row."""
+    rows = [_rec("gb", DocType.E1, date(y, m, 1), date_precision="month",
+                 _i=y * 100 + m).to_row()
+            for y in (2024, 2025) for m in range(2, 13)]
+    rows.append(_unlabelled("gb", DocType.E1, date(2026, 1, 1), 1))
+    rows.append(_rec("gb", DocType.E1, date(2026, 1, 1), date_precision="year",
+                     _i=2).to_row())
+    return rows
+
+
+def test_month_only_setting_keeps_unlabelled_first_of_january_rows(tmp_path, monkeypatch):
+    """`CADENCE_DROP_PRECISIONS=month`: `year` is not dropped, so an unlabelled
+    1 January row (a presumed year placeholder) is kept like the row labelled
+    `year`, even though the series has dropped month rows."""
+    monkeypatch.setenv("CADENCE_DROP_PRECISIONS", "month")
+    cfg = _mk_cfg(tmp_path)
+    days = _day_series(date(2025, 1, 10), 8, 20)
+    rows = [_rec("us", DocType.D1, d, _i=i).to_row() for i, d in enumerate(days)]
+    rows.append(_rec("us", DocType.D1, date(2025, 3, 1), date_precision="month",
+                     _i=50).to_row())
+    rows.append(_unlabelled("us", DocType.D1, date(2026, 1, 1), 60))
+    rows.append(_rec("us", DocType.D1, date(2026, 1, 1), date_precision="year",
+                     _i=70).to_row())
+    _write_per_bank_unlocked(cfg, rows)
+    dropped: dict = {}
+    [e] = compute_series(cfg, today=date(2026, 1, 5), dropped=dropped)
+    assert e["n_3y"] == 10                      # 8 days + both 1 January rows
+    assert e["last"] == "2026-01-01"
+    assert dropped == {("us", "D1"): 1}         # the month row only
+
+
+def test_unlabelled_first_of_january_rows_follow_the_year_rows(tmp_path, monkeypatch):
+    """The unlabelled 1 January row always shares the fate of the `year` row:
+    kept with `month` (only the 22 month rows go), dropped with `month,year`
+    and with `year` (the series has coarse rows), kept with `none`."""
+    for setting, n_dropped in {"month": 22, "month,year": 24, "year": 2,
+                               "none": 0}.items():
+        monkeypatch.setenv("CADENCE_DROP_PRECISIONS", setting)
+        cfg = _mk_cfg(tmp_path / setting.replace(",", "_"))
+        _write_per_bank_unlocked(cfg, _month_series_with_jan1_rows())
+        dropped: dict = {}
+        compute_series(cfg, today=date(2026, 1, 5), dropped=dropped)
+        assert dropped.get(("gb", "E1"), 0) == n_dropped, setting

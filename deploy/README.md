@@ -135,8 +135,9 @@ night's `runs.jsonl` line; the exit code is unchanged. A burst of
 PDFs. Like any dead URL, a rejected URL is quarantined after
 `QUARANTINE_AFTER_NIGHTS` nights and then re-alerts on every Sunday full
 sweep (`QUARANTINE_RETRY=1`) until the site serves the real document. A body
-that passes the PDF check is stored as a PDF even when the server labels it
-`text/html`.
+that starts with `%PDF` is judged as a PDF even when the server labels it
+`text/html`: stored as a PDF when it passes the check, refused for its PDF
+reason (truncated, too small) when it does not — never stored as HTML.
 
 The three thresholds are set through the stack's `environment:` (Dockge, no
 rebuild; a commented example is in `compose.refresh.example.yml`):
@@ -181,7 +182,9 @@ Maintenance example — orphan sweep (see README § Maintenance): first
 `command: ["/app/deploy/run-job.sh", "campaign", "sweep-orphans"]` (dry-run; read
 `reports/orphan_sweep_<ts>.summary.json`), then the same with `"--move"`.
 `temps_stale` there counts `.part` temps older than `--temp-min-age-hours`
-(default 24) left by a killed job; `--move` moves them to `raw_orphans/` too.
+(default 24) left by a killed job; `--move` moves them to `raw_orphans/` too,
+counted in `temps_moved` / `temps_move_failed` (`moved` / `move_failed` stay
+the duplicates').
 
 Measurement example — stored PDFs against the content check (issue #21; read-only, no
 network): `command: ["/app/deploy/run-job.sh", "campaign", "audit-pdfs"]`. Read the JSON
@@ -271,13 +274,15 @@ report, not an alert (no ntfy push). `CADENCE_DROP_PRECISIONS` sets which
 precisions are dropped: default `year`; `month,year` judges day rows only (on the
 committed manifests it leaves `au E1`, `ca A3`, `ecb E1`, `gb A3` and `gb E1`
 unjudged and turns `ca D1` and `nl D1` overdue); `none` drops nothing; an invalid
-value falls back to the default. In a series that has at least one dropped row,
-rows WITHOUT a precision (field missing or null) dated 1 January are dropped too
-and counted with them: they are the same placeholders written before the field
+value falls back to the default. When `year` is dropped, in a series that has at
+least one dropped row, rows WITHOUT a precision (field missing or null) dated
+1 January are dropped too and counted with them: they are the same placeholders written before the field
 existed, and keeping them while the new ones are dropped would freeze `last` (ECB
 E4: its new bulletins are labelled `year`, its legacy ones are not, so from 2027
 the series would read overdue while publishing). A series with no dropped row
-keeps its unlabelled rows. On the committed manifests (2026-11-18) the only change
+keeps its unlabelled rows, and so does every series when `year` is kept
+(`month` or `none`): the unlabelled 1 January rows always share the fate of the
+rows labelled `year`. On the committed manifests (2026-11-18) the only change
 versus before is `ecb E4`: `unjudged` (109 placeholder rows dropped) instead of
 `soon` on a 366-day interval; every other series keeps its status.
 

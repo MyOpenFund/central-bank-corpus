@@ -39,7 +39,7 @@ from .filelock import locked_sidecar
 from .http import Fetcher
 from .htmlpdf import RenderRefused, render_allowed, render_url_to_pdf
 from .models import DocRecord, row_url, upgrade_row
-from .pdfcheck import check_pdf_bytes
+from .pdfcheck import check_pdf_bytes, has_pdf_magic
 from .quarantine import Quarantine
 
 
@@ -1073,14 +1073,20 @@ class Storage:
     # -- content check ---------------------------------------------------
     def _sniffed_mime(self, body: bytes, served_mime: str) -> str:
         """The mime to judge and store `body` under: "application/pdf" when
-        the server labels it HTML but the bytes pass the PDF check
-        (pdfcheck.check_pdf_bytes with Config.min_pdf_bytes /
-        pdf_require_eof) -- the bytes win over the header, so a mislabelled
-        PDF is stored as a .pdf, not rejected as a wall nor stored and
-        rendered as HTML. Any other answer keeps `served_mime`."""
-        if _is_html_mime(served_mime) and check_pdf_bytes(
-                body, min_bytes=self.cfg.min_pdf_bytes,
-                require_eof=self.cfg.pdf_require_eof) is None:
+        the server labels it HTML but the bytes carry the PDF magic
+        (pdfcheck.has_pdf_magic) -- the bytes win over the header. The full
+        shape check is NOT applied here: _content_problem then judges the
+        bytes as a PDF, so a mislabelled good PDF is stored as a .pdf, and a
+        truncated or too-small one is refused for its real PDF reason
+        (never stored and rendered as HTML, never reported as "the server
+        sent HTML"), whatever the producer and Config.pdf_url_served_html.
+        Here the body must START with the magic (after a byte-order mark or
+        whitespace): an HTML page that merely mentions "%PDF" in its first KB
+        (a title, a meta tag) stays HTML. The 1 KB tolerance of has_pdf_magic
+        applies to bytes already judged a PDF, not to this sniff.
+        Any other answer keeps `served_mime`."""
+        head = body[:1024].lstrip(b"\xef\xbb\xbf \t\r\n\x00")
+        if _is_html_mime(served_mime) and head.startswith(b"%PDF"):
             return "application/pdf"
         return served_mime
 
@@ -1102,8 +1108,8 @@ class Storage:
             they would otherwise be stored as a .pdf.
         HTML producers (`expected_mime` text/html or empty) served HTML are
         untouched: an HTML page is their document. save() first passes the
-        server's mime through _sniffed_mime, so bytes that ARE a PDF never
-        reach (1) whatever their header says."""
+        server's mime through _sniffed_mime, so bytes carrying the PDF magic
+        never reach (1) whatever their header says: (2) judges them."""
         expects_pdf = (expected_mime or "").lower() == "application/pdf"
         served = (served_mime or "").lower()
         if _is_html_mime(served):

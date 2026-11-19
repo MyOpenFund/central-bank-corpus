@@ -61,6 +61,17 @@ def _banks(s: str) -> list[str] | None:
     return [c for c in s.split(",") if c] or None
 
 
+def _temps_moved_note(summary) -> str:
+    """The sweep-orphans line's stale-temp moves, apart from the duplicate
+    moves: " (N moved[, M move(s) failed])" after a --move run with stale
+    temps, else ""."""
+    if summary.dry_run or not summary.temps_stale:
+        return ""
+    failed = (f", {summary.temps_move_failed} move(s) failed"
+              if summary.temps_move_failed else "")
+    return f" ({summary.temps_moved} moved{failed})"
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="cb_corpus")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -514,7 +525,8 @@ def main(argv: list[str] | None = None) -> int:
               f"{f', {summary.move_failed} move(s) failed' if summary.move_failed else ''}"
               f"{f', {summary.owner_missing} kept (owner file missing)' if summary.owner_missing else ''}"
               f"{f', {summary.hash_failed} hash failure(s)' if summary.hash_failed else ''}"
-              f"{f', {summary.temps_stale} stale temp(s)' if summary.temps_stale else ''}")
+              f"{f', {summary.temps_stale} stale temp(s)' if summary.temps_stale else ''}"
+              f"{_temps_moved_note(summary)}")
         return 0
 
     if args.cmd == "cadence-watch":
