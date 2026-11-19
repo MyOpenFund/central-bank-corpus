@@ -18,7 +18,7 @@ BODY = (pdf_body(b"%PDF-1.4 shared body"), "application/pdf")
 
 def _rec(name: str, bank: str = "fr", source: str = "") -> DocRecord:
     return DocRecord(bank_code=bank, doc_type=DocType.D1, title=name,
-                     pdf_url=f"https://www.example.org/{bank}/{name}.pdf",
+                     document_url=f"https://www.example.org/{bank}/{name}.pdf",
                      source_url=source, date=date(2020, 1, 1))
 
 
@@ -39,7 +39,7 @@ def test_duplicate_url_stamped_once_on_owner_with_source_url(tmp_path, capsys):
     counts = st.save_many([owner, dup], label="fr")
     assert counts == {"saved": 1, "skip": 1}
     row = _row(st.cfg, owner.doc_id)
-    assert row["alt_urls"] == [dup.pdf_url]
+    assert row["alt_urls"] == [dup.document_url]
     assert row["alt_source_urls"] == ["https://ideas.example/dup.html"]
     assert len(list(iter_manifest_rows(st.cfg))) == 1   # no row for the dup
     err = capsys.readouterr().err
@@ -53,7 +53,7 @@ def test_duplicate_known_in_memory_immediately(tmp_path):
     assert st.save(owner) == "saved"
     assert st.save(dup) == f"skip:duplicate-content:{owner.doc_id}"
     # Indexed at once, before any flush.
-    assert st.is_known_url(dup.pdf_url)
+    assert st.is_known_url(dup.document_url)
     assert st.is_known_source_url("https://ideas.example/dup.html")
 
 
@@ -65,7 +65,7 @@ def test_rerun_does_not_stamp_twice(tmp_path, capsys):
     st2 = _storage(tmp_path)
     st2.save_many([_rec("dup", source="https://s/d")], label="fr")
     row = _row(st2.cfg, owner.doc_id)
-    assert row["alt_urls"] == [dup.pdf_url]
+    assert row["alt_urls"] == [dup.document_url]
     assert row["alt_source_urls"] == ["https://s/d"]
     assert "[fr] duplicate-content: 1 (stamped 0 urls on 0 rows)" in capsys.readouterr().err
 
@@ -80,7 +80,7 @@ def test_stamp_survives_reload_known_before_any_fetch(tmp_path):
     def boom(url):  # any fetch would be a regression
         raise AssertionError(f"fetched {url}")
     st2.fetcher.get_bytes = boom
-    assert st2.is_known_url(dup.pdf_url)
+    assert st2.is_known_url(dup.document_url)
     # RePEc's pre-fetch skip (is_known_source_url) learns the source too.
     assert st2.is_known_source_url("https://ideas.example/dup.html")
 
@@ -107,7 +107,7 @@ def test_flush_survives_exception_mid_iteration(tmp_path):
 
     with pytest.raises(RuntimeError, match="discovery crashed"):
         st.save_many(recs(), label="fr")
-    assert _row(st.cfg, owner.doc_id)["alt_urls"] == [dup.pdf_url]
+    assert _row(st.cfg, owner.doc_id)["alt_urls"] == [dup.document_url]
     assert st._pending_dups == []
 
 
@@ -119,7 +119,7 @@ def test_owner_in_another_banks_manifest(tmp_path):
     st.save_many([dup], label="fr")
     row = _row(st.cfg, owner.doc_id)
     assert row["bank_code"] == "ecb"
-    assert row["alt_urls"] == [dup.pdf_url]
+    assert row["alt_urls"] == [dup.document_url]
     assert row["alt_source_urls"] == ["https://s/fr-dup"]
     assert not st.cfg.manifest_file("fr").exists() or \
         st.cfg.manifest_file("fr").read_text() == ""
@@ -134,7 +134,7 @@ def test_reindex_duplicate_queued_and_flushed(tmp_path):
     dup = _rec("dup")
     assert st.reindex(dup, f) == f"skip:duplicate-content:{owner.doc_id}"
     assert st.flush_duplicate_stamps() == (1, 1, 1)
-    assert _row(st.cfg, owner.doc_id)["alt_urls"] == [dup.pdf_url]
+    assert _row(st.cfg, owner.doc_id)["alt_urls"] == [dup.document_url]
 
 
 def test_source_url_equal_to_owner_source_not_stamped(tmp_path):
@@ -143,7 +143,7 @@ def test_source_url_equal_to_owner_source_not_stamped(tmp_path):
     dup = _rec("dup", source="https://s/same")
     st.save_many([owner, dup])
     row = _row(st.cfg, owner.doc_id)
-    assert row["alt_urls"] == [dup.pdf_url]
+    assert row["alt_urls"] == [dup.document_url]
     assert "alt_source_urls" not in row
 
 
@@ -181,9 +181,9 @@ def test_html_owner_not_persisted_kept_in_memory_and_logged(tmp_path):
     assert row["mime_type"] == "text/html"
     assert "alt_urls" not in row or row["alt_urls"] == []
     assert "alt_source_urls" not in row
-    assert st.is_known_url(dup.pdf_url)            # this run: no re-fetch
+    assert st.is_known_url(dup.document_url)            # this run: no re-fetch
     assert st.is_known_source_url("https://s/d")
-    assert not Storage(Config(data_dir=tmp_path)).is_known_url(dup.pdf_url)  # next night: retried
+    assert not Storage(Config(data_dir=tmp_path)).is_known_url(dup.document_url)  # next night: retried
     [entry] = _log(st.cfg)
     assert entry["persisted"] is False and entry["owner_doc_id"] == owner.doc_id
 
@@ -193,7 +193,7 @@ def test_stamp_duplicate_html_true_stamps_html_owner(tmp_path):
     st.fetcher.get_bytes = lambda url: HTML_BODY
     owner, dup = _rec("owner"), _rec("dup")
     st.save_many([owner, dup], label="fr")
-    assert _row(st.cfg, owner.doc_id)["alt_urls"] == [dup.pdf_url]
+    assert _row(st.cfg, owner.doc_id)["alt_urls"] == [dup.document_url]
     assert _log(st.cfg)[0]["persisted"] is True
 
 
@@ -206,7 +206,7 @@ def test_persisted_stamp_logged_as_json_line(tmp_path):
     [e] = _log(st.cfg)
     assert {k: e[k] for k in ("url", "source_url", "owner_doc_id", "owner_bank", "label",
                               "persisted")} == {
-        "url": dup.pdf_url, "source_url": "https://s/d", "owner_doc_id": owner.doc_id,
+        "url": dup.document_url, "source_url": "https://s/d", "owner_doc_id": owner.doc_id,
         "owner_bank": "ecb", "label": "fr", "persisted": True}
     assert e["ts"]
 
@@ -257,9 +257,9 @@ def test_batch_exception_still_propagates_when_flush_fails(tmp_path, monkeypatch
 def test_normalized_variant_of_owner_url_not_stamped(tmp_path):
     st = _storage(tmp_path)
     owner = DocRecord(bank_code="fr", doc_type=DocType.D1, title="o",
-                      pdf_url="https://www.example.org/fr/a.pdf", source_url="https://s/o")
+                      document_url="https://www.example.org/fr/a.pdf", source_url="https://s/o")
     variant = DocRecord(bank_code="fr", doc_type=DocType.D1, title="v",
-                        pdf_url="https://www.example.org//fr/a.pdf", source_url="https://s//o")
+                        document_url="https://www.example.org//fr/a.pdf", source_url="https://s//o")
     st.save_many([owner, variant])
     row = _row(st.cfg, owner.doc_id)
     assert row.get("alt_urls") == [] and "alt_source_urls" not in row
@@ -306,7 +306,7 @@ def test_no_rewrite_when_nothing_changes(tmp_path):
     st.save(owner)
     path = st.cfg.manifest_file("fr")
     ino = path.stat().st_ino
-    assert st.stamp_alt_urls({owner.doc_id: [owner.pdf_url]}) == (0, 0)
+    assert st.stamp_alt_urls({owner.doc_id: [owner.document_url]}) == (0, 0)
     assert path.stat().st_ino == ino
 
 
@@ -366,11 +366,11 @@ def test_rendered_html_owner_not_persisted(tmp_path, monkeypatch):
     row = _row(st.cfg, owner.doc_id)
     assert row["mime_type"] == "application/pdf" and row["html_path"]   # rendered
     assert not row.get("alt_urls") and "alt_source_urls" not in row
-    assert st.is_known_url(dup.pdf_url)                                # this run only
+    assert st.is_known_url(dup.document_url)                                # this run only
     [entry] = _log(st.cfg)
     assert entry["persisted"] is False
     st2 = Storage(Config(data_dir=tmp_path))
-    assert not st2.is_known_url(dup.pdf_url)                           # retried next night
+    assert not st2.is_known_url(dup.document_url)                           # retried next night
     assert not st2.is_known_source_url("https://s/d")
 
 
@@ -378,7 +378,7 @@ def test_rendered_html_owner_persisted_when_relaxed(tmp_path, monkeypatch):
     st = _rendering_storage(tmp_path, monkeypatch, stamp_duplicate_html=True)
     owner, dup = _rec("owner"), _rec("dup")
     st.save_many([owner, dup], label="fr")
-    assert _row(st.cfg, owner.doc_id)["alt_urls"] == [dup.pdf_url]
+    assert _row(st.cfg, owner.doc_id)["alt_urls"] == [dup.document_url]
     assert _log(st.cfg)[0]["persisted"] is True
 
 
@@ -410,7 +410,7 @@ def test_converted_html_owner_persisted_when_relaxed(tmp_path):
     st, owner = _flipped_owner(tmp_path, stamp_duplicate_html=True)
     dup = _rec("dup")
     st.save_many([dup], label="fr")
-    assert _row(st.cfg, owner.doc_id)["alt_urls"] == [dup.pdf_url]
+    assert _row(st.cfg, owner.doc_id)["alt_urls"] == [dup.document_url]
     assert _log(st.cfg)[0]["persisted"] is True
 
 
@@ -457,7 +457,7 @@ def test_merge_failure_still_logs_then_warns(tmp_path, monkeypatch, capsys):
     owner, dup = _rec("owner"), _rec("dup", source="https://s/d")
     st.save_many([owner, dup], label="fr")
     [e] = _log(st.cfg)
-    assert e["persisted"] is False and e["url"] == dup.pdf_url
+    assert e["persisted"] is False and e["url"] == dup.document_url
     assert e["source_url"] == "https://s/d" and e["label"] == "fr"
     assert "ValueError: manifest corrupt" in e["error"]
     assert "stamping failed" in capsys.readouterr().err

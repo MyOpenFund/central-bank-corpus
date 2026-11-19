@@ -221,6 +221,25 @@ backfill): first `command: ["/app/deploy/run-job.sh", "campaign", "policy-dates"
 report `unchanged` only. The image must be the one built from the commit that ships the
 command (§7) before the stack is deployed.
 
+Migration example — the `pdf_url` -> `document_url` field rename (README § Maintenance:
+migrate-document-url), run once, **after** `cb-refresh` runs the image that ships the command
+(that image reads both names; the previous one reads only `pdf_url` and, given a migrated
+manifest, would see no known URL at all and re-fetch everything), and after the vault was
+deployed with its own `document_url` change (the previous vault NULLs the column on migrated
+rows). In order: `cb-refresh` → Mettre à jour; then `cb-campain` with
+`command: ["/app/deploy/run-job.sh", "campaign", "migrate-document-url"]` and "Mettre à jour"
+(pulls the same image; dry-run: per-file counts in the container log, nothing written; expect
+`both=0`), then the same with `"--write"` (every manifest and `download_errors.jsonl` rewritten
+under its sidecar lock; the autocommit pushes the manifests), then the dry-run once more:
+`renamed=0` everywhere.
+
+Exit 1 has two causes, both visible in the log: a row carrying both names (left untouched, its
+`doc_id` is printed) or a malformed line before the end of a manifest (the run stops there;
+files sorted before it are already rewritten). On exit 1 `run-job.sh` marks the run FAILED and
+skips the autocommit, so the files already rewritten are pushed by the next run's autocommit;
+fix the cause and run `--write` again (it is safe to repeat). A manifest whose last line is torn
+is rewritten too (the torn line saved to `.torn`, as every rewrite does), even with no rename.
+
 ## 4a. Weekly cadence watchdog (automated)
 
 The cadence watchdog detects silent series — banks/doc-types with no new

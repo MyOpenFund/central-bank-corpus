@@ -187,7 +187,7 @@ def main(argv: list[str] | None = None) -> int:
                              "(titles/dates/alt_urls). Dry-run by default.")
     cm.add_argument("--write", action="store_true",
                     help="apply the enrichment to the manifest (metadata only: "
-                         "title/date/precision/source/alt_urls; doc_id/pdf_url unchanged)")
+                         "title/date/precision/source/alt_urls; doc_id/document_url unchanged)")
 
     wd = sub.add_parser("wp-dates",
                         help="WP v3 phase 4: recover the publication DAY for legacy "
@@ -279,8 +279,9 @@ def main(argv: list[str] | None = None) -> int:
                      help="actually save recoverable documents (default: dry-run report)")
     rdl.add_argument("--csv", default="", help="CSV output path (default data/reports/recover_downloads.csv)")
     rdl.add_argument("--candidates", default="",
-                     help="JSONL of externally-recovered docs ({dead_pdf_url, file_path, "
-                          "recovered_from: wayback|bank_site|mirror, final_url, title?}) -- "
+                     help="JSONL of externally-recovered docs ({dead_document_url, file_path, "
+                          "recovered_from: wayback|bank_site|mirror, final_url, title?}; "
+                          "the old key dead_pdf_url is still read) -- "
                           "switches to candidates-only mode, no CDX walk; --download registers "
                           "them into the corpus via Storage.reindex")
     rdl.add_argument("--seed-quarantine", default="",
@@ -297,6 +298,17 @@ def main(argv: list[str] | None = None) -> int:
     cw.add_argument("--write", action="store_true",
                     help="write data/cadence.jsonl + update cadence_state.jsonl "
                          "(default: dry-run table only, no files touched)")
+
+    mdu = sub.add_parser("migrate-document-url",
+                         help="One-shot for the 2026-11-19 field rename: rename the stored "
+                              "key pdf_url -> document_url in every per-bank manifest "
+                              "(and data/download_errors.jsonl), under each file's sidecar "
+                              "lock, key position and values unchanged. Default dry-run "
+                              "(counts only); exit 1 when a row carries both names.")
+    mdu.add_argument("--banks", default="",
+                     help="restrict to these manifests (download_errors.jsonl is then skipped)")
+    mdu.add_argument("--write", action="store_true",
+                     help="rewrite the files (idempotent: a second run renames nothing)")
 
     args = p.parse_args(argv)
     banks = _banks(getattr(args, "banks", ""))
@@ -509,6 +521,18 @@ def main(argv: list[str] | None = None) -> int:
         from .cadence import run_cadence_watch
         run_cadence_watch(Config(), write=args.write)
         return 0
+
+    if args.cmd == "migrate-document-url":
+        from . import document_url_migrate as _mdu
+        try:
+            results = _mdu.migrate_document_url(Config(), write=args.write,
+                                                bank_codes=banks)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        for line in _mdu.report_lines(results, write=args.write):
+            print(line)
+        return 1 if _mdu.summary(results)["both"] else 0
 
     if args.cmd == "recover-downloads":
         from .recover import run_recover_downloads

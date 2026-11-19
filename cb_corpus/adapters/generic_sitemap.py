@@ -112,7 +112,7 @@ class GenericSitemapAdapter(BankAdapter):
             mime = "application/pdf" if url.lower().endswith(".pdf") else "text/html"
             yield DocRecord(
                 bank_code=self.bank.code, doc_type=doc_type,
-                title=title, pdf_url=url,
+                title=title, document_url=url,
                 source_url=self.sitemap_url, date=d,
                 provenance="bank_site", mime_type=mime,
                 date_precision=prec, date_source=source,
@@ -129,7 +129,7 @@ class GenericSitemapAdapter(BankAdapter):
         3. a full date in the URL (day), then a year-month (MONTH_IN_URL,
            month precision, first day of the month) -- the bank's own.
         A URL that names nothing is undated, with no precision."""
-        inf = infer_policy_date(self.bank.code, doc_type, title=title, pdf_url=url)
+        inf = infer_policy_date(self.bank.code, doc_type, title=title, document_url=url)
         if inf.status == STATUS_DATED:
             return inf.match.date, inf.match.precision, "bank_site"
         if lastmod:

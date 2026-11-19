@@ -15,6 +15,7 @@ from typing import Optional
 
 from .config import Config
 from .htmlpdf import RenderRefused, find_chrome, render_allowed, render_url_to_pdf
+from .models import row_url
 from .storage import apply_row_updates, iter_manifest_rows, render_pdf_checked
 
 
@@ -89,9 +90,9 @@ def _convert_one(row: dict, *, dry_run: bool,
     if not html_path.exists():
         return "skip-missing"
     cfg = cfg or Config()
-    reason = render_allowed(row.get("pdf_url") or "", cfg, resolver=resolver)
+    reason = render_allowed(row_url(row) or "", cfg, resolver=resolver)
     if reason:
-        print(f"[convert-html] render refused for {row.get('pdf_url')}: {reason}",
+        print(f"[convert-html] render refused for {row_url(row)}: {reason}",
               file=sys.stderr, flush=True)
         return "refused"
     if dry_run:
@@ -102,10 +103,10 @@ def _convert_one(row: dict, *, dry_run: bool,
     try:
         render_pdf_checked(
             pdf_path, cfg,
-            lambda tmp: render_url_to_pdf(row["pdf_url"], tmp,
+            lambda tmp: render_url_to_pdf(row_url(row), tmp,
                                           user_data_dir=user_data_dir,
                                           cfg=cfg, resolver=resolver),
-            url=row["pdf_url"], label="convert-html")
+            url=row_url(row), label="convert-html")
     except RenderRefused:
         return "refused"
     except Exception:

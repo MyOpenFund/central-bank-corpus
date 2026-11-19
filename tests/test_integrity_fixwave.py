@@ -233,7 +233,7 @@ def _seed_html_row(tmp_path, code="a"):
     with cfg.manifest_path.open("a") as fh:
         fh.write(_json.dumps({
             "bank_code": "ecb", "doc_type": "A3", "title": "x",
-            "pdf_url": f"https://e.test/{code}.en.html", "date": "2024-01-01",
+            "document_url": f"https://e.test/{code}.en.html", "date": "2024-01-01",
             "year": 2024, "doc_id": code, "mime_type": "text/html",
             "local_path": str(html), "sha256": None, "language": "en"}) + "\n")
     return cfg, html

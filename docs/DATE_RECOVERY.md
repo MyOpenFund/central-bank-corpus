@@ -32,7 +32,7 @@ precision (there is deliberately no year-level check).
 ### 1. Wayback Machine CDX — first capture of the PDF (best signal)
 
 ```
-https://web.archive.org/cdx/search/cdx?url=<pdf_url>&output=json&fl=timestamp&filter=statuscode:200&limit=1
+https://web.archive.org/cdx/search/cdx?url=<document_url>&output=json&fl=timestamp&filter=statuscode:200&limit=1
 ```
 
 - The first 200 snapshot of the official PDF URL is an upper bound on the

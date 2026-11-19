@@ -15,7 +15,7 @@ class _BoomFetcher:
 
 def _rec(**kw):
     base = dict(bank_code="gb", doc_type=DocType.D1, title="t",
-                pdf_url="https://x.test/dead.pdf", source_url="https://ideas.test/p/1.html",
+                document_url="https://x.test/dead.pdf", source_url="https://ideas.test/p/1.html",
                 provenance="repec_discovery")
     base.update(kw)
     return DocRecord(**base)
@@ -35,7 +35,7 @@ def test_failed_download_writes_one_audit_line(tmp_path):
     row = json.loads(lines[0])
     assert row["label"] == "repec:gb"
     assert row["bank_code"] == "gb"
-    assert row["pdf_url"] == "https://x.test/dead.pdf"
+    assert row["document_url"] == "https://x.test/dead.pdf"
     assert row["source_url"] == "https://ideas.test/p/1.html"
     assert "RuntimeError" in row["error"] and "\n" not in row["error"]
     assert row["ts"].endswith("Z") or "+" in row["ts"]
@@ -79,9 +79,9 @@ def test_save_many_isolates_audit_write_failure_from_the_batch(tmp_path, monkeyp
     monkeypatch.setattr(Storage, "_record_download_error", _boom)
 
     recs = [
-        _rec(pdf_url="https://x.test/dead.pdf",
+        _rec(document_url="https://x.test/dead.pdf",
              source_url="https://ideas.test/p/1.html"),
-        _rec(pdf_url="https://x.test/alive.pdf",
+        _rec(document_url="https://x.test/alive.pdf",
              source_url="https://ideas.test/p/2.html"),
     ]
     counts = st.save_many(recs, dry_run=False, label="repec:gb")

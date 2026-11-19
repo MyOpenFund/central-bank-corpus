@@ -123,7 +123,7 @@ class RBAAdapter(BankAdapter):
         a Statement issue is a month (`date` = its first day)."""
         return DocRecord(
             bank_code="au", doc_type=dt, title=f"{label} {d.isoformat()}",
-            pdf_url=url, source_url=src, date=d,
+            document_url=url, source_url=src, date=d,
             provenance="bank_site", mime_type="text/html",  # rendered to PDF by Storage
             date_precision=precision,
         )

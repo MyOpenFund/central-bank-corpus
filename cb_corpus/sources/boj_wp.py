@@ -71,7 +71,7 @@ def _boj_date(s: str) -> tuple[Optional[date], str]:
 
 def parse_wp_table(html: str, base_url: str
                    ) -> list[tuple[Optional[date], str, str, str]]:
-    """From a BoJ WP year page, return (date, precision, title, pdf_url) per paper.
+    """From a BoJ WP year page, return (date, precision, title, document_url) per paper.
 
     Content-based: any table row carrying a ``data/*.pdf`` link is a paper; the
     date is whichever cell parses as one; the title is the paper-page link text
@@ -85,10 +85,10 @@ def parse_wp_table(html: str, base_url: str
                       if _DATA_PDF_RE.search(a["href"])), None)
         if a_pdf is None:
             continue
-        pdf_url = urljoin(base_url, a_pdf["href"])
-        if pdf_url in seen:
+        document_url = urljoin(base_url, a_pdf["href"])
+        if document_url in seen:
             continue
-        seen.add(pdf_url)
+        seen.add(document_url)
         d = prec = None
         for td in tr.find_all("td"):
             d, prec = _boj_date(td.get_text(" ", strip=True))
@@ -101,9 +101,9 @@ def parse_wp_table(html: str, base_url: str
                 title = a.get_text(" ", strip=True)
                 break
         if not title:
-            title = pdf_url.rsplit("/", 1)[-1].split(".")[0]
+            title = document_url.rsplit("/", 1)[-1].split(".")[0]
         # No parseable date -> no precision (None), never a fake "month".
-        out.append((d, (prec or "month") if d else None, title, pdf_url))
+        out.append((d, (prec or "month") if d else None, title, document_url))
     return out
 
 
@@ -120,12 +120,12 @@ def discover_boj_wp(fetcher: Fetcher, since: Optional[date] = None,
             html = fetcher.get_text(url)
         except Exception:
             continue
-        for d, prec, title, pdf_url in parse_wp_table(html, url):
+        for d, prec, title, document_url in parse_wp_table(html, url):
             if since and d and d < since:
                 continue
             yield DocRecord(
                 bank_code="jp", doc_type=DocType.D1, title=title,
-                pdf_url=pdf_url, source_url=url, date=d, provenance="bank_site",
+                document_url=document_url, source_url=url, date=d, provenance="bank_site",
                 mime_type="application/pdf",
                 date_precision=prec, date_source="bank_site",
             )

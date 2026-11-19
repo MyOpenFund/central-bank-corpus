@@ -15,7 +15,7 @@ date from the IDEAS source page when there is one (same honesty as
 ``sources/repec.py`` discovery: month precision, ``date_source="repec"``);
 look up the latest Wayback snapshot of the official URL (falling back to any
 alternate URL); dry-run reports it, ``--download`` saves it with
-``provenance="wayback"`` and the official bank URL untouched as ``pdf_url``
+``provenance="wayback"`` and the official bank URL untouched as ``document_url``
 (citation + stable ``doc_id``) — the raw snapshot is just an ``alt_urls``
 fallback ``Storage.save`` tries.
 
@@ -49,8 +49,10 @@ action) -- an audit trail so an operator can spot a wrong pairing.
 walk at all): each JSONL line is an EXTERNALLY-recovered file (hunted by hand
 via Wayback / the bank's current site / a legitimate mirror --
 recover-quarantine design decision 1/2) --
-``{dead_pdf_url, file_path, recovered_from: wayback|bank_site|mirror,
-final_url, title?}``. The audit entry is matched by ``dead_pdf_url`` (an
+``{dead_document_url, file_path, recovered_from: wayback|bank_site|mirror,
+final_url, title?}`` (``dead_pdf_url``, the key's name until 2026-11-19, is
+still read when ``dead_document_url`` is absent: models.row_url, transition).
+The audit entry is matched by ``dead_document_url`` (an
 entry with no match is reported ``unknown-entry``, never guessed at); the
 already-downloaded local file is verified (``%PDF`` magic, >20KB) before
 anything is registered (``bad-file`` otherwise); the resulting ``DocRecord``
@@ -78,7 +80,7 @@ from urllib.parse import urlparse
 from .banks import get_bank
 from .config import Config
 from .http import Fetcher
-from .models import DocRecord
+from .models import DocRecord, row_url
 from .pdfcheck import MAGIC_WINDOW, has_pdf_magic
 from .quarantine import Quarantine
 from .sources.repec import IDEAS, _paper_meta, extract_pdf_candidates
@@ -87,7 +89,7 @@ from .storage import BAD_CONTENT, Storage
 from .taxonomy import by_code
 
 _ACTIONS = ("recoverable", "recovered", "duplicate", "unrecoverable", "converged")
-_CSV_FIELDS = ("bank", "pdf_url", "action", "snapshot_ts", "title", "canonical_doc_id")
+_CSV_FIELDS = ("bank", "document_url", "action", "snapshot_ts", "title", "canonical_doc_id")
 
 # `Storage.save`/`Storage.reindex` prefix for a same-bytes match; the matched
 # doc_id, when known, follows as a `:<doc_id>` suffix (e.g.
@@ -104,7 +106,8 @@ _MIN_CANDIDATE_PDF_BYTES = 20 * 1024
 
 def _read_inventory(cfg: Config,
                     bank_codes: Optional[Iterable[str]] = None) -> list[dict]:
-    """Read ``data/download_errors.jsonl``, dedup by ``pdf_url`` keeping the
+    """Read ``data/download_errors.jsonl``, dedup by ``document_url`` (or
+    ``pdf_url`` on a line written before 2026-11-19: models.row_url) keeping the
     LATEST entry (the file is append-ordered, so a later line simply
     overwrites an earlier one for the same url). Optional ``bank_codes``
     filter. A missing file is tolerated: empty inventory, a stderr note, no
@@ -114,7 +117,7 @@ def _read_inventory(cfg: Config,
     A line that does not parse as a JSON object is skipped with ONE stderr
     warning naming its line number (same pattern as ``_read_candidates``),
     the good lines around it still collected (issue #20). The file is
-    appended lock-free by up to 6 parallel discover workers, so a torn line
+    appended by up to 6 parallel discover workers, so a torn line
     (a writer killed mid-write, or torn mid UTF-8 character) is an expected
     accident, not a reason to make every later recover-downloads run crash
     until someone hand-edits it. Unlike ``_apply_seed_quarantine``, which
@@ -145,21 +148,21 @@ def _read_inventory(cfg: Config,
                 continue
             if codes is not None and entry.get("bank_code") not in codes:
                 continue
-            url = entry.get("pdf_url")
+            url = row_url(entry)
             if not url:
                 continue
-            by_url[url] = entry   # later line wins -> latest entry per pdf_url
+            by_url[url] = entry   # later line wins -> latest entry per document_url
     return list(by_url.values())
 
 
 def _is_converged(storage: Storage, entry: dict) -> bool:
-    """True if the corpus already has this document (by pdf_url, any of the
+    """True if the corpus already has this document (by document_url, any of the
     audit entry's alt_urls, or its source_url) -- the nightly retry already
     got it since the failure was logged, or a previous pass stamped it onto
     a real PDF owner; no network needed to know that. A duplicate held back
     because its owner is not a real PDF (see _apply_stamps) is never
     persisted, so a fresh Storage does not know it: it is NOT converged."""
-    if storage.is_known_url(entry.get("pdf_url") or ""):
+    if storage.is_known_url(row_url(entry) or ""):
         return True
     for alt in entry.get("alt_urls") or []:
         if alt and storage.is_known_url(alt):
@@ -206,12 +209,12 @@ def _refresh_metadata(fetcher: Fetcher, entry: dict) -> tuple[str, object, Optio
     return (title, None, None, None, [])
 
 
-def _find_snapshot(fetcher: Fetcher, pdf_url: str,
+def _find_snapshot(fetcher: Fetcher, document_url: str,
                    alt_candidates: list[str]) -> tuple[Optional[str], Optional[str]]:
     """(timestamp, original_url) for the latest Wayback snapshot of the
-    official pdf_url, or -- on a miss -- of each alt url in order. ``None,
+    official document_url, or -- on a miss -- of each alt url in order. ``None,
     None`` when nothing is archived anywhere."""
-    for candidate in [pdf_url, *alt_candidates]:
+    for candidate in [document_url, *alt_candidates]:
         if not candidate:
             continue
         ts = latest_capture(fetcher, candidate)
@@ -299,19 +302,19 @@ def _apply_seed_quarantine(quarantine: Quarantine, path: str) -> int:
 
 def _candidate_provenance(dead_url: str, final_url: str,
                           recovered_from: str) -> Optional[tuple[str, str, list[str]]]:
-    """(pdf_url, provenance, alt_urls) per the recover-quarantine design's
+    """(document_url, provenance, alt_urls) per the recover-quarantine design's
     provenance rules (decision 2), or ``None`` for an unrecognised
     ``recovered_from`` value (never guessed at)."""
     if recovered_from == "wayback":
-        # Snapshot recovery: pdf_url stays the original official URL
+        # Snapshot recovery: document_url stays the original official URL
         # (citation + stable doc_id), the Wayback copy is the alt fallback.
         return dead_url, "wayback", ([final_url] if final_url else [])
     if recovered_from == "bank_site":
-        # The paper moved to a new live URL -- pdf_url points at reality,
+        # The paper moved to a new live URL -- document_url points at reality,
         # the old dead URL is kept as an alt for provenance/citation history.
         return final_url, "bank_site", ([dead_url] if dead_url else [])
     if recovered_from == "mirror":
-        # Legitimate mirror/co-publication: pdf_url is still the WP's own
+        # Legitimate mirror/co-publication: document_url is still the WP's own
         # identity (the official URL), the mirror is only an alt copy.
         return dead_url, "mirror", ([final_url] if final_url else [])
     return None
@@ -383,7 +386,7 @@ def _run_candidates_pass(cfg: Config, storage: Storage, fetcher: Fetcher,
                          download: bool) -> tuple[dict[str, dict], list[dict]]:
     """The ``--candidates`` mode of ``run_recover_downloads`` -- see the
     module docstring. No CDX walk: every candidate's fate is decided from
-    the audit entry it matches (by ``dead_pdf_url``) plus the already-
+    the audit entry it matches (by ``dead_document_url``) plus the already-
     downloaded local file.
 
     The inventory is read UNFILTERED (``bank_codes=None``) so an entry that
@@ -391,7 +394,7 @@ def _run_candidates_pass(cfg: Config, storage: Storage, fetcher: Fetcher,
     that genuinely doesn't exist -- the former is ``filtered``, the latter
     ``unknown-entry`` (never conflated)."""
     entries = _read_inventory(cfg, None)
-    by_url = {e["pdf_url"]: e for e in entries if e.get("pdf_url")}
+    by_url = {row_url(e): e for e in entries if row_url(e)}
     codes = set(bank_codes) if bank_codes else None
 
     results: dict[str, dict] = {}
@@ -408,12 +411,12 @@ def _run_candidates_pass(cfg: Config, storage: Storage, fetcher: Fetcher,
 
     try:
         for cand in _read_candidates(candidates_path):
-            dead_url = cand.get("dead_pdf_url") or ""
+            dead_url = row_url(cand, "dead_document_url") or ""
             entry = by_url.get(dead_url)
 
             if entry is None:
                 _bump("_unknown", "unknown-entry")
-                csv_rows.append({"bank": "_unknown", "pdf_url": dead_url,
+                csv_rows.append({"bank": "_unknown", "document_url": dead_url,
                                  "action": "unknown-entry", "snapshot_ts": "",
                                  "title": cand.get("title") or ""})
                 continue
@@ -423,7 +426,7 @@ def _run_candidates_pass(cfg: Config, storage: Storage, fetcher: Fetcher,
 
             if codes is not None and bank not in codes:
                 _bump(bank, "filtered")
-                csv_rows.append({"bank": bank, "pdf_url": dead_url, "action": "filtered",
+                csv_rows.append({"bank": bank, "document_url": dead_url, "action": "filtered",
                                  "snapshot_ts": "", "title": fallback_title})
                 continue
 
@@ -435,14 +438,14 @@ def _run_candidates_pass(cfg: Config, storage: Storage, fetcher: Fetcher,
                 # keep the two modes' vocabulary consistent (PR #13 final
                 # review, prior Minor 1). No stamping, no quarantine call.
                 _bump(bank, "converged")
-                csv_rows.append({"bank": bank, "pdf_url": dead_url, "action": "converged",
+                csv_rows.append({"bank": bank, "document_url": dead_url, "action": "converged",
                                  "snapshot_ts": "", "title": fallback_title})
                 continue
 
             file_path = Path(cand.get("file_path") or "")
             if not _verify_local_pdf(file_path):
                 _bump(bank, "bad-file")
-                csv_rows.append({"bank": bank, "pdf_url": dead_url, "action": "bad-file",
+                csv_rows.append({"bank": bank, "document_url": dead_url, "action": "bad-file",
                                  "snapshot_ts": "", "title": fallback_title})
                 continue
 
@@ -453,30 +456,30 @@ def _run_candidates_pass(cfg: Config, storage: Storage, fetcher: Fetcher,
                 pass
             if doc_type is None:
                 _bump(bank, "bad-doc-type")
-                csv_rows.append({"bank": bank, "pdf_url": dead_url, "action": "bad-doc-type",
+                csv_rows.append({"bank": bank, "document_url": dead_url, "action": "bad-doc-type",
                                  "snapshot_ts": "", "title": fallback_title})
                 continue
 
             final_url = cand.get("final_url") or ""
             if not final_url:
                 # An empty/missing final_url would otherwise create a degenerate
-                # pdf_url (e.g. bank_site's pdf_url = final_url = "") shared by
+                # document_url (e.g. bank_site's document_url = final_url = "") shared by
                 # every such candidate -- reject it honestly, before it ever
                 # reaches provenance mapping, rather than let it become an alias
                 # for a doc_id that isn't really this document's identity.
                 _bump(bank, "bad-candidate")
-                csv_rows.append({"bank": bank, "pdf_url": dead_url, "action": "bad-candidate",
+                csv_rows.append({"bank": bank, "document_url": dead_url, "action": "bad-candidate",
                                  "snapshot_ts": "", "title": fallback_title})
                 continue
             if final_url == dead_url:
                 # final_url resolving back to the exact dead URL carries no
                 # honest byte-origin trail -- this is exactly the failure mode
                 # that once produced a "wayback" manifest row whose alt_urls[0]
-                # silently equalled its own dead pdf_url (final-review finding
+                # silently equalled its own dead document_url (final-review finding
                 # 1: no real snapshot behind it at all). Reject before
                 # provenance mapping ever sees it, for every recovered_from.
                 _bump(bank, "bad-candidate")
-                csv_rows.append({"bank": bank, "pdf_url": dead_url, "action": "bad-candidate",
+                csv_rows.append({"bank": bank, "document_url": dead_url, "action": "bad-candidate",
                                  "snapshot_ts": "", "title": fallback_title})
                 continue
             recovered_from = cand.get("recovered_from") or ""
@@ -486,16 +489,16 @@ def _run_candidates_pass(cfg: Config, storage: Storage, fetcher: Fetcher,
                 # -- same finding, the other half of it (a plausible-looking but
                 # non-archive.org URL rather than the dead URL itself).
                 _bump(bank, "bad-candidate")
-                csv_rows.append({"bank": bank, "pdf_url": dead_url, "action": "bad-candidate",
+                csv_rows.append({"bank": bank, "document_url": dead_url, "action": "bad-candidate",
                                  "snapshot_ts": "", "title": fallback_title})
                 continue
             provenance_result = _candidate_provenance(dead_url, final_url, recovered_from)
             if provenance_result is None:
                 _bump(bank, "bad-provenance")
-                csv_rows.append({"bank": bank, "pdf_url": dead_url, "action": "bad-provenance",
+                csv_rows.append({"bank": bank, "document_url": dead_url, "action": "bad-provenance",
                                  "snapshot_ts": "", "title": fallback_title})
                 continue
-            pdf_url, provenance, alt_urls = provenance_result
+            document_url, provenance, alt_urls = provenance_result
 
             # Refresh title/date from the IDEAS source page exactly as the
             # inventory-driven path does; a candidate-supplied title (if any) is
@@ -516,7 +519,7 @@ def _run_candidates_pass(cfg: Config, storage: Storage, fetcher: Fetcher,
 
             rec = DocRecord(
                 bank_code=bank, doc_type=doc_type, title=title,
-                pdf_url=pdf_url, alt_urls=alt_urls,
+                document_url=document_url, alt_urls=alt_urls,
                 source_url=entry.get("source_url") or "",
                 date=rec_date, provenance=provenance,
                 mime_type="application/pdf",
@@ -537,7 +540,7 @@ def _run_candidates_pass(cfg: Config, storage: Storage, fetcher: Fetcher,
             probe = storage.reindex(rec, file_path, dry_run=True)
             if probe == BAD_CONTENT:
                 _bump(bank, "bad-file")
-                csv_rows.append({"bank": bank, "pdf_url": dead_url, "action": "bad-file",
+                csv_rows.append({"bank": bank, "document_url": dead_url, "action": "bad-file",
                                  "snapshot_ts": "", "title": fallback_title})
                 continue
 
@@ -561,9 +564,9 @@ def _run_candidates_pass(cfg: Config, storage: Storage, fetcher: Fetcher,
                 canonical_doc_id = rec.doc_id
                 # Self-healing, but ONLY on a real run: the dry-run contract
                 # (mode parity above) must never stamp/release quarantine/write
-                # the manifest. For wayback/mirror provenance rec.pdf_url IS the
+                # the manifest. For wayback/mirror provenance rec.document_url IS the
                 # dead URL already (this row's own identity), so the stamp is a
-                # no-op for alt_urls there -- but for bank_site rec.pdf_url is
+                # no-op for alt_urls there -- but for bank_site rec.document_url is
                 # the NEW final_url, so dead_url is genuinely different and DOES
                 # land in alt_urls (the flagship self-heal case this PR exists
                 # for). Either way the quarantine release still matters --
@@ -587,9 +590,9 @@ def _run_candidates_pass(cfg: Config, storage: Storage, fetcher: Fetcher,
                     _bump(bank, "recovered")
                     action = "recovered"
                     # MINOR 5: tombstone the OLD dead URL's quarantine too.
-                    # reindex() above already released quarantine on rec.pdf_url
+                    # reindex() above already released quarantine on rec.document_url
                     # -- for wayback/mirror that IS dead_url (this call is then a
-                    # harmless no-op), but for bank_site rec.pdf_url is the NEW
+                    # harmless no-op), but for bank_site rec.document_url is the NEW
                     # final_url, so without this the OLD dead_url would stay
                     # quarantined forever even though the corpus now has the doc
                     # under its new address.
@@ -629,7 +632,7 @@ def _run_candidates_pass(cfg: Config, storage: Storage, fetcher: Fetcher,
                     action = status
                 # status == "error": action stays "recoverable" (audited above).
 
-            csv_rows.append({"bank": bank, "pdf_url": dead_url, "action": action,
+            csv_rows.append({"bank": bank, "document_url": dead_url, "action": action,
                              "snapshot_ts": "", "title": title,
                              "canonical_doc_id": canonical_doc_id})
 
@@ -678,7 +681,7 @@ def run_recover_downloads(bank_codes: Optional[Iterable[str]] = None,
     (PR #13 final review, Minor 1), so a crash never loses stamps already
     collected for entries processed before it hit -- never during a
     dry-run. A CSV
-    report (``{bank, pdf_url, action, snapshot_ts, title, canonical_doc_id}``)
+    report (``{bank, document_url, action, snapshot_ts, title, canonical_doc_id}``)
     is written in both modes so a dry-run's classification is never lost, and
     a CSV line never claims an action that didn't happen (a failed
     ``--download`` save stays ``recoverable``, not ``recovered``; its failure
@@ -728,21 +731,21 @@ def run_recover_downloads(bank_codes: Optional[Iterable[str]] = None,
         for entry in entries:
             bank = entry.get("bank_code") or "_unknown"
             summary = results.setdefault(bank, {a: 0 for a in _ACTIONS})
-            pdf_url = entry.get("pdf_url") or ""
+            document_url = row_url(entry) or ""
 
             if _is_converged(storage, entry):
                 summary["converged"] += 1
-                csv_rows.append({"bank": bank, "pdf_url": pdf_url, "action": "converged",
+                csv_rows.append({"bank": bank, "document_url": document_url, "action": "converged",
                                  "snapshot_ts": "", "title": entry.get("title") or ""})
                 continue
 
             title, rec_date, date_precision, date_source, cands = _refresh_metadata(fetcher, entry)
             alt_candidates = list(dict.fromkeys([*cands, *(entry.get("alt_urls") or [])]))
-            ts, snapshot_of = _find_snapshot(fetcher, pdf_url, alt_candidates)
+            ts, snapshot_of = _find_snapshot(fetcher, document_url, alt_candidates)
 
             if ts is None:
                 summary["unrecoverable"] += 1
-                csv_rows.append({"bank": bank, "pdf_url": pdf_url, "action": "unrecoverable",
+                csv_rows.append({"bank": bank, "document_url": document_url, "action": "unrecoverable",
                                  "snapshot_ts": "", "title": title})
                 continue
 
@@ -759,10 +762,10 @@ def run_recover_downloads(bank_codes: Optional[Iterable[str]] = None,
                 if doc_type is not None:
                     snapshot_url = raw_url(snapshot_of, ts)
                     rec_alts = list(dict.fromkeys(
-                        [snapshot_url, *(u for u in alt_candidates if u != pdf_url)]))
+                        [snapshot_url, *(u for u in alt_candidates if u != document_url)]))
                     rec = DocRecord(
                         bank_code=bank, doc_type=doc_type, title=title,
-                        pdf_url=pdf_url, alt_urls=rec_alts,
+                        document_url=document_url, alt_urls=rec_alts,
                         source_url=entry.get("source_url") or "",
                         date=rec_date, provenance="wayback",
                         mime_type="application/pdf",
@@ -798,14 +801,14 @@ def run_recover_downloads(bank_codes: Optional[Iterable[str]] = None,
                         # The doc_id was already indexed -- always bare, the
                         # matched doc_id is rec.doc_id itself. Nothing left to
                         # recover; self-heal by stamping the dead URL onto its
-                        # OWN row (a no-op for alt_urls, since pdf_url is that
+                        # OWN row (a no-op for alt_urls, since document_url is that
                         # dead URL already) and releasing its quarantine, so a
                         # future nightly sync doesn't see it as still quarantined.
                         summary["duplicate"] += 1
                         action = "duplicate"
                         canonical_doc_id = rec.doc_id
-                        _add_stamp(stamps, rec.doc_id, pdf_url,
-                                   source_url=rec.source_url, release=pdf_url)
+                        _add_stamp(stamps, rec.doc_id, document_url,
+                                   source_url=rec.source_url, release=document_url)
                     elif status.startswith("skip:duplicate-content"):
                         # Bytes hash-matched a DIFFERENT existing doc_id, carried
                         # as the status suffix (a bare legacy status with no
@@ -821,8 +824,8 @@ def run_recover_downloads(bank_codes: Optional[Iterable[str]] = None,
                         matched_id = _duplicate_doc_id(status)
                         if matched_id:
                             canonical_doc_id = matched_id
-                            _add_stamp(stamps, matched_id, pdf_url,
-                                       source_url=rec.source_url, release=pdf_url)
+                            _add_stamp(stamps, matched_id, document_url,
+                                       source_url=rec.source_url, release=document_url)
                     elif status.startswith("skip:"):
                         # Any OTHER skip:* (e.g. a future status we don't special-
                         # case here) is reported VERBATIM, never mislabeled as
@@ -831,7 +834,7 @@ def run_recover_downloads(bank_codes: Optional[Iterable[str]] = None,
                         summary[status] = summary.get(status, 0) + 1
                         action = status
 
-            csv_rows.append({"bank": bank, "pdf_url": pdf_url, "action": action,
+            csv_rows.append({"bank": bank, "document_url": document_url, "action": action,
                              "snapshot_ts": ts, "title": title,
                              "canonical_doc_id": canonical_doc_id})
 

@@ -37,7 +37,7 @@ def _row(doc_id: str, bank: str, date: str, title: str = "Inflation dynamics",
          **extra) -> dict:
     return {"doc_id": doc_id, "bank_code": bank, "doc_type": "D1", "date": date,
             "year": int(date[:4]), "date_precision": "month", "date_source": "repec",
-            "title": title, "pdf_url": f"https://{bank}.example/{doc_id}.pdf", **extra}
+            "title": title, "document_url": f"https://{bank}.example/{doc_id}.pdf", **extra}
 
 
 def _manifest(cfg: Config, bank: str) -> dict[str, dict]:
@@ -212,7 +212,7 @@ def test_rejected_own_key_recovery_is_written_under_a_doc_key_and_rebuilds_stabl
     assert handle == row_key(rev) == "RePEc:fip:fedgfe:2025-101"
     cfg = _setup(tmp_path, [orig, rev], [_entry(handle, "2025-11-10")])
     manifest_before = cfg.manifest_file("us").read_text()
-    caps = {orig["pdf_url"]: "20251110000000", rev["pdf_url"]: "20260612000000"}
+    caps = {orig["document_url"]: "20251110000000", rev["document_url"]: "20260612000000"}
     monkeypatch.setattr(wp_dates, "first_capture",
                         lambda f, u: caps.get("https://" + u))
 

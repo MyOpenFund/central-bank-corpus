@@ -190,7 +190,7 @@ python -m cb_corpus policy-dates --write               # apply (idempotent: a se
 
 The CSV has one line per row in scope: `old_date`, `old_precision`, `new_date`,
 `new_precision`, `kind`, `action`, `rule`, `evidence` (the title or URL fragment the date was
-read from), `fields_changed`, then `title` and `pdf_url` to check against. Actions:
+read from), `fields_changed`, then `title` and `document_url` to check against. Actions:
 
 | `action` | Meaning | Written |
 |---|---|---|
@@ -220,7 +220,7 @@ year leaves `local_path` under the old year folder (`data/raw/<bank>/<type>/<old
 1. `cb-campaign` with `command: ["/app/deploy/run-job.sh", "campaign", "policy-dates"]` — the
    dry-run. It changes nothing and commits nothing.
 2. Read `reports/policy_dates.csv` on the volume: filter `action`, check `evidence` against
-   `title` / `pdf_url`. Rows in `conflict`, `mismatch` or `no-evidence` are yours to judge; they
+   `title` / `document_url`. Rows in `conflict`, `mismatch` or `no-evidence` are yours to judge; they
    are never written.
 3. Same stack with `"policy-dates", "--write"`. The autocommit pushes the manifests.
 4. Re-run the dry-run: every dated row must read `unchanged`.
@@ -292,19 +292,19 @@ python -m cb_corpus replace-artifact --plan deploy/plans/2026-11-19-audit-pdfs.c
 ```
 
 - `replace`: `candidates` = space-separated URLs and/or `wayback` (the newest HTTP-200 PDF
-  captures of the row's own `pdf_url`, one per distinct payload, at most
+  captures of the row's own `document_url`, one per distinct payload, at most
   `--wayback-max-captures`, default 10). The first candidate passing the content check
   (same rule as a download) whose bytes no other row owns wins; a candidate another row
   already owns is noted in `tried` and the search goes on (outcome `duplicate-of:<doc_id>`
   only when nothing else won). `--write` replaces the file atomically at the same path (an
   `html_path` sibling is untouched) and updates the row: `sha256`, `mime_type`, the winning
-  URL first in `alt_urls` (a download still tries `pdf_url` first: the winning URL becomes
+  URL first in `alt_urls` (a download still tries `document_url` first: the winning URL becomes
   the first fallback), one more entry in the `artifact_replaced` history list. `doc_id`,
-  `pdf_url`, `local_path` never change. Only `.pdf` artifacts can be replaced, and not a
+  `document_url`, `local_path` never change. Only `.pdf` artifacts can be replaced, and not a
   file another row also points at.
 - `retire`: `candidates` = `duplicate-of:<owner doc_id>`, a real PDF owner whose file passes
   the content check and matches its `sha256` (and is not the retired row's file itself, nor
-  a hard link of it). `--write` stamps the retired row's `pdf_url`
+  a hard link of it). `--write` stamps the retired row's `document_url`
   / `source_url` on the owner (`alt_urls` / `alt_source_urls`, as duplicate-content
   stamping does) plus a `retired_duplicates` audit entry, moves the file to
   `data/raw_orphans/` and removes the row from its manifest. The vault soft-deletes it at
@@ -319,6 +319,31 @@ if the winning candidate still serves the same bytes: a live URL whose file chan
 the plan ran, 1 when the plan itself is unusable. The dry run fetches the candidates but
 writes only the report, line by line (a killed run leaves a partial report). The plan is
 read as UTF-8 (a BOM is accepted); doc_ids are stripped and lowercased.
+
+### Maintenance: migrate-document-url (one-shot, 2026-11-19)
+
+The manifest field `pdf_url` was renamed `document_url` (same value, so no `doc_id` moves).
+New rows are written with `document_url`; until the stored rows are migrated, every reader
+accepts the old name (`models.row_url`, a transition to remove once the NAS manifests are
+migrated). The one-shot renames the stored key:
+
+```bash
+python -m cb_corpus migrate-document-url            # dry-run: counts per file, writes nothing
+python -m cb_corpus migrate-document-url --write    # rename, then re-run: renamed=0 everywhere
+```
+
+Per-bank manifests and `data/download_errors.jsonl` (the recover-downloads inventory), each
+under its sidecar lock, re-read fresh under it: the key is renamed in place (same position,
+every value unchanged; a row already migrated is kept byte-identical; the file is rewritten
+only when a row changed, so a rerun does nothing). Per file: `renamed`, `already_new`,
+`both` (both names on one row: left untouched, listed by `doc_id`, exit 1, never guessed),
+`no_url`, `torn` (a torn final manifest line: dropped on `--write`, fragment saved to
+`<file>.torn`, like every manifest rewrite), `unparsed` (a download-error log line that does
+not parse: kept verbatim). `--banks` restricts to those manifests (the log is then skipped).
+Not migrated: `wp_dates_index.jsonl` and `download_quarantine.jsonl` never stored the key;
+CSV reports are rewritten by their command; a recover-downloads `--candidates` file is read
+with `dead_pdf_url` as a fallback. On the committed data (2026-11-19) the dry run counts
+61 manifests, 39,665 rows, all `renamed`.
 
 ## Use
 
@@ -450,6 +475,7 @@ cb_corpus/
   orphans.py         sweep-orphans (quarantine on-disk duplicates)
   pdf_audit.py       audit-pdfs (stored PDFs against the content check, read-only)
   replace_artifact.py  replace-artifact (re-fetch or retire a bad artifact from a plan CSV)
+  document_url_migrate.py  migrate-document-url (one-shot: stored key pdf_url -> document_url)
   convert.py / retry_html.py   HTML -> PDF migration and retries
   wp_migrate.py      WP v3 date migration (native bank-site dates, zero re-download)
   wp_dates.py        WP v3 day recovery (PDF /CreationDate + Wayback, committed index)
@@ -487,3 +513,7 @@ tests/               1,000+ tests at 2026-11-18 (taxonomy, registry, parsers, de
 - **Data** (the manifest files under `data/` — metadata and links only; the documents
   themselves stay on their issuing banks' servers and keep their own terms):
   [CC BY 4.0](DATA_LICENSE) — attribute "MyOpenFund central-bank-corpus".
+- **Data schema change, 2026-11-19:** the manifest field `pdf_url` is renamed
+  `document_url` (canonical document URL: PDF preferred, HTML accepted). Same values, same
+  `doc_id`s; manifests published before the migration still carry `pdf_url`
+  (schema: [`INGESTION_RAG.md`](INGESTION_RAG.md)).

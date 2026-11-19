@@ -68,10 +68,10 @@ def test_native_only_seam_cli_discover_reaches_pipeline_run(monkeypatch):
 
 
 # ---- seam 2: skip_url binding in run_repec ---------------------------------
-def _seed_manifest(cfg: Config, bank_code: str, *, pdf_url: str, source_url: str) -> None:
+def _seed_manifest(cfg: Config, bank_code: str, *, document_url: str, source_url: str) -> None:
     cfg.manifest_dir.mkdir(parents=True, exist_ok=True)
     rec = DocRecord(bank_code=bank_code, doc_type=DocType.D1, title="seed",
-                    pdf_url=pdf_url, source_url=source_url)
+                    document_url=document_url, source_url=source_url)
     with cfg.manifest_file(bank_code).open("w") as fh:
         fh.write(json.dumps(rec.to_row(), ensure_ascii=False) + "\n")
 
@@ -89,7 +89,7 @@ def test_run_repec_skip_url_is_is_known_source_url_not_is_known_url(tmp_path, mo
     cfg = Config(data_dir=tmp_path)
     seeded_pdf = "https://boe.test/seed.pdf"
     seeded_source = "https://ideas.repec.org/p/boe/boeewp/seed.html"
-    _seed_manifest(cfg, "gb", pdf_url=seeded_pdf, source_url=seeded_source)
+    _seed_manifest(cfg, "gb", document_url=seeded_pdf, source_url=seeded_source)
 
     captured = {}
 

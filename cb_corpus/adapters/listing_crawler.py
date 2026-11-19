@@ -128,7 +128,7 @@ class ListingCrawlerAdapter(BankAdapter):
                             else "text/html")
                     yield DocRecord(
                         bank_code=self.bank.code, doc_type=doc_type,
-                        title=title, pdf_url=abs_url, source_url=url,
+                        title=title, document_url=abs_url, source_url=url,
                         date=d, provenance="bank_site", mime_type=mime,
                         date_precision=prec,
                     )

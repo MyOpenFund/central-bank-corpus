@@ -4,10 +4,65 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field, asdict
 from datetime import date
-from typing import Optional, Union
+from typing import Any, Mapping, MutableMapping, Optional, Union
 
 from .dates import policy_date_kind
 from .taxonomy import DocType
+
+#: Name of the canonical document URL key in a manifest row (and in the other
+#: row dicts that carry it: download_errors.jsonl entries, recover-downloads
+#: candidates as `dead_document_url`, retired_duplicates audit entries).
+URL_KEY = "document_url"
+#: The same key's name until 2026-11-19 (`pdf_url`). TRANSITION: remove,
+#: with LEGACY_URL_KEYS, row_url's fallback and upgrade_row, once the NAS
+#: manifests are migrated (`migrate-document-url --write`).
+LEGACY_URL_KEY = "pdf_url"
+#: new key -> old key, for every row dict that may still carry the old name.
+LEGACY_URL_KEYS = {URL_KEY: LEGACY_URL_KEY, "dead_document_url": "dead_pdf_url"}
+
+
+def row_url(row: Mapping[str, Any], key: str = URL_KEY) -> Any:
+    """The document URL of a row dict: `row[key]` (default `document_url`),
+    or, when that key is ABSENT, the value under its pre-2026-11-19 name
+    (`pdf_url`, `dead_pdf_url`). None when neither key is there.
+
+    TRANSITION, remove once the NAS manifests are migrated: every reader of
+    a manifest row (or of another row dict that stores the key) goes through
+    this helper, so a row not yet migrated never breaks a run. Writers write
+    only `document_url`."""
+    if key in row:
+        return row[key]
+    return row.get(LEGACY_URL_KEYS.get(key, key))
+
+
+def upgrade_row(row: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
+    """Rename a row's `pdf_url` key to `document_url` IN PLACE, keeping the
+    key's position and every value; same for the entries of an optional
+    `retired_duplicates` audit list. Returns `row` (for chaining). A row that
+    already uses the new name is left as is; a row (or entry) carrying BOTH
+    names is left untouched too -- never guess which value is right
+    (`migrate-document-url` reports it as an error).
+
+    TRANSITION, remove once the NAS manifests are migrated: applied where
+    manifest rows are read (storage), so a row read under the old name and
+    rewritten by any rewrite path comes out with `document_url` only."""
+    _rename_key(row)
+    for entry in row.get("retired_duplicates") or []:
+        if isinstance(entry, dict):
+            _rename_key(entry)
+    return row
+
+
+def _rename_key(d: MutableMapping[str, Any], old: str = LEGACY_URL_KEY,
+                new: str = URL_KEY) -> bool:
+    """`old` -> `new` in place, position kept. False (nothing done) when `old`
+    is absent or `new` is already there."""
+    if old not in d or new in d:
+        return False
+    items = [((new if k == old else k), v) for k, v in d.items()]
+    d.clear()
+    d.update(items)
+    return True
 
 
 def compute_doc_id(bank_code: str, doc_type: Union[DocType, str], url: str) -> str:
@@ -27,7 +82,8 @@ class DocRecord:
     bank_code: str
     doc_type: DocType
     title: str
-    pdf_url: str                       # canonical document URL (PDF preferred, HTML accepted)
+    document_url: str                  # canonical document URL (PDF preferred, HTML accepted);
+                                       # named `pdf_url` until 2026-11-19 (doc_id unchanged)
     source_url: str = ""               # landing/listing page it was found on
     date: Optional[date] = None
     language: str = "en"
@@ -64,7 +120,7 @@ class DocRecord:
     repec_handle: str = ""
     # Ordered fallback PDF URLs (e.g. EconStor/SSRN copies, or a native URL found
     # for a paper first ingested via RePEc) tried by Storage when the preferred
-    # `pdf_url` download fails. NOT part of doc_id, so identity/dedup stay stable
+    # `document_url` download fails. NOT part of doc_id, so identity/dedup stay stable
     # on the preferred URL regardless of which copy actually downloaded. Persisted
     # (since WP v3) so dedup recognises alternate URLs across restarts.
     alt_urls: list[str] = field(default_factory=list)
@@ -87,7 +143,7 @@ class DocRecord:
         duplicate + a file rename. With the date out, enriching a date is a pure
         metadata update (no id churn). The url already uniquely identifies a doc.
 
-        Residual risk (issue #21): the id hashes the RAW `pdf_url`, while the
+        Residual risk (issue #21): the id hashes the RAW `document_url`, while the
         known-URL dedup index normalises it (storage.normalize_url collapses
         duplicate slashes). Two spellings of one URL therefore give two
         doc_ids. For a PDF the sha256 dedup still catches the second copy
@@ -102,7 +158,7 @@ class DocRecord:
         Normalising inside the id is not an option: every file name and
         manifest key on disk derives from the current formula.
         """
-        return compute_doc_id(self.bank_code, self.doc_type, self.pdf_url)
+        return compute_doc_id(self.bank_code, self.doc_type, self.document_url)
 
     def to_row(self) -> dict:
         d = asdict(self)
@@ -112,7 +168,8 @@ class DocRecord:
             d["date_precision"] = None      # no date -> no precision
         kind = self.date_kind or policy_date_kind(
             self.bank_code, self.doc_type, date=self.date, precision=self.date_precision,
-            date_source=self.date_source, title=self.title, pdf_url=self.pdf_url)
+            date_source=self.date_source, title=self.title,
+            document_url=self.document_url)
         if self.date is not None and kind:
             d["date_kind"] = kind
         else:

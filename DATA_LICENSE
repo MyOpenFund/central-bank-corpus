@@ -11,6 +11,13 @@ Human-readable summary: https://creativecommons.org/licenses/by/4.0/
 Attribution: "MyOpenFund central-bank-corpus
 (https://github.com/MyOpenFund/central-bank-corpus)".
 
+## Schema changes
+
+- 2026-11-19: the manifest field `pdf_url` is renamed `document_url` (the
+  canonical document URL: PDF preferred, HTML accepted). Values, key position
+  and `doc_id`s are unchanged; snapshots published before the migration still
+  carry `pdf_url`.
+
 ## Scope note
 
 These files contain **metadata only**: titles, publication dates, document

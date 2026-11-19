@@ -32,7 +32,7 @@ def _seed_owner(cfg: Config, tmp_path, *, rendered: bool) -> DocRecord:
     HTML (mime_type application/pdf, html_path set)."""
     st = Storage(cfg, _NullFetcher())
     rec = DocRecord(bank_code="fr", doc_type=DocType.D1, title="Existing copy",
-                    pdf_url=OWNER_URL, date=date(2020, 1, 1), mime_type="application/pdf")
+                    document_url=OWNER_URL, date=date(2020, 1, 1), mime_type="application/pdf")
     src = tmp_path / "seed.pdf"
     src.write_bytes(DUP)
     assert st.reindex(rec, src) == "reindexed"
@@ -68,12 +68,12 @@ def _owner_row(cfg: Config, doc_id: str) -> dict:
 # -- candidates pass ------------------------------------------------------
 
 def _run_candidates(cfg, tmp_path, monkeypatch, csv="r.csv"):
-    _write_inventory(cfg, [_entry(bank="fr", pdf_url=DEAD_URL, title="Alias",
+    _write_inventory(cfg, [_entry(bank="fr", document_url=DEAD_URL, title="Alias",
                                   source_url=SOURCE)])
     local = tmp_path / "alias.pdf"
     local.write_bytes(DUP)
     cand = _write_candidates(tmp_path, [{
-        "dead_pdf_url": DEAD_URL, "file_path": str(local),
+        "dead_document_url": DEAD_URL, "file_path": str(local),
         "recovered_from": "wayback", "final_url": "https://web.archive.org/alias"}])
     _stub_refresh_metadata(monkeypatch, title="Alias")
     return run_recover_downloads(config=cfg, fetcher=_NullFetcher(), candidates=str(cand),
@@ -145,7 +145,7 @@ def test_candidates_pass_discards_storage_queue(tmp_path, monkeypatch):
 # -- CDX-walk pass --------------------------------------------------------
 
 def _run_cdx(cfg, tmp_path, csv="r.csv"):
-    _write_inventory(cfg, [_entry(bank="fr", pdf_url=DEAD_URL, title="Alias",
+    _write_inventory(cfg, [_entry(bank="fr", document_url=DEAD_URL, title="Alias",
                                   source_url="")])
     fetcher = _StubFetcher(
         cdx_hits={"dt-alias.pdf": "20240101000000"},
@@ -185,7 +185,7 @@ def test_download_pdf_owner_stamped_logged_released(tmp_path):
 def test_download_pass_logs_source_url(tmp_path):
     cfg = Config(data_dir=tmp_path)
     _seed_owner(cfg, tmp_path, rendered=False)
-    _write_inventory(cfg, [_entry(bank="fr", pdf_url=DEAD_URL, title="Alias",
+    _write_inventory(cfg, [_entry(bank="fr", document_url=DEAD_URL, title="Alias",
                                   source_url=SOURCE)])
     fetcher = _StubFetcher(
         cdx_hits={"dt-alias.pdf": "20240101000000"},

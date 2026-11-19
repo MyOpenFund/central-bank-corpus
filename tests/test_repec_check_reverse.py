@@ -62,7 +62,7 @@ SIXTY = (TODAY - timedelta(days=60)).isoformat()
 def _rows():
     def r(doc_id, doc_type="D1", date_=None, **kw):
         row = {"doc_id": doc_id, "bank_code": "jp", "doc_type": doc_type,
-               "title": kw.pop("title", doc_id), "pdf_url": kw.pop("pdf_url", f"https://x.test/{doc_id}.pdf"),
+               "title": kw.pop("title", doc_id), "document_url": kw.pop("document_url", f"https://x.test/{doc_id}.pdf"),
                "source_url": kw.pop("source_url", "")}
         if date_:
             row["date"] = date_
@@ -70,9 +70,9 @@ def _rows():
         return row
     return [
         r("by_handle", date_="2020-05-01", source_url="https://ideas.repec.org/p/boj/bojwps/wp20e01.html"),
-        r("by_key", date_="2021-02-03", pdf_url="https://www.boj.or.jp/en/research/wps_rev/wps_2021/data/wp21e02.pdf"),
+        r("by_key", date_="2021-02-03", document_url="https://www.boj.or.jp/en/research/wps_rev/wps_2021/data/wp21e02.pdf"),
         r("by_title", date_="2019-01-01", title="A Paper Listed Under Its Exact Title"),
-        r("by_pagefetch", date_="2018-07-01", pdf_url="https://mirror.test/legacy/paper-c.pdf"),
+        r("by_pagefetch", date_="2018-07-01", document_url="https://mirror.test/legacy/paper-c.pdf"),
         r("recent_orphan", date_=RECENT),
         r("old_orphan", date_="2019-06-01"),
         r("pre_era", date_="2005-03-01"),
@@ -149,7 +149,7 @@ def test_truncated_listing_skips_reverse_check(cfg, monkeypatch):
 
 def test_reverse_csv_columns(cfg, monkeypatch):
     _, _, rows = _run(cfg, monkeypatch)
-    assert set(rows[0]) == {"bank", "doc_id", "doc_type", "date", "title", "pdf_url", "bucket"}
+    assert set(rows[0]) == {"bank", "doc_id", "doc_type", "date", "title", "document_url", "bucket"}
     old = next(r for r in rows if r["doc_id"] == "old_orphan")
     assert old["bank"] == "jp" and old["date"] == "2019-06-01"
 
@@ -208,7 +208,7 @@ def test_month_precision_date_counts_as_recent(tmp_path, monkeypatch):
     ym = TODAY.strftime("%Y-%m")
     c.manifest_file("jp").write_text(json.dumps(
         {"doc_id": "m", "bank_code": "jp", "doc_type": "D1", "title": "m",
-         "pdf_url": "https://x.test/m.pdf", "date": ym}) + "\n")
+         "document_url": "https://x.test/m.pdf", "date": ym}) + "\n")
     _, buckets, _ = _run(c, monkeypatch, grace_days=40)
     assert buckets == {"m": "pending_repec"}
 
@@ -255,7 +255,7 @@ def test_se_key_tier_matches(tmp_path, monkeypatch):
     c.manifest_file("se").write_text(json.dumps(
         {"doc_id": "s1", "bank_code": "se", "doc_type": "D1", "date": "2019-12-01",
          "title": "Some paper (Revised December 2019)",
-         "pdf_url": "https://www.riksbank.se/globalassets/media/rapporter/working-papers/2019/no.-463-some-paper.pdf"}) + "\n")
+         "document_url": "https://www.riksbank.se/globalassets/media/rapporter/working-papers/2019/no.-463-some-paper.pdf"}) + "\n")
 
     class SeFetcher:
         def get_text(self, url):
@@ -276,11 +276,11 @@ def test_two_series_bank_tracks_both_doc_types(tmp_path, monkeypatch):
     c = Config(data_dir=tmp_path / "data")
     c.manifest_dir.mkdir(parents=True)
     rows = [{"doc_id": "w", "bank_code": "ecb", "doc_type": "D1", "date": "2020-01-10", "title": "w",
-             "pdf_url": "https://x.test/w.pdf", "repec_handle": "RePEc:ecb:ecbwps:20202001"},
+             "document_url": "https://x.test/w.pdf", "repec_handle": "RePEc:ecb:ecbwps:20202001"},
             {"doc_id": "o", "bank_code": "ecb", "doc_type": "D2", "date": "2020-02-10", "title": "o",
-             "pdf_url": "https://x.test/o.pdf", "repec_handle": "RePEc:ecb:ecbops:2020240"},
+             "document_url": "https://x.test/o.pdf", "repec_handle": "RePEc:ecb:ecbops:2020240"},
             {"doc_id": "x", "bank_code": "ecb", "doc_type": "D2", "date": "2021-02-10", "title": "x",
-             "pdf_url": "https://x.test/x.pdf"}]
+             "document_url": "https://x.test/x.pdf"}]
     c.manifest_file("ecb").write_text("".join(json.dumps(r) + "\n" for r in rows))
 
     class EcbFetcher:

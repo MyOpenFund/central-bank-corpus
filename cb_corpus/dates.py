@@ -176,19 +176,19 @@ POLICY_DATE_KIND_EXCEPTIONS: dict[tuple[str, str], tuple[KindException, ...]] = 
 
 
 def is_misfiled(bank_code: str, doc_type, *, title: Optional[str] = "",
-                pdf_url: Optional[str] = "", rules: Optional[dict] = None) -> bool:
+                document_url: Optional[str] = "", rules: Optional[dict] = None) -> bool:
     """Is this row filed in a series it does not belong to (the series' rule
     has a `misfiled_pattern` that its title or document URL matches)?"""
     code = getattr(doc_type, "code", doc_type)
     rule = (POLICY_DATE_RULES if rules is None else rules).get((bank_code, code))
     if rule is None or not rule.misfiled_pattern:
         return False
-    return any(re.search(rule.misfiled_pattern, text or "", re.I) for text in (title, pdf_url))
+    return any(re.search(rule.misfiled_pattern, text or "", re.I) for text in (title, document_url))
 
 
 def policy_date_kind(bank_code: str, doc_type, *, date: Optional[date],
                      precision: Optional[str] = None, date_source: Optional[str] = None,
-                     title: Optional[str] = "", pdf_url: Optional[str] = "") -> Optional[str]:
+                     title: Optional[str] = "", document_url: Optional[str] = "") -> Optional[str]:
     """What the date of ONE row is, or None when nothing may be claimed.
 
     The series' kind (POLICY_DATE_KIND), except:
@@ -206,9 +206,9 @@ def policy_date_kind(bank_code: str, doc_type, *, date: Optional[date],
         return None
     rule = POLICY_DATE_RULES.get((bank_code, code))
     if rule is not None and rule.report_pattern and not re.search(
-            rule.report_pattern, pdf_url or "", re.I):
+            rule.report_pattern, document_url or "", re.I):
         return None
-    if is_misfiled(bank_code, code, title=title, pdf_url=pdf_url):
+    if is_misfiled(bank_code, code, title=title, document_url=document_url):
         return None
     for exc in POLICY_DATE_KIND_EXCEPTIONS.get((bank_code, code), ()):
         if ((exc.before is None or date < exc.before)
@@ -453,7 +453,7 @@ BOC_DELIBERATIONS_URL = r"bankofcanada\.ca/(?P<y>\d{4})/(?P<m>\d{2})/"
 BOJ_MINUTES_URL = r"/g(?P<yy>\d{2})(?P<m>\d{2})(?P<d>\d{2})\.pdf$"
 
 #: Row fields a rule step may read.
-EVIDENCE_FIELDS = ("title", "pdf_url", "source_url")
+EVIDENCE_FIELDS = ("title", "document_url", "source_url")
 
 
 @dataclass(frozen=True)
@@ -482,8 +482,8 @@ class PolicyDateRule:
     misfiled_pattern: Optional[str] = None
 
 
-def _url(pattern: str, name: str = "pdf_url") -> DateStep:
-    return DateStep(name=name, field="pdf_url", pattern=pattern)
+def _url(pattern: str, name: str = "document_url") -> DateStep:
+    return DateStep(name=name, field="document_url", pattern=pattern)
 
 
 _FED_URL = PolicyDateRule(steps=(_url(URL_YYYYMMDD),))
@@ -493,7 +493,7 @@ _FED_URL = PolicyDateRule(steps=(_url(URL_YYYYMMDD),))
 _BOE_STEPS = (
     DateStep(name="title", field="title", pick=PICK_LAST),
     DateStep(name="source_url", field="source_url", pattern=URL_MONTH_NAME_YEAR),
-    DateStep(name="pdf_url", field="pdf_url", pattern=URL_MONTH_NAME_YEAR),
+    DateStep(name="document_url", field="document_url", pattern=URL_MONTH_NAME_YEAR),
 )
 
 #: (bank_code, doc type code) -> where the date of the series is read from.
@@ -516,7 +516,7 @@ POLICY_DATE_RULES: dict[tuple[str, str], PolicyDateRule] = {
     ("au", "A1"): PolicyDateRule(steps=(
         DateStep(name="title:iso-day", field="title", pattern=RBA_DECISION_TITLE),)),
     ("au", "A3"): PolicyDateRule(steps=(
-        _url(RBA_MINUTES_URL_ISO, "pdf_url:iso"), _url(RBA_MINUTES_URL_DMY, "pdf_url:ddmmyyyy"))),
+        _url(RBA_MINUTES_URL_ISO, "document_url:iso"), _url(RBA_MINUTES_URL_DMY, "document_url:ddmmyyyy"))),
     ("au", "E1"): PolicyDateRule(steps=(_url(RBA_SMP_URL),)),
     ("ca", "A3"): PolicyDateRule(steps=(_url(BOC_DELIBERATIONS_URL),)),
     ("ca", "E1"): PolicyDateRule(steps=(_url(BOC_MPR_URL),), report_pattern=BOC_MPR_REPORT_URL),
@@ -555,7 +555,7 @@ def same_period(a: DateMatch, b: DateMatch) -> bool:
 
 
 def infer_policy_date(bank_code: str, doc_type, *, title: Optional[str] = "",
-                      pdf_url: Optional[str] = "", source_url: Optional[str] = "",
+                      document_url: Optional[str] = "", source_url: Optional[str] = "",
                       rules: Optional[dict] = None) -> Inference:
     """The date of one policy document, from its own title and URLs only.
 
@@ -569,9 +569,9 @@ def infer_policy_date(bank_code: str, doc_type, *, title: Optional[str] = "",
     rule = (POLICY_DATE_RULES if rules is None else rules).get((bank_code, code))
     if rule is None:
         return Inference(STATUS_NO_RULE)
-    if rule.report_pattern and not re.search(rule.report_pattern, pdf_url or "", re.I):
+    if rule.report_pattern and not re.search(rule.report_pattern, document_url or "", re.I):
         return Inference(STATUS_NOT_A_REPORT)
-    fields = {"title": title, "pdf_url": pdf_url, "source_url": source_url}
+    fields = {"title": title, "document_url": document_url, "source_url": source_url}
     found: list[tuple[DateStep, DateMatch]] = []
     for step in rule.steps:
         text = fields[step.field]

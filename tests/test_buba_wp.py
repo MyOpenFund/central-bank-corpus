@@ -40,7 +40,7 @@ def _page(name: str) -> str:
 
 
 def _blob_names(records) -> list[str]:
-    return [r.pdf_url.rsplit("/", 1)[-1] for r in records]
+    return [r.document_url.rsplit("/", 1)[-1] for r in records]
 
 
 # ---- pagination -------------------------------------------------------
@@ -79,7 +79,7 @@ def test_old_papers_take_the_blob_and_its_date_off_the_listing(fetcher_factory):
 
     assert len(f.calls) == 1                            # listing only, no paper pages
     newest = recs[0]
-    assert newest.pdf_url.endswith(
+    assert newest.document_url.endswith(
         "/472B63F073F071307366337C94F8C870/2000-08-31-dkp-04-data.pdf")
     assert newest.date == date(2000, 8, 31) and newest.date_precision == "day"
     assert newest.bank_code == "de" and newest.doc_type == DocType.D1
@@ -105,7 +105,7 @@ def test_recent_papers_are_completed_from_their_own_page(fetcher_factory):
     rec = recs[0]
     assert rec.title == "Collateral policy surprises"    # og:title, not the listing blurb
     assert rec.date == date(2026, 8, 18) and rec.date_precision == "day"
-    assert rec.pdf_url.endswith("/2026-08-18-dkp-22-data.pdf")
+    assert rec.document_url.endswith("/2026-08-18-dkp-22-data.pdf")
     assert rec.source_url.endswith("/collateral-policy-surprises-957108")
 
 

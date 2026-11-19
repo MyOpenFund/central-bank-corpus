@@ -383,7 +383,7 @@ def reindex_bis_from_disk(only_banks: Optional[set[str]] = None,
                 if not bucket:
                     break
                 for bank in banks:
-                    cand = compute_doc_id(bank, DocType.C1, meta.pdf_url)
+                    cand = compute_doc_id(bank, DocType.C1, meta.document_url)
                     hit = bucket.get(cand)
                     if hit is None or hit[0] != bank:
                         continue
@@ -396,7 +396,7 @@ def reindex_bis_from_disk(only_banks: Optional[set[str]] = None,
                             title = ""
                     rec = DocRecord(
                         bank_code=bank, doc_type=DocType.C1,
-                        title=title or meta.pdf_url, pdf_url=meta.pdf_url,
+                        title=title or meta.document_url, document_url=meta.document_url,
                         source_url=meta.detail_url, date=meta.date,
                         provenance="bis_index", mime_type="application/pdf",
                         # r<YYMMDD> in the BIS review slug
@@ -486,7 +486,7 @@ def run_wayback_recovery(bank_code: str, url_prefix: str, doc_type: DocType,
     """Recover official PDFs the bank took offline, from the Wayback Machine.
 
     Lists archived PDFs under `url_prefix` (CDX), and saves one record per paper
-    with `pdf_url` = the original (dead) bank URL [for citation + stable doc_id]
+    with `document_url` = the original (dead) bank URL [for citation + stable doc_id]
     and the Wayback raw-snapshot URL as the fallback Storage actually downloads.
     Date is the year embedded in the URL; `provenance="wayback"`.
     """
@@ -519,11 +519,11 @@ def run_repec_wayback_recovery(bank_code: str, dry_run: bool = False,
     def _recs() -> Iterator[DocRecord]:
         for rec in rep.discover_bank(bank_code, stats=stats):
             # Skip by URL (not doc_id): already-saved papers — incl. ones recovered
-            # earlier with a different date precision — share the same pdf_url, so
+            # earlier with a different date precision — share the same document_url, so
             # this avoids both re-pinging Wayback and creating date-mismatch dupes.
-            if storage.is_known_url(rec.pdf_url) or rec.doc_id in storage._ids:
+            if storage.is_known_url(rec.document_url) or rec.doc_id in storage._ids:
                 continue
-            wb = wayback_for_url(fetcher, rec.pdf_url)
+            wb = wayback_for_url(fetcher, rec.document_url)
             if wb:
                 rec.alt_urls = list(rec.alt_urls) + [wb]
                 rec.provenance = "wayback"
@@ -552,7 +552,7 @@ def run_boe_wp_recovery(years=None, dry_run: bool = True,
                 continue
             yield DocRecord(
                 bank_code="gb", doc_type=DocType.D1, title=title,
-                pdf_url=pdf, date=d, provenance="bank_site",
+                document_url=pdf, date=d, provenance="bank_site",
                 mime_type="application/pdf",
                 # sitemap_pages only knows the year (date(y, 1, 1)).
                 date_precision="year", date_source="bank_site",
@@ -589,12 +589,12 @@ def run_boe_recovery(sitemap_path: str, doc_type: DocType, href_filter: str,
                 continue
             # doc_pages only knows the year (date(y, 1, 1)).
             rec_date, prec = d, "year"
-            inf = infer_policy_date("gb", doc_type, title=title, pdf_url=url, source_url=page)
+            inf = infer_policy_date("gb", doc_type, title=title, document_url=url, source_url=page)
             if inf.status == STATUS_DATED and inf.match.date.year == d.year:
                 rec_date, prec = inf.match.date, inf.match.precision
             yield DocRecord(
                 bank_code="gb", doc_type=doc_type, title=title,
-                pdf_url=url, source_url=page, date=rec_date, provenance="bank_site",
+                document_url=url, source_url=page, date=rec_date, provenance="bank_site",
                 mime_type="application/pdf" if pdf else "",
                 date_precision=prec, date_source="bank_site",
             )
@@ -640,7 +640,7 @@ def run_listing_pdf_recovery(bank_code: str, doc_type: DocType, listing_urls,
                 seen.add(url)
                 yield DocRecord(
                     bank_code=bank_code, doc_type=doc_type,
-                    title=f"{title} {d.isoformat()}", pdf_url=url, date=d,
+                    title=f"{title} {d.isoformat()}", document_url=url, date=d,
                     provenance="bank_site", mime_type=mime,
                     date_precision="day",    # `path_regex` captures a YYYYMMDD
                 )
@@ -674,7 +674,7 @@ def run_ecb_pub_recovery(section: str, doc_type: DocType, mime: str = "applicati
         projections: `projectionsYYYYMM`, a month) is read by that rule -- the
         same reading as the `policy-dates` backfill, and one a digit-only
         file hash cannot fool. Any other section: the filename format."""
-        inf = infer_policy_date("ecb", doc_type, pdf_url=url)
+        inf = infer_policy_date("ecb", doc_type, document_url=url)
         if inf.status == STATUS_DATED:
             return inf.match.date, inf.match.precision
         return date_and_precision_from_url(url, date_fmt)
@@ -684,7 +684,7 @@ def run_ecb_pub_recovery(section: str, doc_type: DocType, mime: str = "applicati
         # (YYYYMM -> month, bare YYYY -> year), never a blanket "day".
         return DocRecord(bank_code="ecb", doc_type=doc_type,
                          title=f"ECB {doc_type.name} {d.isoformat()}",
-                         pdf_url=url, alt_urls=alt or [], date=d,
+                         document_url=url, alt_urls=alt or [], date=d,
                          provenance="bank_site", mime_type=mime,
                          date_precision=prec, date_source="bank_site")
 

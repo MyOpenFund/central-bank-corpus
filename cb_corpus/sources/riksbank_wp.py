@@ -91,7 +91,7 @@ def _split_number_title(raw: str) -> tuple[Optional[int], str]:
 
 def parse_wp_listing(html: str, base_url: str = RIKSBANK
                      ) -> list[tuple[Optional[int], Optional[date], str, str]]:
-    """(number, date, title, pdf_url) per paper on one listing page.
+    """(number, date, title, document_url) per paper on one listing page.
 
     Content-based: any anchor linking a ``working-papers`` asset is a paper,
     regardless of file extension (some historical rows link the PDF with none —
@@ -104,18 +104,18 @@ def parse_wp_listing(html: str, base_url: str = RIKSBANK
     for a in soup.find_all("a", href=True):
         if not _WP_HREF_RE.search(a["href"]):
             continue
-        pdf_url = urljoin(base_url, a["href"])
-        if pdf_url in seen:
+        document_url = urljoin(base_url, a["href"])
+        if document_url in seen:
             continue
-        seen.add(pdf_url)
+        seen.add(document_url)
         title_el = a.select_one(".header--file__title")
         raw_title = title_el.get_text(" ", strip=True) if title_el else ""
         label_el = a.select_one(".label")
         d = _parse_label_date(label_el.get_text(strip=True) if label_el else "")
         num, title = _split_number_title(raw_title)
         if not title:
-            title = raw_title or pdf_url.rsplit("/", 1)[-1]
-        out.append((num, d, title, pdf_url))
+            title = raw_title or document_url.rsplit("/", 1)[-1]
+        out.append((num, d, title, document_url))
     return out
 
 
@@ -133,13 +133,13 @@ def discover_riksbank_wp(fetcher: Fetcher, since: Optional[date] = None,
         if not rows:
             break
         page_has_fresh = False
-        for _num, d, title, pdf_url in rows:
+        for _num, d, title, document_url in rows:
             if since and d and d < since:
                 continue
             page_has_fresh = True
             yield DocRecord(
                 bank_code="se", doc_type=DocType.D1,
-                title=title, pdf_url=pdf_url, source_url=LISTING,
+                title=title, document_url=document_url, source_url=LISTING,
                 date=d, provenance="bank_site", mime_type="application/pdf",
                 date_precision="day" if d else None, date_source="bank_site",
             )

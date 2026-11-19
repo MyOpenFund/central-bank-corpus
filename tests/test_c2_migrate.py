@@ -33,7 +33,7 @@ def test_match_key_url_collapses_double_slash():
 def test_c2_migrate_stamps_title_and_date(tmp_path, monkeypatch):
     native = [
         DocRecord(bank_code="ecb", doc_type=DocType.C2, title="Interview with Real Outlet",
-                  pdf_url="https://www.ecb.europa.eu/press/inter/date/2026/html/"
+                  document_url="https://www.ecb.europa.eu/press/inter/date/2026/html/"
                           "ecb.in260715~aa.en.html",
                   date=date(2026, 7, 16), provenance="bank_site", mime_type="text/html",
                   date_precision="day", date_source="bank_site"),
@@ -44,7 +44,7 @@ def test_c2_migrate_stamps_title_and_date(tmp_path, monkeypatch):
     cfg = Config(data_dir=tmp_path)
     row = {"doc_id": "id1", "bank_code": "ecb", "doc_type": "C2",
           "title": "ECB C2 2026-07-15",
-          "pdf_url": "https://www.ecb.europa.eu/press/inter/date/2026/html/ecb.in260715~aa.en.html",
+          "document_url": "https://www.ecb.europa.eu/press/inter/date/2026/html/ecb.in260715~aa.en.html",
           "date": "2026-07-16", "date_precision": "month", "date_source": "bank_site"}
     _write_ecb_manifest(cfg, [row])
 
@@ -56,7 +56,7 @@ def test_c2_migrate_stamps_title_and_date(tmp_path, monkeypatch):
     assert a["date"] == "2026-07-16"
     assert a["date_precision"] == "day" and a["date_source"] == "bank_site"
     # identity untouched
-    assert a["doc_id"] == "id1" and a["pdf_url"] == row["pdf_url"]
+    assert a["doc_id"] == "id1" and a["document_url"] == row["document_url"]
 
     csv_rows = _read_csv(cfg)
     r1 = next(r for r in csv_rows if r["doc_id"] == "id1")
@@ -66,7 +66,7 @@ def test_c2_migrate_stamps_title_and_date(tmp_path, monkeypatch):
 def test_c2_migrate_keeps_nongeneric_titles(tmp_path, monkeypatch):
     native = [
         DocRecord(bank_code="ecb", doc_type=DocType.C2, title="Foedb's Own Title",
-                  pdf_url="https://www.ecb.europa.eu/press/inter/date/2026/html/"
+                  document_url="https://www.ecb.europa.eu/press/inter/date/2026/html/"
                           "ecb.in260715~aa.en.html",
                   date=date(2026, 7, 15), provenance="bank_site", mime_type="text/html",
                   date_precision="day", date_source="bank_site"),
@@ -77,7 +77,7 @@ def test_c2_migrate_keeps_nongeneric_titles(tmp_path, monkeypatch):
     cfg = Config(data_dir=tmp_path)
     row = {"doc_id": "id1", "bank_code": "ecb", "doc_type": "C2",
           "title": "A Hand-Picked Non-Generic Title",
-          "pdf_url": "https://www.ecb.europa.eu/press/inter/date/2026/html/ecb.in260715~aa.en.html",
+          "document_url": "https://www.ecb.europa.eu/press/inter/date/2026/html/ecb.in260715~aa.en.html",
           "date": "2026-07-15", "date_precision": "day", "date_source": "bank_site"}
     _write_ecb_manifest(cfg, [row])
 
@@ -96,7 +96,7 @@ def test_c2_migrate_keeps_nongeneric_titles(tmp_path, monkeypatch):
 def test_c2_migrate_matches_double_slash_urls(tmp_path, monkeypatch):
     native = [
         DocRecord(bank_code="ecb", doc_type=DocType.C2, title="Interview X",
-                  pdf_url="https://www.ecb.europa.eu/press/inter/date/2019/html/"
+                  document_url="https://www.ecb.europa.eu/press/inter/date/2019/html/"
                           "ecb.in191216~8014b1bae6.en.html",
                   date=date(2019, 12, 16), provenance="bank_site", mime_type="text/html",
                   date_precision="day", date_source="bank_site"),
@@ -108,7 +108,7 @@ def test_c2_migrate_matches_double_slash_urls(tmp_path, monkeypatch):
     legacy_url = ("https://www.ecb.europa.eu//press/inter/date/2019/html/"
                  "ecb.in191216~8014b1bae6.en.html")
     row = {"doc_id": "id1", "bank_code": "ecb", "doc_type": "C2",
-          "title": "ECB C2 2019-12-16", "pdf_url": legacy_url,
+          "title": "ECB C2 2019-12-16", "document_url": legacy_url,
           "date": "2019-12-16", "date_precision": "day", "date_source": "bank_site"}
     _write_ecb_manifest(cfg, [row])
 
@@ -118,7 +118,7 @@ def test_c2_migrate_matches_double_slash_urls(tmp_path, monkeypatch):
     after = {r["doc_id"]: r for r in iter_manifest_rows(cfg, "ecb")}
     a = after["id1"]
     assert a["title"] == "Interview X"
-    assert a["pdf_url"] == legacy_url                          # pdf_url untouched
+    assert a["document_url"] == legacy_url                          # document_url untouched
     normalized_native = "https://www.ecb.europa.eu/press/inter/date/2019/html/ecb.in191216~8014b1bae6.en.html"
     assert normalized_native in a["alt_urls"]                  # clean form registered
 
@@ -126,7 +126,7 @@ def test_c2_migrate_matches_double_slash_urls(tmp_path, monkeypatch):
 def test_c2_migrate_dry_run_touches_nothing(tmp_path, monkeypatch):
     native = [
         DocRecord(bank_code="ecb", doc_type=DocType.C2, title="Real Title",
-                  pdf_url="https://www.ecb.europa.eu/press/inter/date/2026/html/"
+                  document_url="https://www.ecb.europa.eu/press/inter/date/2026/html/"
                           "ecb.in260715~aa.en.html",
                   date=date(2026, 7, 15), provenance="bank_site", mime_type="text/html",
                   date_precision="day", date_source="bank_site"),
@@ -137,7 +137,7 @@ def test_c2_migrate_dry_run_touches_nothing(tmp_path, monkeypatch):
     cfg = Config(data_dir=tmp_path)
     row = {"doc_id": "id1", "bank_code": "ecb", "doc_type": "C2",
           "title": "ECB C2 2026-07-15",
-          "pdf_url": "https://www.ecb.europa.eu/press/inter/date/2026/html/ecb.in260715~aa.en.html",
+          "document_url": "https://www.ecb.europa.eu/press/inter/date/2026/html/ecb.in260715~aa.en.html",
           "date": "2026-07-15", "date_precision": "month", "date_source": "bank_site"}
     _write_ecb_manifest(cfg, [row])
     before = cfg.manifest_file("ecb").read_text()
@@ -153,15 +153,15 @@ def test_c2_migrate_dry_run_touches_nothing(tmp_path, monkeypatch):
 
 
 def test_c2_migrate_matches_corrupted_url(tmp_path, monkeypatch):
-    """A row whose pdf_url carries the ``.en.html/nter/...`` concatenation
+    """A row whose document_url carries the ``.en.html/nter/...`` concatenation
     artifact still joins the native foedb record (by the cleaned form) and
-    gets the clean URL registered in alt_urls -- pdf_url itself is left
+    gets the clean URL registered in alt_urls -- document_url itself is left
     untouched (same file-on-disk invariant as every other match path)."""
     clean_url = ("https://www.ecb.europa.eu/press/inter/date/2019/html/"
                 "ecb.in191216~e43be9798e.en.html")
     native = [
         DocRecord(bank_code="ecb", doc_type=DocType.C2, title="Interview X",
-                  pdf_url=clean_url,
+                  document_url=clean_url,
                   date=date(2019, 12, 16), provenance="bank_site", mime_type="text/html",
                   date_precision="day", date_source="bank_site"),
     ]
@@ -171,7 +171,7 @@ def test_c2_migrate_matches_corrupted_url(tmp_path, monkeypatch):
     cfg = Config(data_dir=tmp_path)
     corrupted_url = clean_url + "/nter/date/2019/html/ecb.in191216~e43be9798e.en.html"
     row = {"doc_id": "id1", "bank_code": "ecb", "doc_type": "C2",
-          "title": "ECB C2 2019-12-16", "pdf_url": corrupted_url,
+          "title": "ECB C2 2019-12-16", "document_url": corrupted_url,
           "date": "2019-12-16", "date_precision": "day", "date_source": "bank_site"}
     _write_ecb_manifest(cfg, [row])
 
@@ -184,7 +184,7 @@ def test_c2_migrate_matches_corrupted_url(tmp_path, monkeypatch):
 
     after = {r["doc_id"]: r for r in iter_manifest_rows(cfg, "ecb")}
     a = after["id1"]
-    assert a["pdf_url"] == corrupted_url                       # pdf_url untouched
+    assert a["document_url"] == corrupted_url                       # document_url untouched
     assert clean_url in a["alt_urls"]                          # clean form registered
 
 
@@ -198,7 +198,7 @@ def test_c2_migrate_matches_known_rehash(tmp_path, monkeypatch):
               "ecb.in191202~869aa1e5ad.en.html")
     native = [
         DocRecord(bank_code="ecb", doc_type=DocType.C2, title="Interview Y",
-                  pdf_url=new_url,
+                  document_url=new_url,
                   date=date(2019, 12, 2), provenance="bank_site", mime_type="text/html",
                   date_precision="day", date_source="bank_site"),
     ]
@@ -207,7 +207,7 @@ def test_c2_migrate_matches_known_rehash(tmp_path, monkeypatch):
 
     cfg = Config(data_dir=tmp_path)
     row = {"doc_id": "id1", "bank_code": "ecb", "doc_type": "C2",
-          "title": "ECB C2 2019-12-02", "pdf_url": old_url,
+          "title": "ECB C2 2019-12-02", "document_url": old_url,
           "date": "2019-12-02", "date_precision": "day", "date_source": "bank_site"}
     _write_ecb_manifest(cfg, [row])
 
@@ -220,7 +220,7 @@ def test_c2_migrate_matches_known_rehash(tmp_path, monkeypatch):
 
     after = {r["doc_id"]: r for r in iter_manifest_rows(cfg, "ecb")}
     a = after["id1"]
-    assert a["pdf_url"] == old_url                              # pdf_url untouched
+    assert a["document_url"] == old_url                              # document_url untouched
     assert new_url in a["alt_urls"]                             # new-hash form registered
 
 
@@ -234,7 +234,7 @@ def test_c2_migrate_non_c2_ecb_rows_pass_through_unchanged(tmp_path, monkeypatch
 
     cfg = Config(data_dir=tmp_path)
     d1_row = {"doc_id": "wpid", "bank_code": "ecb", "doc_type": "D1",
-             "title": "Some WP", "pdf_url": "https://www.ecb.europa.eu/pub/pdf/x.pdf",
+             "title": "Some WP", "document_url": "https://www.ecb.europa.eu/pub/pdf/x.pdf",
              "date": "2026-01-01"}
     _write_ecb_manifest(cfg, [d1_row])
 

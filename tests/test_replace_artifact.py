@@ -67,9 +67,9 @@ class FakeFetcher:
 
 
 def _row(doc_id, bank, *, content, ext="pdf", mime="application/pdf", doc_type="D1",
-         html_path=None, source_url="", pdf_url=None, alt_urls=None):
+         html_path=None, source_url="", document_url=None, alt_urls=None):
     return {"doc_id": doc_id, "bank_code": bank, "doc_type": doc_type, "title": doc_id,
-            "pdf_url": pdf_url or f"https://{bank}.example/{doc_id}.pdf",
+            "document_url": document_url or f"https://{bank}.example/{doc_id}.pdf",
             "source_url": source_url, "mime_type": mime,
             "sha256": sha(content) if content is not None else None,
             "local_path": f"data/raw/{bank}/{doc_type}/2020/{doc_id}.{ext}",
@@ -245,7 +245,7 @@ def test_fallback_candidate_after_a_failing_one_write(tmp_path):
     assert (r["old_sha256"], r["new_sha256"]) == (sha(TRUNCATED), sha(GOOD))
     assert _file(cfg, row).read_bytes() == GOOD
     new = _rows(cfg)["wp895"]
-    assert new["doc_id"] == "wp895" and new["pdf_url"] == row["pdf_url"]
+    assert new["doc_id"] == "wp895" and new["document_url"] == row["document_url"]
     assert new["local_path"] == row["local_path"]
     assert new["sha256"] == sha(GOOD) and new["mime_type"] == "application/pdf"
     assert new["alt_urls"] == ["https://a/good"]
@@ -260,9 +260,9 @@ def test_fallback_candidate_after_a_failing_one_write(tmp_path):
     assert lines[0]["doc_id"] == "wp895" and lines[0]["outcome"] == "replaced"
 
 
-def test_winning_url_moved_to_front_and_own_pdf_url_not_added(tmp_path):
+def test_winning_url_moved_to_front_and_own_document_url_not_added(tmp_path):
     own = "https://fr.example/own.pdf"
-    row = _row("r1", "fr", content=TRUNCATED, pdf_url=own,
+    row = _row("r1", "fr", content=TRUNCATED, document_url=own,
                alt_urls=["https://mirror/x.pdf", "https://a/good"])
     cfg = _setup(tmp_path, [(row, TRUNCATED)])
     f = FakeFetcher({"https://a/good": GOOD})
@@ -271,12 +271,12 @@ def test_winning_url_moved_to_front_and_own_pdf_url_not_added(tmp_path):
     assert _one(s, "r1")["outcome"] == "replaced"
     assert _rows(cfg)["r1"]["alt_urls"] == ["https://a/good", "https://mirror/x.pdf"]
 
-    row2 = _row("r2", "fr", content=TRUNCATED, pdf_url=own)
+    row2 = _row("r2", "fr", content=TRUNCATED, document_url=own)
     cfg2 = _setup(tmp_path / "two", [(row2, TRUNCATED)])
     s2 = replace_artifacts(cfg2, _plan(tmp_path, [["r2", "replace", own, "n"]], "p2.csv"),
                            write=True, fetcher=FakeFetcher({own: GOOD}))
     assert _one(s2, "r2")["outcome"] == "replaced"
-    assert _rows(cfg2)["r2"]["alt_urls"] == []                    # the row's own pdf_url
+    assert _rows(cfg2)["r2"]["alt_urls"] == []                    # the row's own document_url
 
 
 def test_all_candidates_fail_unresolved_nothing_written(tmp_path):
@@ -330,13 +330,13 @@ def test_only_duplicate_candidates_refused_first_owner_reported(tmp_path):
 
 
 def test_wayback_keyword_expands_to_raw_captures(tmp_path):
-    row = _row("wp101", "fr", content=TRUNCATED, pdf_url="https://www.banque-france.fr/wp101.pdf")
+    row = _row("wp101", "fr", content=TRUNCATED, document_url="https://www.banque-france.fr/wp101.pdf")
     cfg = _setup(tmp_path, [(row, TRUNCATED)])
-    pdf_url = row["pdf_url"]
-    newest = f"https://web.archive.org/web/20150101000000id_/{pdf_url}"
-    older = f"https://web.archive.org/web/20090101000000id_/{pdf_url}"
+    document_url = row["document_url"]
+    newest = f"https://web.archive.org/web/20150101000000id_/{document_url}"
+    older = f"https://web.archive.org/web/20090101000000id_/{document_url}"
     f = FakeFetcher({newest: TRUNCATED, older: GOOD},
-                    cdx={pdf_url: [["timestamp", "digest"], ["20090101000000", "A"],
+                    cdx={document_url: [["timestamp", "digest"], ["20090101000000", "A"],
                                    ["20150101000000", "B"]]})
     s = replace_artifacts(cfg, _plan(tmp_path, [["wp101", "replace", "wayback", "n"]]),
                           write=True, fetcher=f)
@@ -351,7 +351,7 @@ def test_wayback_keyword_expands_to_raw_captures(tmp_path):
 def test_wayback_unreachable_or_empty_is_a_reason(tmp_path):
     row = _row("w", "fr", content=TRUNCATED)
     cfg = _setup(tmp_path, [(row, TRUNCATED)])
-    f = FakeFetcher(cdx={row["pdf_url"]: RuntimeError("proxy said no")})
+    f = FakeFetcher(cdx={row["document_url"]: RuntimeError("proxy said no")})
     r = _one(replace_artifacts(cfg, _plan(tmp_path, [["w", "replace", "wayback", "n"]]),
                                fetcher=f), "w")
     assert r["outcome"] == "unresolved"
@@ -426,7 +426,7 @@ def test_idempotent_second_write(tmp_path):
 
 def test_retire_moves_file_removes_row_stamps_owner(tmp_path):
     ghost = _row("ghost", "it", content=EMPTY, doc_type="C1",
-                 pdf_url="https://www.bis.org/review/r200924a.pdf",
+                 document_url="https://www.bis.org/review/r200924a.pdf",
                  source_url="https://www.bis.org/review/r200924a.htm")
     owner = _row("owner", "it", content=OWNER, doc_type="C1")
     keep = _row("keep", "it", content=GOOD, doc_type="C1")
@@ -441,10 +441,10 @@ def test_retire_moves_file_removes_row_stamps_owner(tmp_path):
     assert r["outcome"] == "retired" and r["owner_doc_id"] == "owner"
     rows = _rows(cfg)
     assert "ghost" not in rows
-    assert rows["owner"]["alt_urls"] == [ghost["pdf_url"]]
+    assert rows["owner"]["alt_urls"] == [ghost["document_url"]]
     assert rows["owner"]["alt_source_urls"] == [ghost["source_url"]]
     assert rows["owner"]["retired_duplicates"] == [{
-        "doc_id": "ghost", "pdf_url": ghost["pdf_url"], "source_url": ghost["source_url"],
+        "doc_id": "ghost", "document_url": ghost["document_url"], "source_url": ghost["source_url"],
         "previous_sha256": sha(EMPTY), "at": "2026-11-19T10:00:00+00:00",
         "note": "same speech as owner"}]
     assert not _file(cfg, ghost).exists()
@@ -541,8 +541,8 @@ def test_retire_finishes_a_run_killed_after_the_move(tmp_path):
     the manifest: the retire completes without a second audit entry."""
     ghost = _row("ghost", "it", content=EMPTY, doc_type="C1")
     owner = _row("owner", "it", content=OWNER, doc_type="C1")
-    owner["alt_urls"] = [ghost["pdf_url"]]
-    owner["retired_duplicates"] = [{"doc_id": "ghost", "pdf_url": ghost["pdf_url"]}]
+    owner["alt_urls"] = [ghost["document_url"]]
+    owner["retired_duplicates"] = [{"doc_id": "ghost", "document_url": ghost["document_url"]}]
     cfg = _setup(tmp_path, [(ghost, None), (owner, OWNER)])
     moved = cfg.orphans_dir / "it/C1/2020/ghost.pdf"
     moved.parent.mkdir(parents=True)
@@ -552,7 +552,7 @@ def test_retire_finishes_a_run_killed_after_the_move(tmp_path):
     assert _one(s, "ghost")["outcome"] == "retired"
     rows = _rows(cfg)
     assert set(rows) == {"owner"}
-    assert rows["owner"]["alt_urls"] == [ghost["pdf_url"]]
+    assert rows["owner"]["alt_urls"] == [ghost["document_url"]]
     assert len(rows["owner"]["retired_duplicates"]) == 1
 
 

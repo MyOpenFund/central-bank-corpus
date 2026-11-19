@@ -47,9 +47,9 @@ built: handle stamping is done by `wp-migrate --write` and `repec-reconcile`
    (→ no need to download anything) if ANY of:
    - **key match**: the bank-specific number (extractors `_KEY_FROM_HANDLE` /
      `_KEY_FROM_PDF` in `cb_corpus/wp_migrate.py`) extracted from the RePEc
-     handle equals a number extracted from a manifest row's `pdf_url` /
+     handle equals a number extracted from a manifest row's `document_url` /
      `source_url`;
-   - **URL match**: the RePEc download URL equals a manifest `pdf_url`
+   - **URL match**: the RePEc download URL equals a manifest `document_url`
      (after normalization: scheme, doubled slashes, `~hash` suffix stripped);
    - **title match**: normalized titles are equal (see below).
 
@@ -139,7 +139,7 @@ never fuzzy), `--write` stamps the RePEc handle into a new metadata field:
 
 Why this is safe and useful:
 
-- `doc_id = sha1(bank|type|pdf_url)` — adding `repec_handle` changes nothing
+- `doc_id = sha1(bank|type|document_url)` — adding `repec_handle` changes nothing
   about identity, file, `sha256` or `local_path`. Pure metadata update,
   zero re-downloads.
 - **Reruns get faster and stricter**: rows that already carry a handle are

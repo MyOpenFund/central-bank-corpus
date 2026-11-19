@@ -165,7 +165,7 @@ def discover_buba_wp(fetcher: Fetcher, since: Optional[date] = None,
                 seen.add(key)
             yield DocRecord(
                 bank_code="de", doc_type=DocType.D1,
-                title=title or pdf.rsplit("/", 1)[-1], pdf_url=pdf, source_url=page or LISTING,
+                title=title or pdf.rsplit("/", 1)[-1], document_url=pdf, source_url=page or LISTING,
                 date=d, provenance="bank_site", mime_type="application/pdf",
                 date_precision="day" if d else None, date_source="bank_site",
             )

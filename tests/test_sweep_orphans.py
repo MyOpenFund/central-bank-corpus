@@ -54,7 +54,7 @@ def _index(cfg: Config, bank: str, *rows: dict, blank_line: bool = False) -> Non
 
 def _row(doc_id: str, data: bytes, bank: str, rel: str) -> dict:
     return {"doc_id": doc_id, "bank_code": bank, "doc_type": rel.split("/")[1],
-            "sha256": _sha(data), "local_path": f"data/raw/{rel}", "pdf_url": f"https://x/{doc_id}.pdf"}
+            "sha256": _sha(data), "local_path": f"data/raw/{rel}", "document_url": f"https://x/{doc_id}.pdf"}
 
 
 # --- Task 1: index, walk, classify ------------------------------------------
@@ -298,7 +298,7 @@ def test_absolute_local_path_pointing_at_the_owner_file_is_accepted(tmp_path):
     owner_copy.write_bytes(PDF_A)
     dup = _write(cfg, "us/C1/2015/dup.pdf", PDF_A)
     row = {"doc_id": "aaaa", "bank_code": "us", "doc_type": "C1", "sha256": _sha(PDF_A),
-           "local_path": str(owner_copy), "pdf_url": "https://x/aaaa.pdf"}
+           "local_path": str(owner_copy), "document_url": "https://x/aaaa.pdf"}
     _index(cfg, "us", row)
     s = orphans.sweep_orphans(cfg, move=True)
     assert s.owner_missing == 0

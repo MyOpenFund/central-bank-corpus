@@ -53,7 +53,7 @@ def _date8(s: str) -> Optional[date]:
 
 
 def parse_minutes_links(html: str, base_url: str = FED) -> list[tuple[date, str]]:
-    """Return (meeting_date, pdf_url) for FOMC minutes linked on a page."""
+    """Return (meeting_date, document_url) for FOMC minutes linked on a page."""
     soup = BeautifulSoup(html, "lxml")
     out: list[tuple[date, str]] = []
     for a in soup.find_all("a", href=True):
@@ -147,7 +147,7 @@ class FedAdapter(BankAdapter):
                 yield DocRecord(
                     bank_code="us", doc_type=doc_type,
                     title=f"{label} {d.isoformat()}",
-                    pdf_url=link, source_url=url, date=d,
+                    document_url=link, source_url=url, date=d,
                     provenance="bank_site",
                     mime_type=mime,
                     # every parser reads the full YYYYMMDD of the document URL

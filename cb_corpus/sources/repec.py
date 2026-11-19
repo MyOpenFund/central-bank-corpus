@@ -342,7 +342,7 @@ class RePEcDiscovery:
                             bank_code=bank_code,
                             doc_type=doc_type,
                             title=title,
-                            pdf_url=cands[0],
+                            document_url=cands[0],
                             alt_urls=cands[1:],          # tried by Storage if cands[0] fails
                             source_url=paper_url,
                             date=pub_date,

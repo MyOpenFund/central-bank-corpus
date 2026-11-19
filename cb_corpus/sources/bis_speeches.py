@@ -41,7 +41,7 @@ _REVIEW_PDF_RE = re.compile(r"^https?://[^/]+/review/r(\d{6})[a-z]?\.pdf$", re.I
 
 @dataclass
 class BISSpeechMeta:
-    pdf_url: str
+    document_url: str
     detail_url: str
     date: Optional[date]
 
@@ -92,7 +92,7 @@ def parse_year_sitemap(xml: str) -> list[BISSpeechMeta]:
             continue
         d = _parse_slug_date(m.group(1))
         detail = pdf[:-4] + ".htm"
-        out.append(BISSpeechMeta(pdf_url=pdf, detail_url=detail, date=d))
+        out.append(BISSpeechMeta(document_url=pdf, detail_url=detail, date=d))
     return out
 
 
@@ -208,7 +208,7 @@ class BISSpeechIndex:
                     continue
                 if until and meta.date > until:
                     continue
-                if skip_url is not None and skip_url(meta.pdf_url):
+                if skip_url is not None and skip_url(meta.document_url):
                     continue
                 try:
                     html = self.fetcher.get_text(meta.detail_url)
@@ -226,8 +226,8 @@ class BISSpeechIndex:
                 yield DocRecord(
                     bank_code=bank.code,
                     doc_type=DocType.C1,
-                    title=title or meta.pdf_url,
-                    pdf_url=meta.pdf_url,
+                    title=title or meta.document_url,
+                    document_url=meta.document_url,
                     source_url=meta.detail_url,
                     date=meta.date,
                     provenance="bis_index",
@@ -252,7 +252,7 @@ def parse_listing(html: str, base_url: str = BIS_BASE) -> list:
         title: str
         institution: str
         detail_url: str
-        pdf_url: Optional[str]
+        document_url: Optional[str]
 
     def _legacy_parse_date(t: str) -> Optional[date]:
         from datetime import datetime as _dt
@@ -284,7 +284,7 @@ def parse_listing(html: str, base_url: str = BIS_BASE) -> list:
             title=link.get_text(strip=True),
             institution=institution,
             detail_url=urljoin(base_url, link["href"]),
-            pdf_url=pdf,
+            document_url=pdf,
         ))
     return items
 

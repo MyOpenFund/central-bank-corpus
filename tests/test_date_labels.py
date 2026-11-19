@@ -29,7 +29,7 @@ def captured(monkeypatch):
 
 def test_docrecord_accepts_none_precision_and_serializes_null():
     rec = DocRecord(bank_code="de", doc_type=DocType.D1, title="t",
-                    pdf_url="https://x/a.pdf", date=None, date_precision=None)
+                    document_url="https://x/a.pdf", date=None, date_precision=None)
     assert rec.to_row()["date_precision"] is None
 
 
@@ -126,7 +126,7 @@ def test_generic_sitemap_lastmod_labelled_as_such():
             return xml
     ad = GenericSitemapAdapter(get_bank("ch"), F(), sitemap_url="https://bank.example/sm.xml",
                                patterns={DocType.E1: r"/pub/"})
-    recs = {r.pdf_url.rsplit("/", 1)[-1]: r for r in ad._discover_native(DocType.E1, None)}
+    recs = {r.document_url.rsplit("/", 1)[-1]: r for r in ad._discover_native(DocType.E1, None)}
     a, b, c = recs["a.pdf"], recs["2020-05-06-b.pdf"], recs["c.pdf"]
     assert (a.date, a.date_precision, a.date_source) == (date(2021, 3, 4), "day", "sitemap_lastmod")
     assert (b.date, b.date_precision, b.date_source) == (date(2020, 5, 6), "day", "bank_site")
@@ -188,12 +188,12 @@ def test_wp_migrate_undated_native_touches_no_date_field(monkeypatch, extra):
     without labels into day/bank_site."""
     from cb_corpus import wp_migrate
     native = [DocRecord(bank_code="fr", doc_type=DocType.D1, title="P",
-                        pdf_url="https://www.banque-france.fr/system/files/2006-03/WP155.pdf",
+                        document_url="https://www.banque-france.fr/system/files/2006-03/WP155.pdf",
                         date=None, date_precision=None)]
     monkeypatch.setitem(wp_migrate._NATIVE, "fr", lambda fetcher: iter(native))
     row = {"doc_id": "fr155", "bank_code": "fr", "doc_type": "D1", "date": "2006-03-01",
            "year": 2006,
-           "pdf_url": "https://publications.banque-france.fr/wp_155_2006.pdf",
+           "document_url": "https://publications.banque-france.fr/wp_155_2006.pdf",
            "source_url": "https://ideas.repec.org/p/bfr/banfra/155.html", **extra}
     before = dict(row)
     _summary, [c] = wp_migrate.build_report("fr", fetcher=None, manifest_rows=[row])
@@ -201,7 +201,7 @@ def test_wp_migrate_undated_native_touches_no_date_field(monkeypatch, extra):
     wp_migrate.apply_change(row, c)
     for k in ("date", "year", "date_precision", "date_source"):
         assert row.get(k) == before.get(k), k
-    assert native[0].pdf_url in row["alt_urls"]
+    assert native[0].document_url in row["alt_urls"]
     assert row["repec_handle"] == "RePEc:bfr:banfra:155"
 
 
@@ -296,9 +296,9 @@ def test_candidates_pass_undated_record_has_no_precision(tmp_path, monkeypatch):
     cfg = Config(data_dir=tmp_path)
     dead = "https://www.banque-france.fr/old/dt987.pdf"
     final = "https://www.banque-france.fr/new/dt987.pdf"
-    _write_inventory(cfg, [_entry(bank="fr", pdf_url=dead)])
+    _write_inventory(cfg, [_entry(bank="fr", document_url=dead)])
     cand = _write_candidates(tmp_path, [{
-        "dead_pdf_url": dead, "file_path": str(_make_local_pdf(tmp_path)),
+        "dead_document_url": dead, "file_path": str(_make_local_pdf(tmp_path)),
         "recovered_from": "bank_site", "final_url": final}])
     _stub_refresh_metadata(monkeypatch, title="WP 987")       # no date
     run_recover_downloads(config=cfg, fetcher=_NullFetcher(), candidates=str(cand),

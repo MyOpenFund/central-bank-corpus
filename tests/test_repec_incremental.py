@@ -93,7 +93,7 @@ def test_default_behavior_unchanged(monkeypatch):
              _paper_url("0001"): _paper_html("0001")}
     d = _mk(pages)
     recs = list(d.discover_bank("se"))                   # no new kwargs
-    assert len(recs) == 1 and recs[0].pdf_url == "https://bank.test/wp/0001.pdf"
+    assert len(recs) == 1 and recs[0].document_url == "https://bank.test/wp/0001.pdf"
 
 
 def test_max_items_caps_papers_considered_per_series(monkeypatch):
@@ -137,7 +137,7 @@ def test_storage_is_known_source_url(tmp_path):
     data = tmp_path / "data"
     (data / "manifest").mkdir(parents=True)
     row = {"bank_code": "se", "doc_type": "D1", "title": "t",
-           "pdf_url": "https://bank.test/wp/1.pdf",
+           "document_url": "https://bank.test/wp/1.pdf",
            "source_url": _paper_url("0001"),
            "date": "2026-01-01", "language": "en", "provenance": "repec_discovery",
            "mime_type": "application/pdf", "sha256": "x", "local_path": "y",

@@ -66,7 +66,7 @@ _INDEX = """<html><body>
 
 def _bulletins(since):
     ad = get_adapter("ecb", fetcher=_Fetcher(_INDEX))
-    return [r.pdf_url.rsplit("/", 1)[-1] for r in ad._discover_bulletin(since)]
+    return [r.document_url.rsplit("/", 1)[-1] for r in ad._discover_bulletin(since)]
 
 
 def test_e4_since_in_march_keeps_the_current_years_bulletins():

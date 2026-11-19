@@ -78,7 +78,7 @@ def test_run_ecb_pub_recovery_falls_back_to_cdx(tmp_path, monkeypatch):
         name_filter=r"ecb\.fsr", config=cfg)
     assert r.get("saved") == 1                              # the .fr.pdf is filtered out
     rec = _manifest(cfg)[0]
-    assert rec["date"] == "2024-05-01" and rec["pdf_url"].endswith(".en.pdf")
+    assert rec["date"] == "2024-05-01" and rec["document_url"].endswith(".en.pdf")
 
 
 # --- run_wayback_recovery: year derived from URL, wayback provenance ---
@@ -116,7 +116,7 @@ def test_run_listing_pdf_recovery_url_template_mode(tmp_path, monkeypatch):
         config=cfg, dry_run=False)
     assert r.get("saved") == 1
     rec = _manifest(cfg)[0]
-    assert rec["date"] == "2023-03-22" and rec["pdf_url"].endswith("FOMCpresconf20230322.pdf")
+    assert rec["date"] == "2023-03-22" and rec["document_url"].endswith("FOMCpresconf20230322.pdf")
 
 
 # --- run_boe_wp_recovery: sitemap -> page -> real PDF ---
@@ -247,7 +247,7 @@ def test_listing_crawler_adapter_discovers_from_listing():
     page = '<a href="/en/mopo/mpmsche_minu/minu_2020/g200121.pdf">minutes</a>'
     jp = get_adapter("jp", _FakeFetcher({"minu_2020": page}))   # other years 404
     recs = list(jp.discover_all(scope=(DocType.A3,)))
-    assert any(r.pdf_url.endswith("g200121.pdf") and r.doc_type is DocType.A3
+    assert any(r.document_url.endswith("g200121.pdf") and r.doc_type is DocType.A3
                for r in recs)
 
 
@@ -303,7 +303,7 @@ def test_run_source_drives_a_custom_source(tmp_path, monkeypatch):
                 if storage.is_known_url(u):
                     continue
                 yield DocRecord(bank_code="us", doc_type=DocType.D1, title=n,
-                                pdf_url=u, date=date(2020, 1, 1),
+                                document_url=u, date=date(2020, 1, 1),
                                 mime_type="application/pdf")
 
     from cb_corpus.http import Fetcher
