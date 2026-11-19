@@ -100,6 +100,39 @@ def latest_capture(fetcher: Fetcher, url: str,
     return rows[0][0] if rows else None
 
 
+def pdf_captures(fetcher: Fetcher, url: str, *, max_captures: int) -> list[str]:
+    """Timestamps of the HTTP-200 PDF captures of ONE exact url, newest first.
+
+    Exact-url query like `latest_capture` (no prefix match). Captures whose
+    CDX `digest` (the payload hash) was already seen in a NEWER capture are
+    dropped: the same bytes would pass or fail the content check the same
+    way, so fetching them again only costs time. At most `max_captures`
+    timestamps are returned (the newest ones). Feed them to `raw_url`.
+
+    Unlike its siblings, a failed or unparsable CDX query RAISES instead of
+    returning nothing: `replace-artifact` reports "CDX unreachable" and "no
+    capture" differently, because the first one is worth a retry from a host
+    that can reach archive.org."""
+    if max_captures < 1:
+        raise ValueError("max_captures must be >= 1")
+    q = (f"{CDX}?url={_cdx_target(url)}&filter=statuscode:200&filter=mimetype:application/pdf"
+         f"&output=json&fl=timestamp,digest")
+    rows = json.loads(fetcher.get_text(q) or "[]")
+    rows = [r for r in rows if r and r[0] != "timestamp"]
+    rows.sort(key=lambda r: r[0], reverse=True)
+    out: list[str] = []
+    seen: set[str] = set()
+    for r in rows:
+        digest = r[1] if len(r) > 1 else ""
+        if digest and digest in seen:
+            continue
+        seen.add(digest)
+        out.append(r[0])
+        if len(out) >= max_captures:
+            break
+    return out
+
+
 def wayback_for_url(fetcher: Fetcher, url: str) -> Optional[str]:
     """Latest archived PDF snapshot (raw-bytes URL) for ONE exact url, or None.
 

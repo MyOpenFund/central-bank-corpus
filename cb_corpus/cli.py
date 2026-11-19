@@ -141,6 +141,22 @@ def main(argv: list[str] | None = None) -> int:
                     help="trailing bytes searched for the last %%%%EOF of a failing file "
                          "(default 1 MiB, at least 2048)")
 
+    ra = sub.add_parser("replace-artifact",
+                        help="Run a reviewed plan CSV (doc_id,action,candidates,note): "
+                             "replace a stored artifact with the first candidate URL (or "
+                             "Wayback capture) that passes the content check, or retire a "
+                             "duplicate ghost row onto its owner. Dry-run unless --write; "
+                             "JSON summary on stdout, CSV in reports/replace_artifact.csv.")
+    ra.add_argument("--plan", required=True, help="plan CSV path")
+    ra.add_argument("--write", action="store_true",
+                    help="write the files and manifest rows (default: dry-run; candidates "
+                         "are still fetched to say what would win)")
+    ra.add_argument("--csv", default="",
+                    help="report CSV path (default reports/replace_artifact.csv)")
+    ra.add_argument("--wayback-max-captures", type=int, default=None,
+                    help="captures tried for the `wayback` keyword, newest distinct "
+                         "payloads first (default 10)")
+
     r = sub.add_parser("report")
     r.add_argument("--banks", default="")
     r.add_argument("--years", type=_years, default=_years("2015-2025"))
@@ -445,6 +461,24 @@ def main(argv: list[str] | None = None) -> int:
         print(_json.dumps(asdict(summary)))
         print(f"audit-pdfs: {summary.rows_checked} PDF rows, {summary.ok} ok, "
               f"{summary.failing} failing {summary.by_reason} -> {summary.csv_path}")
+        return 0
+
+    if args.cmd == "replace-artifact":
+        import json as _json
+        from . import replace_artifact as _ra
+        try:
+            summary = _ra.replace_artifacts(
+                Config(), args.plan, write=args.write, csv_path=args.csv or None,
+                wayback_max_captures=(_ra.DEFAULT_WAYBACK_MAX_CAPTURES
+                                      if args.wayback_max_captures is None
+                                      else args.wayback_max_captures))
+        except _ra.PlanError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print(_json.dumps(asdict(summary)))
+        print(f"replace-artifact{' (dry-run)' if summary.dry_run else ''}: "
+              f"{len(summary.rows)} plan rows {summary.counts} -> {summary.csv_path}",
+              file=sys.stderr)
         return 0
 
     if args.cmd == "sweep-orphans":
