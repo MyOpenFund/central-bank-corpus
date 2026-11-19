@@ -513,3 +513,7 @@ tests/               1,000+ tests at 2026-11-18 (taxonomy, registry, parsers, de
 - **Data** (the manifest files under `data/` — metadata and links only; the documents
   themselves stay on their issuing banks' servers and keep their own terms):
   [CC BY 4.0](DATA_LICENSE) — attribute "MyOpenFund central-bank-corpus".
+- **Data schema change, 2026-11-19:** the manifest field `pdf_url` is renamed
+  `document_url` (canonical document URL: PDF preferred, HTML accepted). Same values, same
+  `doc_id`s; manifests published before the migration still carry `pdf_url`
+  (schema: [`INGESTION_RAG.md`](INGESTION_RAG.md)).

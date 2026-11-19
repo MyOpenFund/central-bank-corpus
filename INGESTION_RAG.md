@@ -27,6 +27,13 @@ it carries all the metadata and points to the local file.
 
 Fields useful for ingestion:
 
+> **Field rename, 2026-11-19:** `pdf_url` is now **`document_url`** (the canonical document
+> URL: PDF preferred, HTML accepted). Same value, same position in the row, same `doc_id`
+> (it hashes the URL value, not the field name). Manifests published before the NAS
+> migration (`migrate-document-url`) still carry `pdf_url`: a reader of older snapshots
+> takes `document_url`, else `pdf_url`.
+
+
 | Field | RAG usage |
 |---|---|
 | `local_path` | **path of the file to read** (PDF, or HTML if rendering failed) |
@@ -170,7 +177,8 @@ def doc_metadata(d: dict) -> dict:
         "date_precision": d.get("date_precision"),   # day | month | year | None (§1a)
         "date_kind": d.get("date_kind"),             # meeting | publication | period | None
         "title":  d.get("title", ""),
-        "source_url": d.get("document_url"),   # <- the official citation
+        "source_url": d.get("document_url") or d.get("pdf_url"),   # <- the official citation
+                                                     # (pdf_url: snapshots before 2026-11-19)
         "language":   d.get("language", "en"),
     }
 ```

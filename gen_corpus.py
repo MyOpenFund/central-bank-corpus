@@ -78,7 +78,7 @@ def build_corpus_md(cfg: Config) -> str:
     W("|---|---|")
     for f, u in [("bank_code", "bank/country **filter**"), ("doc_type", "type **filter**"),
                  ("title", "title / embedding"), ("date / year", "**temporal filter**"),
-                 ("document_url", "**citation** (official source)"), ("source_url", "origin page"),
+                 ("document_url", "**citation** (official source; `pdf_url` before 2026-11-19)"), ("source_url", "origin page"),
                  ("provenance", "`bis_index` / `bank_site` / `repec_discovery`"),
                  ("mime_type", "`application/pdf` / `text/html`"),
                  ("local_path", "**file path** to read"), ("html_path", "HTML source (if rendered)"),
