@@ -36,7 +36,13 @@ PATH_KEYS = ("local_path", "html_path")
 
 #: What an operator runs on a data root whose manifests are in an old form.
 MIGRATE_HINT = ("run `python -m cb_corpus migrate-contract --write` once on this "
-                "data root (deploy/README.md, \"documents contract\")")
+                "data root; a row it then reports as refused cannot be migrated and is "
+                "fixed by hand, as its report says (deploy/README.md, \"documents contract\")")
+#: What Storage._append says when the record it was given is outside the
+#: contract form: an in-memory record, never stored, which no one-shot fixes.
+PRODUCER_HINT = ("a producer bug: the code that built this record must set it in the "
+                 "documents-contract form; nothing was written (migrations fix stored "
+                 "rows only)")
 
 
 class ContractRowError(ValueError):
@@ -80,16 +86,18 @@ def contract_problems(row: Mapping[str, Any]) -> list[str]:
     return probs
 
 
-def check_contract_row(row: Mapping[str, Any], where: str = "") -> Any:
+def check_contract_row(row: Mapping[str, Any], where: str = "",
+                       hint: str = MIGRATE_HINT) -> Any:
     """`row` itself when it is in the documents-contract form (see
     contract_problems); ContractRowError otherwise, naming `where` (a file),
-    the row's doc_id, what is wrong and MIGRATE_HINT."""
+    the row's doc_id, what is wrong and `hint` (MIGRATE_HINT for a stored
+    row; PRODUCER_HINT for a record about to be written)."""
     probs = contract_problems(row)
     if probs:
         at = f"{where}: " if where else ""
         raise ContractRowError(
             f"{at}manifest row {row.get('doc_id')!r} is not in the documents-contract "
-            f"form ({'; '.join(probs)}): {MIGRATE_HINT}")
+            f"form ({'; '.join(probs)}): {hint}")
     return row
 
 

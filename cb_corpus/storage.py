@@ -38,7 +38,7 @@ from .config import Config
 from .filelock import locked_sidecar
 from .http import Fetcher
 from .htmlpdf import RenderRefused, render_allowed, render_url_to_pdf
-from .models import SOURCE_KEY, URL_KEY, DocRecord, check_contract_row
+from .models import PRODUCER_HINT, SOURCE_KEY, URL_KEY, DocRecord, check_contract_row
 from .pdfcheck import check_pdf_bytes, has_pdf_magic
 from .quarantine import Quarantine
 
@@ -806,8 +806,11 @@ class Storage:
     def _append(self, rec: DocRecord) -> None:
         # The readers' own check before anything is touched: a row they would
         # refuse (an empty source_code, an absolute or `data/` path) never
-        # reaches disk, where it would stop every later read of the bank.
-        line = json.dumps(check_contract_row(rec.to_row(), "append"), ensure_ascii=False)
+        # reaches disk, where it would stop every later read of the bank. The
+        # record is in memory, not stored: the message names a producer bug,
+        # never migrate-contract (which only fixes stored rows).
+        line = json.dumps(check_contract_row(rec.to_row(), "append", PRODUCER_HINT),
+                          ensure_ascii=False)
         path = self.cfg.manifest_file(rec.bank_code)
         path.parent.mkdir(parents=True, exist_ok=True)
         # Sidecar lock (stable inode): mutual exclusion with (a) another
@@ -1440,6 +1443,12 @@ class Storage:
             for rec in recs:
                 try:
                     status = self.save(rec, dry_run=dry_run).split(":")[0]
+                # Including _append's contract refusal (ContractRowError, a
+                # producer bug): a can't-happen guard, every adapter builds
+                # contract-form records. Should it fire, the file save()
+                # already wrote is left an orphan (no manifest row;
+                # sweep-orphans reports it) and the record is counted and
+                # logged here as a download error.
                 except Exception as exc:
                     status = "error"
                     if not dry_run:

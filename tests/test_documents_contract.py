@@ -333,3 +333,21 @@ def test_append_never_writes_a_row_the_readers_would_refuse(tmp_path, bad):
         st._append(rec)
     assert path.read_bytes() == before
     assert not cfg.manifest_file("").exists() and not cfg.manifest_file("_unknown").exists()
+
+
+def test_an_append_refusal_names_a_producer_bug_not_the_migration(tmp_path):
+    """An in-memory record is not a stored row: migrate-contract cannot fix
+    it, so the refusal names the problem and the producer, not the one-shot."""
+    st = Storage(Config(data_dir=tmp_path))
+    with pytest.raises(ContractRowError) as ei:
+        st._append(_rec(bank_code=""))
+    msg = str(ei.value)
+    assert "no `source_code`" in msg and "producer bug" in msg
+    assert "migrate-contract" not in msg
+
+
+def test_the_readers_message_says_refused_rows_are_fixed_by_hand():
+    with pytest.raises(ContractRowError) as ei:
+        check_contract_row({"doc_id": "x", "bank_code": "aa"}, "aa.jsonl")
+    msg = str(ei.value)
+    assert "migrate-contract --write" in msg and "by hand" in msg
