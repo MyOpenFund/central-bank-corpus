@@ -33,11 +33,38 @@ Fields useful for ingestion:
 > migration (`migrate-document-url`) still carry `pdf_url`: a reader of older snapshots
 > takes `document_url`, else `pdf_url`.
 
+> **Documents contract, 2026-11-20.** Every row follows the MyOpenFund `documents` contract
+> ([vault-contract 1.0.0](https://github.com/MyOpenFund/vault/tree/master/contract), the
+> rules the vault enforces at ingestion). Three changes, same `doc_id`s:
+> - **`corpus: "central-bank"`**, the first key of every row (the vault's identity of a
+>   document is (`corpus`, `doc_id`));
+> - **`bank_code` is now `source_code`** (same value, same position after `corpus`);
+> - **`local_path` and `html_path` are relative to the data root** (the directory holding
+>   `manifest/`): `raw/ecb/C1/2023/<doc_id>.pdf`, not `data/raw/...`. Open
+>   `<data root> / local_path` (in this repo the data root is `data/`).
+>
+> Undated rows no longer carry a `date_precision` (null) nor a `date_kind`. Manifests
+> published before the NAS migration (`migrate-contract`) still carry `bank_code`, no
+> `corpus` and `data/raw/...` paths: a reader of older snapshots takes `source_code`, else
+> `bank_code`, and drops a leading `data/` from a path.
+>
+> The codes a row may use are declared in **`vocabulary.json`**, written at the data root
+> next to `manifest/` (generated from the code: `source_codes` = the 63 banks of
+> `cb_corpus.banks` with their names, `doc_types` = `cb_corpus.taxonomy` A1…G3 with labels
+> and families, `provenances` = `cb_corpus.models.PROVENANCES`, no entity scheme) by every
+> `discover` / `bis-sitemap` / `repec` run and by `migrate-contract --write`. It is not
+> committed; to rebuild it in a clone:
+> `python -c "from pathlib import Path; from cb_corpus.vocabulary import write_vocabulary; write_vocabulary(Path('data'))"`.
+> To check a snapshot against the contract (dev requirements install `vault-contract`):
+> `python -m vault_contract.check data/manifest --corpus central-bank --vocabulary data/vocabulary.json`
+> (add `--no-transition` to judge it as after the transition).
+
 
 | Field | RAG usage |
 |---|---|
-| `local_path` | **path of the file to read** (PDF, or HTML if rendering failed) |
-| `bank_code` | **filter** + metadata (map to full name via `cb_corpus.banks`) |
+| `corpus` | always `central-bank` (the documents contract's corpus code) |
+| `local_path` | **path of the file to read** (PDF, or HTML if rendering failed), relative to the data root (`raw/<bank>/<type>/<year>/<doc_id>.<ext>`) |
+| `source_code` | the bank: **filter** + metadata (map to full name via `cb_corpus.banks` or `vocabulary.json`); `bank_code` before 2026-11-20 |
 | `doc_type` | **filter** + metadata (map to a readable label, cf. §5) |
 | `year`, `date` | **temporal filter** / facet. `date` is always a full `YYYY-MM-DD` or `null`; read it with `date_precision` (§1a) |
 | `title` | chunk title / display |
@@ -47,11 +74,12 @@ Fields useful for ingestion:
 | `date_kind` | optional, policy core only: what `date` is — `meeting`, `publication` or `period` (§1a). Absent on every other row and on undated rows |
 | `date_source` | where the date comes from: `bank_site`, `pdf_meta`, `wayback`, `repec` (working papers), `sitemap_lastmod` (a sitemap's last-modified day, not a publication date); `null` on some newer undated rows |
 | `mime_type` | `application/pdf` or `text/html` (the HTML is the artifact when PDF rendering failed); rarely another official format |
-| `html_path` | the kept raw HTML next to a rendered PDF, when there is one |
+| `html_path` | the kept raw HTML next to a rendered PDF, when there is one (relative to the data root, like `local_path`) |
+| `provenance` | how the document was obtained: `bank_site`, `bis_index`, `repec_discovery`, `wayback` (recovered from a Wayback snapshot), `mirror` (recovered from a legitimate co-publication) |
 | `alt_urls` | other URLs of the same document (dedup). May include stamped duplicate URLs (other addresses that served the same bytes, possibly dead now): not necessarily valid citations — cite `document_url` |
 | `alt_source_urls` | optional, rare: other landing pages that pointed at the same bytes (dedup only) |
 | `doc_id` | stable primary key (ideal as a document `id` in the store) |
-| `sha256` | change detection / ingestion idempotence |
+| `sha256` | change detection / ingestion idempotence. The hash of the document **as the bank served it**: for a rendered page, the HTML's, not the PDF's |
 
 ---
 
@@ -146,8 +174,8 @@ import fitz  # PyMuPDF — fast and robust for PDF text extraction
 from cb_corpus.banks import get_bank
 from cb_corpus.taxonomy import by_code
 
-ROOT = Path("/path/to/cb_corpus")
-MANIFESTS = sorted((ROOT / "data" / "manifest").glob("*.jsonl"))  # one file per bank
+DATA = Path("/path/to/cb_corpus/data")          # the data root: holds manifest/ and raw/
+MANIFESTS = sorted((DATA / "manifest").glob("*.jsonl"))  # one file per bank
 
 def iter_docs():
     for line in (l for m in MANIFESTS for l in m.open()):
@@ -156,7 +184,7 @@ def iter_docs():
         lp = d.get("local_path")
         if not lp or not lp.endswith(".pdf"):
             continue
-        p = ROOT / lp
+        p = DATA / lp.removeprefix("data/")   # (data/: snapshots before 2026-11-20)
         if p.exists():
             yield d, p
 
@@ -168,8 +196,8 @@ def doc_metadata(d: dict) -> dict:
     """Clean metadata, ready for filtering + citation."""
     return {
         "doc_id":   d["doc_id"],
-        "bank_code": d["bank_code"],
-        "bank_name": get_bank(d["bank_code"]).name,
+        "source_code": d.get("source_code") or d.get("bank_code"),   # (bank_code: before 2026-11-20)
+        "bank_name": get_bank(d.get("source_code") or d["bank_code"]).name,
         "doc_type":  d["doc_type"],
         "doc_type_label": by_code(d["doc_type"]).label,  # ex. "Speech"
         "year":   d.get("year"),
@@ -192,7 +220,7 @@ Recommendations for this corpus (speeches + reports, often long):
 - **Size**: ~800–1,200 tokens per chunk, **overlap** ~100–150 tokens.
 - **Semantic splitting** first (paragraphs / line breaks), then group up to the
   target size — avoid cutting in the middle of a sentence.
-- **Carry the document metadata onto each chunk** (same `doc_id`, `bank_code`,
+- **Carry the document metadata onto each chunk** (same `doc_id`, `source_code`,
   `doc_type`, `year`, `source_url`, `title`) + a `chunk_index`. This is what enables
   filtering and citation at the chunk level.
 
@@ -223,7 +251,7 @@ def build_records():
 ```
 
 Wire `build_records()` into your vector store (Chroma, Qdrant, pgvector, FAISS…), setting
-`bank_code` / `doc_type` / `year` as **filterable metadata**.
+`source_code` / `doc_type` / `year` as **filterable metadata**.
 
 ---
 
@@ -233,9 +261,9 @@ Metadata filters make answers targeted and citable:
 
 | Question | Filter |
 |---|---|
-| "What does the ECB say about inflation in 2023?" | `bank_code = "ecb" AND year = 2023` |
-| "Fed minutes" | `bank_code = "us" AND doc_type = "A3"` |
-| "Speeches by euro-area banks since 2020" | `bank_code IN (…) AND doc_type = "C1" AND year >= 2020` |
+| "What does the ECB say about inflation in 2023?" | `source_code = "ecb" AND year = 2023` |
+| "Fed minutes" | `source_code = "us" AND doc_type = "A3"` |
+| "Speeches by euro-area banks since 2020" | `source_code IN (…) AND doc_type = "C1" AND year >= 2020` |
 
 ---
 

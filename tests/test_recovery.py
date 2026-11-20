@@ -131,7 +131,7 @@ def test_run_boe_wp_recovery(tmp_path, monkeypatch):
     r = pipeline.run_boe_wp_recovery(years=[2020], dry_run=False, config=cfg)
     assert r.get("saved") == 1
     rec = _manifest(cfg)[0]
-    assert rec["bank_code"] == "gb" and rec["title"] == "My Paper" and rec["year"] == 2020
+    assert rec["source_code"] == "gb" and rec["title"] == "My Paper" and rec["year"] == 2020
 
 
 # --- run_boe_recovery: generic section (minutes A3) ---

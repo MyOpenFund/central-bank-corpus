@@ -32,9 +32,9 @@ import sys
 from datetime import date
 from typing import Iterable, Optional
 
-from .config import Config
+from .config import LEGACY_DATA_PREFIX, Config
 from .http import Fetcher
-from .models import row_url
+from .models import row_bank, row_url
 from .sources.wayback import first_capture
 from .storage import Storage, apply_row_updates
 from .wp_migrate import normalize_title, repec_handle_from_source_url
@@ -79,7 +79,7 @@ def row_key(row: dict) -> Optional[str]:
     t = normalize_title(row.get("title") or "")
     if not t:
         return None
-    bank = (row.get("bank_code") or "").strip().lower()
+    bank = (row_bank(row) or "").strip().lower()
     return f"t:{bank}:{t}"
 
 
@@ -194,6 +194,18 @@ def pdf_creation_date(local_path: Optional[str]) -> Optional[date]:
         return None
 
 
+def _file_evidence(stored: Optional[str]) -> str:
+    """`evidence_url` of a PDF /CreationDate hit. The committed index spells
+    every one `file://data/raw/...` (the path as seen from the app directory,
+    the manifests' form before the documents contract); it is evidence text,
+    never read back as a path, so new entries keep that single spelling
+    whichever form the row stores (`raw/...` or `data/raw/...`)."""
+    s = stored or ""
+    if s and not s.startswith("/") and not s.startswith(LEGACY_DATA_PREFIX):
+        s = LEGACY_DATA_PREFIX + s
+    return f"file://{s}"
+
+
 def _abs_variant(url: Optional[str]) -> Optional[str]:
     """The Fed PDF<->abstract sibling next to `url` (…NNNpap.pdf <-> …NNNabs.html)."""
     if url and url.endswith("pap.pdf"):
@@ -221,17 +233,20 @@ def _url_variants(row: dict) -> list[str]:
     return list(dict.fromkeys(out))
 
 
-def recover(fetcher: Fetcher, row: dict, use_wayback: bool = True) -> Optional[dict]:
+def recover(fetcher: Fetcher, row: dict, use_wayback: bool = True,
+            cfg: Optional[Config] = None) -> Optional[dict]:
     """Recover a day for one legacy row → {date, date_source, evidence_url} | None.
 
     On-disk PDF /CreationDate first (free), then (unless `use_wayback` is False)
     the Wayback first-capture of each URL variant (PDF, its abs/pdf sibling,
     alt_urls). Every candidate must pass the month constraint.
     """
-    cd = pdf_creation_date(row.get("local_path"))
+    # the stored path (either form) is relative to the data root, not the CWD
+    on_disk = (cfg or Config()).resolve_stored_path(row.get("local_path"))
+    cd = pdf_creation_date(str(on_disk) if on_disk else None)
     if month_ok(cd, row):
         return {"date": cd.isoformat(), "date_source": "pdf_meta",
-                "evidence_url": f"file://{row.get('local_path')}"}
+                "evidence_url": _file_evidence(row.get("local_path"))}
     if not use_wayback:
         return None
     for url in _url_variants(row):
@@ -278,7 +293,7 @@ def run_wp_dates(bank_codes: Optional[Iterable[str]] = None,
 
     try:
         for row in storage.iter_manifest():
-            if (row.get("bank_code") not in codes or row.get("doc_type") not in ("D1", "D2")
+            if (row_bank(row) not in codes or row.get("doc_type") not in ("D1", "D2")
                     or row.get("date_precision") == "day"):
                 continue
             if row.get("date_precision") == "year":
@@ -295,7 +310,8 @@ def run_wp_dates(bank_codes: Optional[Iterable[str]] = None,
             if hit is None and not apply_only:
                 yr = (_row_ym(row) or (0, 0))[0]
                 # PDF meta is free (any year); Wayback only from ~the online era.
-                r = recover(fetcher, row, use_wayback=(use_wayback and yr >= since_year))
+                r = recover(fetcher, row, use_wayback=(use_wayback and yr >= since_year),
+                            cfg=cfg)
                 if key and key in idx:
                     # this row's own key belongs to another paper (its entry
                     # failed the month check here): never shadow it -- see doc_key

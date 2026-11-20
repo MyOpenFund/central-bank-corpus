@@ -126,13 +126,13 @@ def test_wayback_provenance_dead_url_stays_document_url(tmp_path, monkeypatch):
     assert row["alt_urls"] == [snapshot_url]         # snapshot as the fallback
     assert row["provenance"] == "wayback"
     assert row["date_source"] == "wayback"           # no repec date -> honestly wayback
-    assert row["local_path"] and Path(row["local_path"]).is_file()
+    assert row["local_path"] and (tmp_path / row["local_path"]).is_file()
 
     # File landed exactly at Storage.target_path(rec).
     rec = DocRecord(bank_code="fr", doc_type=DocType.D1, title="WP 986",
                     document_url=dead_url, mime_type="application/pdf")
     storage = Storage(cfg, _NullFetcher())
-    assert Path(row["local_path"]) == storage.target_path(rec)
+    assert (tmp_path / row["local_path"]) == storage.target_path(rec)
 
     csv_rows = _csv_rows(tmp_path / "r.csv")
     assert csv_rows[0]["action"] == "recovered"
@@ -168,7 +168,7 @@ def test_bank_site_provenance_final_url_becomes_document_url(tmp_path, monkeypat
     rec = DocRecord(bank_code="fr", doc_type=DocType.D1, title="WP 987",
                     document_url=final_url, mime_type="application/pdf")
     storage = Storage(cfg, _NullFetcher())
-    assert Path(row["local_path"]) == storage.target_path(rec)
+    assert (tmp_path / row["local_path"]) == storage.target_path(rec)
 
 
 def test_mirror_provenance_dead_url_stays_document_url(tmp_path, monkeypatch):
@@ -200,7 +200,7 @@ def test_mirror_provenance_dead_url_stays_document_url(tmp_path, monkeypatch):
     rec = DocRecord(bank_code="fr", doc_type=DocType.D1, title="WP 988",
                     document_url=dead_url, mime_type="application/pdf")
     storage = Storage(cfg, _NullFetcher())
-    assert Path(row["local_path"]) == storage.target_path(rec)
+    assert (tmp_path / row["local_path"]) == storage.target_path(rec)
 
 
 # ---------------------------------------------------------------------------
@@ -608,7 +608,7 @@ def test_rerunning_same_candidates_file_twice_does_not_delete_corpus_file(tmp_pa
 
     rows = list(iter_manifest_rows(cfg, "fr"))
     assert len(rows) == 1
-    local_path = Path(rows[0]["local_path"])
+    local_path = (tmp_path / rows[0]["local_path"])
     assert local_path.is_file()
 
     # Simulate the nightly sync having independently re-quarantined the dead
@@ -674,7 +674,7 @@ def test_duplicated_candidate_line_within_one_run_is_deduped_without_deleting_fi
 
     rows = list(iter_manifest_rows(cfg, "fr"))
     assert len(rows) == 1
-    assert Path(rows[0]["local_path"]).is_file()
+    assert (tmp_path / rows[0]["local_path"]).is_file()
 
     csv_rows = _csv_rows(tmp_path / "r.csv")
     assert [r["action"] for r in csv_rows] == ["recovered", "converged"]

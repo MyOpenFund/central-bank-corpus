@@ -13,6 +13,7 @@ from pathlib import Path
 
 from cb_corpus.banks import BIS_63
 from cb_corpus.config import Config
+from cb_corpus.models import row_bank
 from cb_corpus.storage import iter_manifest_rows
 
 
@@ -37,7 +38,7 @@ def build_corpus_md(cfg: Config) -> str:
     bankyears = collections.defaultdict(list)
     ty_dec = collections.defaultdict(collections.Counter)
     for d in rows:
-        c, t = d.get("bank_code") or "?", d.get("doc_type") or "?"
+        c, t = row_bank(d) or "?", d.get("doc_type") or "?"
         bt[c][t] += 1; bytype[t] += 1
         prov[d.get("provenance", "?")] += 1; lang[d.get("language", "?")] += 1
         if d.get("year"):
@@ -76,12 +77,15 @@ def build_corpus_md(cfg: Config) -> str:
     W("\n## 2. Data schema (`data/manifest/<bank>.jsonl`)\n")
     W("| Field | RAG use |")
     W("|---|---|")
-    for f, u in [("bank_code", "bank/country **filter**"), ("doc_type", "type **filter**"),
+    for f, u in [("corpus", "`central-bank` (documents contract)"),
+                 ("source_code", "bank/country **filter** (`bank_code` before 2026-11-20)"),
+                 ("doc_type", "type **filter**"),
                  ("title", "title / embedding"), ("date / year", "**temporal filter**"),
                  ("document_url", "**citation** (official source; `pdf_url` before 2026-11-19)"), ("source_url", "origin page"),
-                 ("provenance", "`bis_index` / `bank_site` / `repec_discovery`"),
+                 ("provenance", "`bis_index` / `bank_site` / `repec_discovery` / `wayback` / `mirror`"),
                  ("mime_type", "`application/pdf` / `text/html`"),
-                 ("local_path", "**file path** to read"), ("html_path", "HTML source (if rendered)"),
+                 ("local_path", "**file path** to read, relative to `data/` (`data/raw/...` before 2026-11-20)"),
+                 ("html_path", "HTML source (if rendered), relative to `data/`"),
                  ("sha256", "dedup / integrity"), ("doc_id", "stable primary key"),
                  ("date_precision / date_source",
                   "date quality: `day` / `month` / `year` (a month or a year is stored "
@@ -135,8 +139,10 @@ def build_corpus_md(cfg: Config) -> str:
         W(f"| {t} | " + " | ".join(str(ty_dec[t].get(d, 0) or "—") for d in decs) + " |")
 
     W("\n## 6. RAG ingestion notes (see `INGESTION_RAG.md` for detail)\n")
-    W("- Filters: `bank_code`, `doc_type`, `year`, `provenance`.")
-    W("- Citation: `document_url` + `title` + `date`. Loading: `local_path`.")
+    W("- Filters: `source_code` (the bank; `bank_code` before 2026-11-20), `doc_type`, "
+      "`year`, `provenance`.")
+    W("- Citation: `document_url` + `title` + `date`. Loading: `local_path` "
+      "(relative to `data/`).")
     W("- Dedup already done (`sha256`). `text/html` rows are indexed documents too.")
     if total:
         W(f"- Composition: speeches {100*bytype['C1']//total}% · working papers "

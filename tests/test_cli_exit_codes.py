@@ -131,3 +131,55 @@ def test_guard_snapshot_never_enters_raw_or_follows_symlinks(tmp_path, monkeypat
     monkeypatch.setattr(conftest.os, "scandir", spy)
     assert conftest.data_tree_snapshot(tmp_path).keys() == {"manifest/us.jsonl"}
     assert sorted(scanned) == [".", "manifest"]
+
+
+def test_reporting_commands_write_the_vocabulary_next_to_runs_log(tmp_path, monkeypatch):
+    """discover / bis-sitemap / repec (the nightly sync) write
+    vocabulary.json at the data root, beside runs.jsonl, even when the run
+    itself fails: the vault reads it before the manifests."""
+    from cb_corpus.vocabulary import build_vocabulary
+
+    monkeypatch.setenv("CB_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(cli, "run", lambda **k: (_ for _ in ()).throw(RuntimeError("x")))
+    assert cli.main(["discover", "--banks", "us"]) == 1
+    voc = json.loads((tmp_path / "vocabulary.json").read_text(encoding="utf-8"))
+    assert voc == build_vocabulary()
+
+
+def test_non_reporting_commands_do_not_write_the_vocabulary(tmp_path, monkeypatch):
+    monkeypatch.setenv("CB_DATA_DIR", str(tmp_path))
+    assert cli.main(["list-banks"]) == 0
+    assert not (tmp_path / "vocabulary.json").exists()
+
+
+def test_vocabulary_write_failure_degrades_the_run_but_does_not_abort_it(tmp_path, monkeypatch, capsys):
+    """An OSError writing vocabulary.json (full disk, read-only file) must not
+    cost the night its crawl: the run goes on, is marked degraded (rc 3) and
+    the report says why."""
+    ran = []
+
+    def fake_run(**kwargs):
+        kwargs["report"].source("us").record_saved_counts({"saved": 2})
+        ran.append(True)
+        return {"us": {"saved": 2}}
+
+    def boom(data_dir):
+        raise PermissionError(13, "Permission denied", str(data_dir / "vocabulary.json"))
+
+    monkeypatch.setattr(cli, "run", fake_run)
+    monkeypatch.setattr(cli, "write_vocabulary", boom)
+    monkeypatch.setenv("CB_DATA_DIR", str(tmp_path))
+    assert cli.main(["discover", "--banks", "us"]) == 3
+    assert ran == [True]
+    rep = _read_report(tmp_path)
+    assert rep["outcome"] == "degraded" and rep["exit_code"] == 3
+    assert any("vocabulary.json" in w for w in rep["warnings"])
+    assert "vocabulary.json" in capsys.readouterr().err
+
+
+def test_a_clean_run_has_no_warnings_key(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "run", lambda **k: (k["report"].source("us")
+                                                 .record_saved_counts({"saved": 1}), {})[1])
+    monkeypatch.setenv("CB_DATA_DIR", str(tmp_path))
+    assert cli.main(["discover", "--banks", "us"]) == 0
+    assert "warnings" not in _read_report(tmp_path)

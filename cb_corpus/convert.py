@@ -80,16 +80,17 @@ def _convert_one(row: dict, *, dry_run: bool,
                  cfg: Optional[Config] = None, resolver=None) -> str:
     if row.get("mime_type") != "text/html":
         return "skip-not-html"
-    local = row.get("local_path")
-    if not local:
+    cfg = cfg or Config()
+    # Either stored form (contract `raw/...` or legacy `data/raw/...`),
+    # resolved against the data root, never the CWD.
+    html_path = cfg.resolve_stored_path(row.get("local_path"))
+    if html_path is None:
         return "skip-missing"
-    html_path = Path(local)
     pdf_path = _ext_swap(html_path, ".pdf")
     if pdf_path.exists() and not html_path.exists():
         return "skip-already"
     if not html_path.exists():
         return "skip-missing"
-    cfg = cfg or Config()
     reason = render_allowed(row_url(row) or "", cfg, resolver=resolver)
     if reason:
         print(f"[convert-html] render refused for {row_url(row)}: {reason}",
@@ -113,7 +114,7 @@ def _convert_one(row: dict, *, dry_run: bool,
         return "error"
     # Keep the source HTML alongside the rendered PDF.
     row["mime_type"] = "application/pdf"
-    row["local_path"] = str(pdf_path)
+    row["local_path"] = cfg.stored_path(pdf_path)
     if html_path.exists():
-        row["html_path"] = str(html_path)
+        row["html_path"] = cfg.stored_path(html_path)
     return "converted"

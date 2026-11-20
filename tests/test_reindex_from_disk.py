@@ -93,7 +93,7 @@ def test_on_disk_pdf_is_reindexed_by_recomputed_doc_id(tmp_path, monkeypatch,
     assert row["document_url"] == SPEECH_URL
     assert row["source_url"] == "https://www.bis.org/review/r200115a.htm"
     assert row["date"] == "2020-01-15"                  # from the r<YYMMDD> slug
-    assert row["bank_code"] == "de" and row["doc_type"] == "C1"
+    assert row["source_code"] == "de" and row["doc_type"] == "C1"
     assert row["provenance"] == "bis_index"
     # The bytes on disk are hashed and adopted, not re-fetched.
     assert row["sha256"] == hashlib.sha256(PDF_BYTES).hexdigest()

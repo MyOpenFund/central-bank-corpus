@@ -30,6 +30,12 @@ from cb_corpus.config import Config
 from cb_corpus.storage import iter_manifest_rows
 
 
+def _plain(rows):
+    """Rows as written: the reader adds `corpus` to a row without it
+    (documents-contract transition, models.upgrade_row)."""
+    return [{k: v for k, v in r.items() if k != "corpus"} for r in rows]
+
+
 def _write(path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
@@ -46,7 +52,7 @@ def test_torn_final_line_is_repaired(tmp_path, capsys):
 
     rows = list(iter_manifest_rows(cfg, "us"))
 
-    assert rows == [{"doc_id": "a"}, {"doc_id": "b"}]
+    assert _plain(rows) == [{"doc_id": "a"}, {"doc_id": "b"}]
 
     # file repaired on disk: only the two intact lines remain
     assert f.read_bytes() == (good1 + good2).encode()
@@ -96,7 +102,7 @@ def test_intact_file_is_byte_identical_after_load(tmp_path):
 
     rows = list(iter_manifest_rows(cfg, "us"))
 
-    assert rows == [{"doc_id": "a"}, {"doc_id": "b"}, {"doc_id": "c"}]
+    assert _plain(rows) == [{"doc_id": "a"}, {"doc_id": "b"}, {"doc_id": "c"}]
     assert f.read_bytes() == before
     assert f.stat().st_mtime_ns == before_mtime_ns
     assert not f.with_name(f.name + ".torn").exists()
@@ -135,7 +141,7 @@ def test_torn_final_line_mid_multibyte_char_is_repaired(tmp_path, capsys):
 
     rows = list(iter_manifest_rows(cfg, "us"))
 
-    assert rows == [{"doc_id": "a"}]
+    assert _plain(rows) == [{"doc_id": "a"}]
 
     # file repaired on disk: only the intact line remains
     assert f.read_bytes() == good.encode()
@@ -215,8 +221,35 @@ def test_repair_rechecks_under_lock_before_truncating(tmp_path, monkeypatch):
     rows = list(iter_manifest_rows(cfg, "us"))
 
     assert calls["n"] >= 1  # the hook actually fired
-    assert rows == [{"doc_id": "a"}, {"doc_id": "c", "title": "trunc"}]
+    assert _plain(rows) == [{"doc_id": "a"}, {"doc_id": "c", "title": "trunc"}]
 
     # no truncation: the completed line is intact on disk, verbatim
     assert f.read_bytes() == (good1 + prefix + completion).encode()
     assert not f.with_name(f.name + ".torn").exists()
+
+
+# --- a line that is JSON but not an object is malformed too ------------------
+
+def test_non_object_final_line_is_a_torn_tail_for_readers_and_rewriters(tmp_path):
+    from cb_corpus.storage import _read_rows_for_rewrite
+    cfg = Config(data_dir=tmp_path)
+    f = cfg.manifest_file("us")
+    _write(f, b'{"doc_id": "a"}\n[1, 2]\n')
+    pairs = _read_rows_for_rewrite(f)                     # no AttributeError
+    assert [d for _, d in pairs] == ["a"]
+    assert f.with_name("us.jsonl.torn").read_bytes() == b"[1, 2]\n"
+    _write(f, b'{"doc_id": "a"}\n[1, 2]\n')
+    assert _plain(iter_manifest_rows(cfg, "us")) == [{"doc_id": "a"}]
+    assert f.read_bytes() == b'{"doc_id": "a"}\n'         # repaired like a torn append
+
+
+@pytest.mark.parametrize("bad", [b"[1, 2]", b'"text"', b"42", b"null"])
+def test_non_object_line_before_the_end_is_a_hard_stop(tmp_path, bad):
+    from cb_corpus.storage import _read_rows_for_rewrite
+    cfg = Config(data_dir=tmp_path)
+    f = cfg.manifest_file("us")
+    _write(f, b'{"doc_id": "a"}\n' + bad + b'\n{"doc_id": "b"}\n')
+    with pytest.raises(ValueError, match="corrupt manifest line"):
+        _read_rows_for_rewrite(f)
+    with pytest.raises(ValueError, match="corrupt manifest line"):
+        list(iter_manifest_rows(cfg, "us"))

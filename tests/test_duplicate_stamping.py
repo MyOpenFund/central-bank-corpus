@@ -118,7 +118,7 @@ def test_owner_in_another_banks_manifest(tmp_path):
     st.save_many([owner])
     st.save_many([dup], label="fr")
     row = _row(st.cfg, owner.doc_id)
-    assert row["bank_code"] == "ecb"
+    assert row["source_code"] == "ecb"
     assert row["alt_urls"] == [dup.document_url]
     assert row["alt_source_urls"] == ["https://s/fr-dup"]
     assert not st.cfg.manifest_file("fr").exists() or \

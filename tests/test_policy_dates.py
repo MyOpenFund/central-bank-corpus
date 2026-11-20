@@ -649,17 +649,17 @@ def test_written_rows_have_the_expected_dates(tmp_path):
     cfg = _corpus(tmp_path)
     run_policy_dates(config=cfg, write=True, csv_path=str(tmp_path / "a.csv"))
     rows = list(iter_manifest_rows(cfg))
-    gb = [r for r in rows if r["bank_code"] == "gb"]
+    gb = [r for r in rows if r["source_code"] == "gb"]
     assert (gb[0]["date"], gb[0]["year"], gb[0]["date_precision"], gb[0]["date_kind"]) == (
         "1999-02-04", 1999, "day", "meeting")
     assert (gb[1]["date"], gb[1]["year"], gb[1]["date_precision"], gb[1]["date_kind"]) == (
         "2021-06-01", 2021, "month", "meeting")
     assert (gb[2]["date"], gb[2].get("date_precision"), gb[2].get("date_kind")) == (
         "2013-01-01", None, None)                 # the conflict: nothing written
-    [us] = [r for r in rows if r["bank_code"] == "us"]
+    [us] = [r for r in rows if r["source_code"] == "us"]
     assert (us["date"], us["date_precision"], us["date_source"], us["date_kind"]) == (
         "2018-08-01", "day", "bank_site", "meeting")
-    ca = [r for r in rows if r["bank_code"] == "ca"]
+    ca = [r for r in rows if r["source_code"] == "ca"]
     assert (ca[0]["date"], ca[0]["date_precision"], ca[0].get("date_kind")) == (None, None, None)
     assert (ca[1]["date"], ca[1]["year"], ca[1]["date_precision"], ca[1]["date_kind"]) == (
         "2024-07-01", 2024, "month", "period")
@@ -701,7 +701,7 @@ def test_a_row_changed_by_another_writer_meanwhile_keeps_that_change(tmp_path, m
         return real(cfg_, merges)
     monkeypatch.setattr(policy_dates, "merge_rows_locked", sync_then_merge)
     run_policy_dates(bank_codes=["gb"], config=cfg, write=True, csv_path=str(tmp_path / "a.csv"))
-    first = next(r for r in iter_manifest_rows(cfg) if r["bank_code"] == "gb")
+    first = next(r for r in iter_manifest_rows(cfg) if r["source_code"] == "gb")
     assert first["alt_urls"] == ["https://mirror/x.pdf"] and first["date"] == "1999-02-04"
 
 

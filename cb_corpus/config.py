@@ -6,12 +6,19 @@ import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
 # Crawler contact advertised in the User-Agent of every request. The default
 # points to the public repo (standard bot practice) so that a stranger running
 # this code never crawls the banks under the maintainer's personal identity —
 # operators identify THEMSELVES via the CRAWLER_CONTACT env var (an email or
 # URL webmasters can actually reach them at).
+#: TRANSITION (documents contract, 2026-11-20): the prefix manifest paths
+#: carried before they became relative to the data root (`data/raw/...` ->
+#: `raw/...`). Read by Config.resolve_stored_path, stripped on read by
+#: models.upgrade_row and on disk by `migrate-contract --write`.
+LEGACY_DATA_PREFIX = "data/"
+
 _DEFAULT_CONTACT = "https://github.com/MyOpenFund/central-bank-corpus"
 
 # Default of Config.repec_max_pages -- the single source of truth, also used by
@@ -245,6 +252,40 @@ class Config:
     @property
     def raw_dir(self) -> Path:
         return self.data_dir / "raw"
+
+    def stored_path(self, path: Path) -> str:
+        """The manifest form of a file path (`local_path`, `html_path`): POSIX,
+        RELATIVE TO THE DATA ROOT (`data_dir`, the directory holding
+        `manifest/`), e.g. `raw/ecb/C1/2023/<doc_id>.pdf` -- the `documents`
+        contract's rule, valid wherever the root is mounted (NAS `/app/data`
+        or `/cbdata`, a Mac, a VPS). Until 2026-11-20 the CWD-relative
+        `data/raw/...` was stored; `resolve_stored_path` still reads it.
+        Raises ValueError for a path outside the data root (never stored)."""
+        p = Path(path)
+        try:
+            rel = p.relative_to(self.data_dir)
+        except ValueError:
+            try:
+                rel = p.resolve().relative_to(self.data_dir.resolve())
+            except ValueError:
+                raise ValueError(f"{path} is not under the data root "
+                                 f"{self.data_dir}") from None
+        return rel.as_posix()
+
+    def resolve_stored_path(self, stored: str) -> Optional[Path]:
+        """On-disk path of a manifest `local_path` / `html_path`, either form:
+        the contract form `raw/...` (relative to `data_dir`), the legacy
+        `data/raw/...` (TRANSITION: `data/` was the data root seen from the
+        app directory; `migrate-contract --write` rewrites it), or an
+        absolute path (kept as is). None for an empty value."""
+        if not stored:
+            return None
+        p = Path(stored)
+        if p.is_absolute():
+            return p
+        if stored.startswith(LEGACY_DATA_PREFIX):
+            return self.data_dir / stored[len(LEGACY_DATA_PREFIX):]
+        return self.data_dir / p
 
     @property
     def manifest_path(self) -> Path:

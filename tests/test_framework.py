@@ -346,7 +346,7 @@ def test_storage_tries_alt_urls_on_download_failure(tmp_path):
     assert st.save(rec) == "saved"
     assert calls == ["https://blocked.fr/preferred.pdf",
                      "https://econstor.eu/fallback.pdf"]        # tried in order
-    assert Path(rec.local_path).read_bytes().startswith(b"%PDF")
+    assert (tmp_path / rec.local_path).read_bytes().startswith(b"%PDF")
     assert rec.document_url == "https://blocked.fr/preferred.pdf"    # citation/doc_id unchanged
     # alt_urls is persisted (WP v3) so dedup recognises fallback URLs across
     # restarts — but doc_id stays bound to the preferred document_url.
@@ -1268,7 +1268,7 @@ def test_storage_html_to_pdf_invokes_renderer(tmp_path, monkeypatch):
     assert st.save(rec) == "saved"
     assert rec.mime_type == "application/pdf"
     assert rec.local_path.endswith(".pdf")
-    assert Path(rec.local_path).read_bytes().startswith(b"%PDF")
+    assert (tmp_path / rec.local_path).read_bytes().startswith(b"%PDF")
     assert rendered and rendered[0][0] == rec.document_url
 
 

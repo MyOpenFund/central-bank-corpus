@@ -6,6 +6,7 @@ from dataclasses import dataclass, field, asdict
 from datetime import date
 from typing import Any, Mapping, MutableMapping, Optional, Union
 
+from .config import LEGACY_DATA_PREFIX
 from .dates import policy_date_kind
 from .taxonomy import DocType
 
@@ -19,6 +20,20 @@ URL_KEY = "document_url"
 LEGACY_URL_KEY = "pdf_url"
 #: new key -> old key, for every row dict that may still carry the old name.
 LEGACY_URL_KEYS = {URL_KEY: LEGACY_URL_KEY, "dead_document_url": "dead_pdf_url"}
+
+#: This corpus's code in the `documents` contract (vault-contract 1.0.0):
+#: every manifest row carries `corpus: "central-bank"`; the vault's identity
+#: of a document is (`corpus`, `doc_id`).
+CORPUS = "central-bank"
+
+#: Every `provenance` value the code writes (how a document was obtained):
+#: the bank's own site, the BIS speeches index, a RePEc/IDEAS listing, a
+#: Wayback snapshot (recovery), a legitimate mirror/co-publication
+#: (recover-downloads candidates). Declared in vocabulary.json; the vault
+#: refuses a row whose provenance is not declared. A new provenance in the
+#: code MUST be added here (tests/test_vocabulary.py scans the package).
+PROVENANCES: tuple[str, ...] = ("bank_site", "bis_index", "repec_discovery",
+                                "wayback", "mirror")
 
 
 def row_url(row: Mapping[str, Any], key: str = URL_KEY) -> Any:
@@ -35,21 +50,101 @@ def row_url(row: Mapping[str, Any], key: str = URL_KEY) -> Any:
     return row.get(LEGACY_URL_KEYS.get(key, key))
 
 
-def upgrade_row(row: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
-    """Rename a row's `pdf_url` key to `document_url` IN PLACE, keeping the
-    key's position and every value; same for the entries of an optional
-    `retired_duplicates` audit list. Returns `row` (for chaining). A row that
-    already uses the new name is left as is; a row (or entry) carrying BOTH
-    names is left untouched too -- never guess which value is right
-    (`migrate-document-url` reports it as an error).
+#: The source code's key in a manifest row (documents contract).
+SOURCE_KEY = "source_code"
+#: Its name until 2026-11-20 (the DocRecord attribute keeps it). TRANSITION:
+#: remove, with row_bank's fallback and contract_upgrade's rename, once the
+#: NAS manifests are migrated (`migrate-contract --write`).
+LEGACY_SOURCE_KEY = "bank_code"
+#: Manifest keys holding a path relative to the data root.
+PATH_KEYS = ("local_path", "html_path")
 
-    TRANSITION, remove once the NAS manifests are migrated: applied where
-    manifest rows are read (storage), so a row read under the old name and
-    rewritten by any rewrite path comes out with `document_url` only."""
-    _rename_key(row)
+
+def row_bank(row: Mapping[str, Any]) -> Any:
+    """The bank (source) code of a manifest row: `source_code`, or, when it
+    is absent or empty, the pre-contract `bank_code`. None when neither.
+
+    TRANSITION: every reader of a manifest row goes through this helper (or
+    reads rows through storage, which upgrades them), so a row not yet
+    migrated never breaks a run. Writers write only `source_code`."""
+    return row.get(SOURCE_KEY) or row.get(LEGACY_SOURCE_KEY)
+
+
+def contract_upgrade(row: MutableMapping[str, Any], *, undated: bool = True) -> list[str]:
+    """Bring one manifest row to the documents contract IN PLACE, every key
+    keeping its position and every other value untouched. Returns what
+    changed, in this order (empty = already in the contract form):
+
+      - `document_url`: `pdf_url` renamed (row and retired_duplicates entries);
+      - `corpus`: `corpus: "central-bank"` added as the first key;
+      - `source_code`: `bank_code` renamed; `both_source_names` instead when
+        the row carries BOTH names -- left as is, never guess which value is
+        right (migrate-contract reports it as an error);
+      - `local_path`, `html_path`: the legacy `data/` prefix dropped (paths
+        become relative to the data root; an absolute path is left as is);
+        `bad_path` instead when what would remain is not a clean relative
+        path (`data//raw/...`, `data/data/raw/...`, a bare `data/`): that
+        path is left as is (migrate-contract leaves the whole row and
+        reports it as an error);
+      - `date_precision`: nulled on an undated row (no date, no precision);
+      - `date_kind`: dropped from an undated row (the key is absent, never
+        null, when there is no date -- DocRecord.to_row's rule).
+    The last two are data fixes, not renames: only with `undated=True`
+    (migrate-contract); the read-time upgrade leaves them to the tools that
+    own dates (policy-dates reports such a row as its own change).
+
+    TRANSITION, remove (with upgrade_row) after the NAS migration: applied
+    where manifest rows are read (storage, via upgrade_row, `undated=False`)
+    and on disk by `migrate-contract --write`."""
+    changes: list[str] = []
+    renamed = _rename_key(row)
     for entry in row.get("retired_duplicates") or []:
         if isinstance(entry, dict):
-            _rename_key(entry)
+            renamed = _rename_key(entry) or renamed
+    if renamed:
+        changes.append(URL_KEY)
+    if "corpus" not in row:
+        items = [("corpus", CORPUS), *row.items()]
+        row.clear()
+        row.update(items)
+        changes.append("corpus")
+    if LEGACY_SOURCE_KEY in row:
+        if SOURCE_KEY in row:
+            changes.append("both_source_names")
+        elif _rename_key(row, LEGACY_SOURCE_KEY, SOURCE_KEY):
+            changes.append(SOURCE_KEY)
+    for key in PATH_KEYS:
+        v = row.get(key)
+        if isinstance(v, str) and v.startswith(LEGACY_DATA_PREFIX):
+            rest = v[len(LEGACY_DATA_PREFIX):]
+            # Fixed point: strip only when the remainder is a clean relative
+            # path. `data//raw/x` would become absolute, `data/data/raw/x`
+            # would need a second pass, a bare `data/` would become empty.
+            if rest and not rest.startswith("/") and not rest.startswith(LEGACY_DATA_PREFIX):
+                row[key] = rest
+                changes.append(key)
+            elif "bad_path" not in changes:
+                changes.append("bad_path")
+    if undated and not row.get("date"):
+        if row.get("date_precision") is not None:
+            row["date_precision"] = None
+            changes.append("date_precision")
+        if "date_kind" in row:
+            del row["date_kind"]
+            changes.append("date_kind")
+    return changes
+
+
+def upgrade_row(row: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
+    """`contract_upgrade(row, undated=False)`: the key-level forms only
+    (`pdf_url` -> `document_url`, row and retired_duplicates entries;
+    `corpus` added; `bank_code` -> `source_code`; the `data/` path prefix
+    dropped), every value otherwise untouched. Returns `row` for chaining.
+
+    TRANSITION, remove once the NAS manifests are migrated: applied where
+    manifest rows are read (storage), so a row read in an old form and
+    rewritten by any rewrite path comes out in the contract form."""
+    contract_upgrade(row, undated=False)
     return row
 
 
@@ -90,6 +185,10 @@ class DocRecord:
     provenance: str = "bank_site"      # bank_site | bis_index | repec_discovery
     mime_type: str = ""                # "application/pdf" | "text/html" | ""
     sha256: Optional[str] = None       # filled after download
+    # Both paths are POSIX and RELATIVE TO THE DATA ROOT (the directory holding
+    # manifest/), e.g. "raw/ecb/C1/2023/<doc_id>.pdf" (Config.stored_path;
+    # documents contract). Rows written before 2026-11-20 carry "data/raw/..."
+    # until `migrate-contract --write`; read with Config.resolve_stored_path.
     local_path: Optional[str] = None   # filled after download — the canonical artifact (PDF preferred)
     html_path: Optional[str] = None    # set when source was HTML — the original HTML sibling file
     # Date-quality metadata. `date_precision` is how precise `date` is;
@@ -176,4 +275,7 @@ class DocRecord:
             del d["date_kind"]              # optional key: absent, never null
         d["doc_id"] = self.doc_id
         d["year"] = self.year
-        return d
+        # documents contract: `corpus` first, the bank as `source_code` (the
+        # attribute keeps its name `bank_code`; doc_id hashes its value).
+        bank = d.pop("bank_code")
+        return {"corpus": CORPUS, SOURCE_KEY: bank, **d}

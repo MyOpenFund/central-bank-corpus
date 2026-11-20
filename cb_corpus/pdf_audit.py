@@ -41,6 +41,7 @@ from .config import Config
 from .orphans import _resolve_local_path
 from .pdfcheck import EOF_MARKER, EOF_WINDOW, MAGIC_WINDOW, pdf_problem
 from .storage import iter_manifest_rows
+from .models import row_bank
 
 #: Default number of trailing bytes searched for the last `%%EOF` of a file
 #: that fails the window rule (the measurement, not the rule).
@@ -146,7 +147,7 @@ def _write_audit(cfg, wanted, tmp, tail_bytes, progress_every, summary,
         writer = csv.DictWriter(fh, fieldnames=CSV_FIELDS)
         writer.writeheader()
         for row in iter_manifest_rows(cfg):
-            bank = (row.get("bank_code") or "").lower()
+            bank = (row_bank(row) or "").lower()
             if wanted and bank not in wanted:
                 continue
             lp = row.get("local_path") or ""

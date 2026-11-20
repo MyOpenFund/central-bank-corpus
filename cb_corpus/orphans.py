@@ -123,7 +123,10 @@ def _resolve_local_path(cfg: Config, local_path: str) -> Optional[Path]:
 
     If it is absolute, use it as is; else if it contains ``"raw/"``, take the
     part after the FIRST occurrence and join it to ``cfg.raw_dir``; else the
-    owner path is unknown (treated as missing).
+    owner path is unknown (treated as missing). Both stored forms resolve
+    alike: the contract form ``raw/...`` (relative to the data root, written
+    since 2026-11-20) and the legacy ``data/raw/...`` (TRANSITION, see
+    Config.resolve_stored_path).
     """
     p = Path(local_path)
     if p.is_absolute():

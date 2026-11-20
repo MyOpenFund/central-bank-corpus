@@ -55,7 +55,7 @@ from .dates import (FED_SEP_COMPILATION_URL, KINDLESS_DATE_SOURCES, PRECISION_DA
                     PRECISION_MONTH, PRECISION_YEAR, PRECISIONS, STATUS_DATED,
                     STATUS_NO_EVIDENCE, STATUS_NO_RULE, STATUS_NOT_A_REPORT, DateMatch,
                     infer_policy_date, is_misfiled, policy_date_kind)
-from .models import row_url
+from .models import row_bank, row_url
 from .storage import iter_manifest_rows, merge_rows_locked
 
 #: Default scope: the policy core. Both are parameters of run_policy_dates
@@ -199,7 +199,7 @@ def _target(stored: date, label: Optional[str], new: DateMatch
 
 
 def _notes(row: dict, misfiled: bool) -> str:
-    series = (row.get("bank_code"), row.get("doc_type"))
+    series = (row_bank(row), row.get("doc_type"))
     out = [NOTE_MISFILED] if misfiled else []
     for n in ROW_NOTES:
         if (n.series is None or n.series == series) and re.search(
@@ -214,7 +214,7 @@ def plan_row(row: dict, *, rules: Optional[dict] = None,
 
     `rules` defaults to dates.POLICY_DATE_RULES. The caller decides the
     scope; a series without a rule comes back `no-rule` with no change."""
-    bank, code = row.get("bank_code"), row.get("doc_type")
+    bank, code = row_bank(row), row.get("doc_type")
     title, document_url = row.get("title"), row_url(row)
     old_date = row.get("date") or None
     old_label = row.get("date_precision")
@@ -292,7 +292,7 @@ def plan_row(row: dict, *, rules: Optional[dict] = None,
 
 
 def _in_scope(row: dict, banks: frozenset, types: frozenset) -> bool:
-    return row.get("bank_code") in banks and row.get("doc_type") in types
+    return row_bank(row) in banks and row.get("doc_type") in types
 
 
 def summary_table(per_series: dict[tuple[str, str], Counter]) -> str:
@@ -349,7 +349,7 @@ def run_policy_dates(bank_codes: Optional[Iterable[str]] = None,
             if not _in_scope(row, banks, types):
                 continue
             plan = plan_row(row, refine_only=refine_only)
-            bank, code = row.get("bank_code"), row.get("doc_type")
+            bank, code = row_bank(row), row.get("doc_type")
             counts[plan.action] += 1
             per_series.setdefault((bank, code), Counter())[plan.action] += 1
             if plan.changes and row.get("doc_id"):

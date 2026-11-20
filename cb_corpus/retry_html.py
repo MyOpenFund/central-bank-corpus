@@ -23,7 +23,7 @@ from typing import Optional
 
 from .config import Config
 from .htmlpdf import RenderRefused, chrome_print_to_pdf, find_chrome, render_allowed
-from .models import row_url
+from .models import row_bank, row_url
 from .storage import (apply_row_updates, iter_manifest_rows, pdf_file_problem,
                       render_pdf_checked)
 
@@ -121,12 +121,12 @@ def retry_failed(config: Optional[Config] = None,
         if row.get("mime_type") != "text/html":
             counts["skip"] = counts.get("skip", 0) + 1
             continue
-        local = row.get("local_path")
+        # Either stored form, resolved against the data root (never the CWD).
+        html_path = cfg.resolve_stored_path(row.get("local_path"))
         url = row_url(row)
-        if not local or not url:
+        if html_path is None or not url:
             counts["skip"] = counts.get("skip", 0) + 1
             continue
-        html_path = Path(local)
         pdf_path = html_path.with_suffix(".pdf")
         # Reconcile: if a previously-killed retry already produced the PDF,
         # just update the manifest. Avoids redoing 4+ minutes of Chrome work.
@@ -137,8 +137,9 @@ def retry_failed(config: Optional[Config] = None,
         if pdf_path.exists():
             problem = pdf_file_problem(pdf_path, cfg)
             if problem is None:
-                updates[row["doc_id"]] = ("application/pdf", str(pdf_path),
-                                          str(html_path) if html_path.exists() else None)
+                updates[row["doc_id"]] = ("application/pdf", cfg.stored_path(pdf_path),
+                                          cfg.stored_path(html_path)
+                                          if html_path.exists() else None)
                 counts["already-pdf"] = counts.get("already-pdf", 0) + 1
                 continue
             print(f"[retry-html] existing {pdf_path} not adopted: {problem} "
@@ -186,13 +187,14 @@ def retry_failed(config: Optional[Config] = None,
             return
         if ok:
             with updates_lock:
-                updates[row["doc_id"]] = ("application/pdf", str(pdf_path),
-                                          str(html_path) if html_path.exists() else None)
+                updates[row["doc_id"]] = ("application/pdf", cfg.stored_path(pdf_path),
+                                          cfg.stored_path(html_path)
+                                          if html_path.exists() else None)
             with counts_lock:
                 counts["recovered"] = counts.get("recovered", 0) + 1
         else:
             with failures_lock:
-                failures.append((row_url(row), row.get("bank_code", "?")))
+                failures.append((row_url(row), row_bank(row) or "?"))
             with counts_lock:
                 counts["still-fail"] = counts.get("still-fail", 0) + 1
         with counts_lock:

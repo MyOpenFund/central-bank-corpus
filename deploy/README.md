@@ -243,6 +243,72 @@ skips the autocommit, so the files already rewritten are pushed by the next run'
 fix the cause and run `--write` again (it is safe to repeat). A manifest whose last line is torn
 is rewritten too (the torn line saved to `.torn`, as every rewrite does), even with no rename.
 
+Migration example — the documents contract (README § Maintenance: migrate-contract): rows
+carry `corpus`, `source_code` (was `bank_code`) and paths relative to the data root, and
+`vocabulary.json` is written at the data root (`/app/data/vocabulary.json` in this container;
+the vault ingestion reads the same file as `VOCABULARY_PATH=/cbdata/vocabulary.json`).
+
+**Merging the PR publishes the new image as `:latest`** (`docker-image` workflow), and
+`cb-refresh` / `cb-campain` both run `ghcr.io/myopenfund/central-bank-corpus:latest`: do not
+press "Mettre à jour" on either before the vault is deployed (step 1). Until then the running
+containers keep the previous image, which is fine on unmigrated manifests.
+
+**Precondition: the last autocommit succeeded** (`nas_runs.log` shows `autocommit: state
+pushed` or `no state changes` after the last run, no `AUTOCOMMIT FAILED`). The manifests in
+git are then the pre-migration backup; note that commit's SHA before step 3.
+
+Order (it matters both ways):
+
+1. **The vault first** (its own deploy, with its `contract/` mount and `VOCABULARY_PATH`): the
+   previous vault knows neither `source_code` nor `corpus` and would refuse or mis-read
+   migrated rows; the new one reads both forms during its transition.
+2. **`cb-refresh` → Mettre à jour** onto the image that ships `migrate-contract`: it writes new
+   rows in the contract form and reads both forms (see below for the previous image on
+   migrated manifests).
+3. **`cb-campain`** with `command: ["/app/deploy/run-job.sh", "campaign", "migrate-contract"]`
+   and "Mettre à jour": dry-run, per-file counts in the container log, nothing written. On the
+   committed manifests of 2026-11-20 the TOTAL line reads `files=61 rows=39664 upgraded=39664
+   unchanged=0 both=0 corpus=39664 source_code=39664 document_url=0 local_path=39664
+   html_path=6714 date_precision=7 date_kind=0 bad_path=0 torn=0` and `vocabulary.json:
+   would-write` (the NAS has a few more rows each night: `upgraded` = `rows`, `both=0`,
+   `bad_path=0` are what matter; `vocabulary.json: unchanged` if a sync already ran on the new
+   image).
+4. The same with `"--write"`: every manifest rewritten under its sidecar lock,
+   `files_written=61`, `vocabulary.json: written` (or `unchanged`); the autocommit pushes the
+   manifests (vocabulary.json is not committed).
+5. The dry-run once more: `upgraded=0 unchanged=<rows>` everywhere, `files_written=0`.
+6. The central-bank vault ingestion: expected 0 refused, no `corpus_missing` /
+   `legacy_alias` / `legacy_data_prefix` notice, and no `vocabulary: missing` warning.
+
+Exit 1 has three causes, all visible in the log: a row carrying both `bank_code` and
+`source_code` (left untouched, `both_ids=` lists its `doc_id`), a path the migration cannot
+make relative to the data root -- an absolute path outside it, or `data//...`,
+`data/data/...` (the row left untouched, `bad_path_ids=`) -- or a malformed line before the
+end of a manifest (the run stops there; files sorted before it are already rewritten, the
+bad file is untouched). On exit 1 `run-job.sh` marks the run FAILED and skips the
+autocommit; fix the cause and run `--write` again (it is safe to repeat).
+
+**The previous image on migrated manifests** (a `:latest` pull that went back, a container
+left on an old image): nothing is destroyed and nothing is mass re-downloaded -- its known
+`doc_id`s, URLs and hashes still come from the rows, so discovery skips what it has -- but it
+reads only `bank_code`: every row is indexed under the bank `_unknown`, `cadence-watch` sees
+no series (blind, no alert), keyed rewrites (`policy-dates`, duplicate stamping, html
+conversions) look for their rows in `_unknown.jsonl` and are skipped with a warning,
+`report` / completeness stops on a `KeyError: 'bank_code'`, and `convert-html` /
+`retry-html` find no file (they open `raw/...` relative to `/app`). New rows it appends
+carry `bank_code` again. **Repair:** update `cb-refresh` and `cb-campain` to the new image,
+then run `migrate-contract --write` once more (it upgrades exactly the rows the old image
+wrote, `unchanged` for the rest).
+
+**Rollback** (back to the previous image for good): stop `cb-refresh`, restore the
+manifests from the pre-migration commit noted above (copy `data/manifest/*.jsonl` of that
+commit over `/app/data/manifest/`, then re-apply, if any, rows the nightly runs added since:
+they are in the later autocommits, in the contract form -- rename `source_code` back to
+`bank_code`, drop `corpus`, prefix the paths with `data/`), pin `cb-refresh` / `cb-campain`
+to the previous image tag (`ghcr.io/myopenfund/central-bank-corpus:<previous sha>`), and
+roll the vault back by its own procedure. `vocabulary.json` can stay (the previous vault
+ignores it).
+
 ## 4a. Weekly cadence watchdog (automated)
 
 The cadence watchdog detects silent series — banks/doc-types with no new

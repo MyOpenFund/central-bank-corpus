@@ -400,7 +400,8 @@ def test_sync_after_the_backfill_leaves_known_rows_alone(tmp_path):
     assert run_policy_dates(config=cfg, write=True, csv_path=str(tmp_path / "p.csv"))["written"] == 1
     backfilled = cfg.manifest_file("jp").read_text()
     assert json.loads(backfilled)["date"] == "2026-01-23"
-    assert json.loads(backfilled)["local_path"] == "data/raw/jp/A3/0/x.pdf"   # file not moved
+    # file not moved; the rewrite stores the path in the contract form
+    assert json.loads(backfilled)["local_path"] == "raw/jp/A3/0/x.pdf"
 
     class Spy(_Pages):
         fetched: list = []

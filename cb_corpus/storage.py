@@ -38,7 +38,7 @@ from .config import Config
 from .filelock import locked_sidecar
 from .http import Fetcher
 from .htmlpdf import RenderRefused, render_allowed, render_url_to_pdf
-from .models import DocRecord, row_url, upgrade_row
+from .models import DocRecord, row_bank, row_url, upgrade_row
 from .pdfcheck import check_pdf_bytes, has_pdf_magic
 from .quarantine import Quarantine
 
@@ -230,6 +230,24 @@ def _manifest_files(cfg: Config, bank_code: Optional[str] = None) -> list[Path]:
     return [cfg.manifest_path] if cfg.manifest_path.exists() else []
 
 
+class NotARow(ValueError):
+    """A manifest line that is valid JSON but not an object (`[1, 2]`, `42`,
+    `"text"`, `null`): malformed like a broken line -- a torn tail when it is
+    the final line, a hard stop before the end."""
+
+
+#: What a malformed manifest line raises from `_parse_row`.
+MALFORMED = (json.JSONDecodeError, UnicodeDecodeError, NotARow)
+
+
+def _parse_row(line: bytes) -> dict:
+    """One manifest line -> its row; raises one of MALFORMED otherwise."""
+    row = json.loads(line)
+    if not isinstance(row, dict):
+        raise NotARow(f"not a JSON object: {type(row).__name__}")
+    return row
+
+
 def _repair_torn_tail(f: Path, offset: int, *, expected_ino: int,
                       expected_size: int) -> list[dict]:
     """A malformed FINAL line, as seen by the caller's UNLOCKED first read, is
@@ -307,8 +325,8 @@ def _repair_torn_tail(f: Path, offset: int, *, expected_ino: int,
                 local_offset += len(ln)
                 continue
             try:
-                rows.append(json.loads(stripped))
-            except (json.JSONDecodeError, UnicodeDecodeError):
+                rows.append(_parse_row(stripped))
+            except MALFORMED:
                 torn_path = f.with_name(f.name + ".torn")
                 torn_path.write_bytes(ln)
                 fh.truncate(local_offset)
@@ -332,10 +350,11 @@ def _iter_manifest_file(f: Path) -> Iterator[dict]:
     ValueError naming the file and 1-based line number (hard stop). Blank
     lines are skipped. An intact file is only ever read, never rewritten.
 
-    "Malformed" covers both a structurally broken JSON line
-    (`json.JSONDecodeError`) and a line torn mid multi-byte UTF-8 character
+    "Malformed" covers a structurally broken JSON line
+    (`json.JSONDecodeError`), a line torn mid multi-byte UTF-8 character
     (`UnicodeDecodeError` — `json.loads` decodes `bytes` internally before
-    parsing); both are torn-append symptoms and are handled identically.
+    parsing) and a JSON value that is not an object (`NotARow`: `[1, 2]`,
+    `42`); all are handled identically (`_parse_row`, `MALFORMED`).
     """
     # Capture the file's identity (inode, size) on the very fd the bytes are
     # read from: _repair_torn_tail uses it to detect that an os.replace by a
@@ -363,8 +382,8 @@ def _iter_manifest_file(f: Path) -> Iterator[dict]:
             offset += len(ln)
             continue
         try:
-            rows.append(json.loads(stripped))
-        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            rows.append(_parse_row(stripped))
+        except MALFORMED as exc:
             if i == last_content_idx:
                 rows.extend(_repair_torn_tail(
                     f, offset,
@@ -408,7 +427,7 @@ def migrate_legacy_layout(cfg: Config) -> int:
             s = line.strip()
             if not s:
                 continue
-            bank = json.loads(s).get("bank_code") or "_unknown"
+            bank = row_bank(json.loads(s)) or "_unknown"
             by_bank.setdefault(bank, []).append(s)
     cfg.manifest_dir.mkdir(parents=True, exist_ok=True)
     for bank, lines in by_bank.items():
@@ -433,7 +452,7 @@ def _write_per_bank_unlocked(cfg: Config, rows: Iterable[dict]) -> int:
     by_bank: dict[str, list[dict]] = {}
     n = 0
     for row in rows:
-        by_bank.setdefault(row.get("bank_code") or "_unknown", []).append(row)
+        by_bank.setdefault(row_bank(row) or "_unknown", []).append(row)
         n += 1
     cfg.manifest_dir.mkdir(parents=True, exist_ok=True)
     for bank, brows in by_bank.items():
@@ -477,8 +496,8 @@ def _read_rows_for_rewrite(f: Path) -> list[tuple[str, Optional[str]]]:
         if not stripped:
             continue
         try:
-            row = json.loads(stripped)
-        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            row = _parse_row(stripped)
+        except MALFORMED as exc:
             if i == last_content_idx:
                 torn_path = f.with_name(f.name + ".torn")
                 torn_path.write_bytes(ln)
@@ -496,10 +515,11 @@ def _read_rows_for_rewrite(f: Path) -> list[tuple[str, Optional[str]]]:
 def apply_row_updates(cfg: Config, updates: Mapping[str, dict]) -> int:
     """Lock-protected keyed rewrite of manifest rows (issue #18).
 
-    `updates`: doc_id -> full replacement row (row's `bank_code` selects the
-    bank file). Per bank, under the sidecar lock: re-read fresh, replace rows
-    whose doc_id is in `updates`, keep every other line VERBATIM — including
-    rows appended after the caller built its snapshot — then temp+os.replace.
+    `updates`: doc_id -> full replacement row (row's `source_code`, or its
+    pre-contract `bank_code`, selects the bank file; models.row_bank). Per
+    bank, under the sidecar lock: re-read fresh, replace rows whose doc_id
+    is in `updates`, keep every other line VERBATIM — including rows
+    appended after the caller built its snapshot — then temp+os.replace.
     Expensive work (renders, network) belongs BEFORE this call, outside the
     lock. Deletions are not supported here: remove_rows_locked() is the one
     locked delete. doc_ids not found on disk are skipped with a
@@ -511,7 +531,7 @@ def apply_row_updates(cfg: Config, updates: Mapping[str, dict]) -> int:
         return 0
     by_bank: dict[str, dict[str, dict]] = {}
     for did, row in updates.items():
-        bank = row.get("bank_code") or "_unknown"
+        bank = row_bank(row) or "_unknown"
         by_bank.setdefault(bank, {})[did] = row
     migrate_legacy_layout(cfg)           # never let a legacy file shadow a write
     replaced = 0
@@ -732,7 +752,7 @@ class Storage:
     def _load_existing(self) -> None:
         for rec in self.iter_manifest():
             self._ids.add(rec["doc_id"])
-            self._bank_by_id[rec["doc_id"]] = rec.get("bank_code") or "_unknown"
+            self._bank_by_id[rec["doc_id"]] = row_bank(rec) or "_unknown"
             if rec.get("sha256"):
                 self._hash_docid[rec["sha256"]] = rec["doc_id"]
             url = row_url(rec)
@@ -817,7 +837,7 @@ class Storage:
             for row in self.iter_manifest():
                 did = row.get("doc_id")
                 if did in missing:
-                    out[did] = row.get("bank_code") or "_unknown"
+                    out[did] = row_bank(row) or "_unknown"
                     self._bank_by_id[did] = out[did]
         return out
 
@@ -1225,7 +1245,7 @@ class Storage:
             html_path = self.target_path(rec)
             html_path.parent.mkdir(parents=True, exist_ok=True)
             _atomic_write_bytes(html_path, content)
-            rec.html_path = str(html_path)
+            rec.html_path = self.cfg.stored_path(html_path)
 
             refused = None
             if self.cfg.html_to_pdf:
@@ -1272,7 +1292,7 @@ class Storage:
             _atomic_write_bytes(path, content)
 
         rec.sha256 = digest
-        rec.local_path = str(path)
+        rec.local_path = self.cfg.stored_path(path)
         self._ids.add(rec.doc_id)
         self._hash_docid[digest] = rec.doc_id
         self._bank_by_id[rec.doc_id] = rec.bank_code
@@ -1333,9 +1353,9 @@ class Storage:
 
         rec.mime_type = {"pdf": "application/pdf", "html": "text/html"}.get(ext, rec.mime_type)
         if ext == "html":
-            rec.html_path = str(path)
+            rec.html_path = self.cfg.stored_path(path)
         rec.sha256 = digest
-        rec.local_path = str(path)
+        rec.local_path = self.cfg.stored_path(path)
         self._ids.add(rec.doc_id)
         self._hash_docid[digest] = rec.doc_id
         self._bank_by_id[rec.doc_id] = rec.bank_code
