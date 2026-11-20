@@ -14,7 +14,9 @@ unchanged):
     row still has it);
   - the `data/` prefix dropped from `local_path` and `html_path` (paths become
     relative to the data root); an ABSOLUTE path under the data root is made
-    relative too, any other absolute path is an error (reported, left as is);
+    relative too; any other absolute path, or a `data/` prefix whose remainder
+    is not a clean relative path (`data//raw/...`, `data/data/raw/...`), is an
+    error: the row is left as is and reported (`bad_path`, exit 1);
   - an undated row: `date_precision` nulled and `date_kind` dropped (no date,
     no precision, no kind -- the vault would only notice them).
 
@@ -67,7 +69,8 @@ class FileCounts:
     `document_url` renamed from pdf_url, `local_path` / `html_path` made
     relative to the data root, `date_precision` nulled / `date_kind` dropped
     on an undated row. `bad_path`: an absolute path outside the data root
-    (left as is, an error, see `bad_path_ids`). `torn`: malformed final line
+    or an unclean `data/` prefix (the row is left as is, an error, see
+    `bad_path_ids`). `torn`: malformed final line
     (dropped on a --write rewrite)."""
     path: str
     upgraded: int = 0
@@ -89,7 +92,7 @@ class FileCounts:
 
     @property
     def rows(self) -> int:
-        return self.upgraded + self.unchanged + self.both
+        return self.upgraded + self.unchanged + self.both + self.bad_path
 
 
 @dataclass
@@ -133,10 +136,14 @@ def _migrate_file(path: Path, cfg: Config, *, write: bool) -> FileCounts:
                 out.append(raw)
                 continue
             rel, bad = _relativize(new, cfg)
-            changes += [k for k in rel if k not in changes]
-            if bad:
+            if bad or "bad_path" in changes:
+                # an unusable path: the whole row is left as is (never half
+                # migrated), reported, exit 1
                 counts.bad_path += 1
                 counts.bad_path_ids.append(did)
+                out.append(raw)
+                continue
+            changes += [k for k in rel if k not in changes]
             for name in changes:
                 attr = _CHANGE_FIELDS[name]
                 setattr(counts, attr, getattr(counts, attr) + 1)

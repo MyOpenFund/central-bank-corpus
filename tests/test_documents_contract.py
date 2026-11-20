@@ -217,3 +217,16 @@ def test_storage_indexes_legacy_and_new_rows_by_bank(tmp_path):
     assert apply_row_updates(cfg, {"6349348f8603c010": dict(LEGACY, title="x")}) == 1
     [row] = list(iter_manifest_rows(cfg))
     assert row["title"] == "x" and row["source_code"] == "jp"
+
+
+@pytest.mark.parametrize("bad", ["data//raw/x.pdf", "data/data/raw/x.pdf"])
+def test_data_strip_is_a_fixed_point(bad):
+    """The `data/` strip applies only when what remains is a clean relative
+    path: `data//raw` would become absolute, `data/data/raw` would need a
+    second pass. Such a row is left as is and reported (`bad_path`)."""
+    row = dict(LEGACY, local_path=bad)
+    changes = contract_upgrade(row)
+    assert "bad_path" in changes and "local_path" not in changes
+    assert row["local_path"] == bad
+    row2 = dict(LEGACY, html_path=bad)
+    assert "bad_path" in contract_upgrade(row2) and row2["html_path"] == bad

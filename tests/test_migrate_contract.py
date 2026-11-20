@@ -232,3 +232,19 @@ def test_cli_write_then_rerun_reports_zero(corpus, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "TOTAL files=2 rows=5 upgraded=0 unchanged=5" in out and "files_written=0" in out
     assert "vocabulary.json: unchanged" in out
+
+
+@pytest.mark.parametrize("bad", ["data//raw/aa/x.pdf", "data/data/raw/aa/x.pdf"])
+def test_unclean_data_prefix_is_a_bad_path_left_untouched(tmp_path, monkeypatch, capsys, bad):
+    cfg = Config(data_dir=tmp_path / "data")
+    path = _write(cfg.manifest_file("aa"), [_row("aa", 1), _row("aa", 2, local_path=bad)])
+    bad_line = path.read_text(encoding="utf-8").splitlines()[1]
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["migrate-contract", "--write"]) == 1
+    out = capsys.readouterr().out
+    assert "bad_path=1" in out and _row("aa", 2)["doc_id"] in out
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert lines[1] == bad_line                          # the whole row left as is
+    assert json.loads(lines[0])["source_code"] == "aa"
+    res = migrate_contract(cfg, write=True)              # still reported, never rewritten
+    assert (res.files[0].bad_path, res.files[0].upgraded) == (1, 0)

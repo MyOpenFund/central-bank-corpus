@@ -82,6 +82,10 @@ def contract_upgrade(row: MutableMapping[str, Any], *, undated: bool = True) -> 
         right (migrate-contract reports it as an error);
       - `local_path`, `html_path`: the legacy `data/` prefix dropped (paths
         become relative to the data root; an absolute path is left as is);
+        `bad_path` instead when what would remain is not a clean relative
+        path (`data//raw/...`, `data/data/raw/...`, a bare `data/`): that
+        path is left as is (migrate-contract leaves the whole row and
+        reports it as an error);
       - `date_precision`: nulled on an undated row (no date, no precision);
       - `date_kind`: dropped from an undated row (the key is absent, never
         null, when there is no date -- DocRecord.to_row's rule).
@@ -111,9 +115,16 @@ def contract_upgrade(row: MutableMapping[str, Any], *, undated: bool = True) -> 
             changes.append(SOURCE_KEY)
     for key in PATH_KEYS:
         v = row.get(key)
-        if isinstance(v, str) and v.startswith(LEGACY_DATA_PREFIX) and len(v) > len(LEGACY_DATA_PREFIX):
-            row[key] = v[len(LEGACY_DATA_PREFIX):]
-            changes.append(key)
+        if isinstance(v, str) and v.startswith(LEGACY_DATA_PREFIX):
+            rest = v[len(LEGACY_DATA_PREFIX):]
+            # Fixed point: strip only when the remainder is a clean relative
+            # path. `data//raw/x` would become absolute, `data/data/raw/x`
+            # would need a second pass, a bare `data/` would become empty.
+            if rest and not rest.startswith("/") and not rest.startswith(LEGACY_DATA_PREFIX):
+                row[key] = rest
+                changes.append(key)
+            elif "bad_path" not in changes:
+                changes.append("bad_path")
     if undated and not row.get("date"):
         if row.get("date_precision") is not None:
             row["date_precision"] = None
