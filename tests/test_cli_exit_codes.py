@@ -221,6 +221,29 @@ def test_a_reporting_command_still_records_a_contract_error_as_failed(tmp_path, 
     assert rep["fatal"].startswith("ContractRowError: jp.jsonl") and "migrate-contract" in rep["fatal"]
 
 
+def test_a_real_discover_on_a_legacy_manifest_records_failed_in_runs_log(
+        tmp_path, monkeypatch, capsys):
+    """End to end, cli.run untouched: the real pipeline opens the storage,
+    reads the legacy row and stops; the reporting wrapper records the
+    ContractRowError as `outcome: failed`. No adapter is ever reached (a
+    stub that fails the test if it is), no network."""
+    import cb_corpus.pipeline as pipeline
+
+    def no_adapter(*a, **k):
+        raise AssertionError("an adapter ran on a legacy manifest")
+
+    monkeypatch.setattr(pipeline, "_discover_and_save_bank", no_adapter)
+    _legacy_manifest(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CB_DATA_DIR", str(tmp_path / "data"))
+    assert cli.main(["discover", "--banks", "jp"]) == 1
+    rep = _read_report(tmp_path / "data")
+    assert rep["outcome"] == "failed" and rep["command"] == "discover"
+    assert rep["fatal"].startswith("ContractRowError: jp.jsonl: manifest row '0123456789abcdef'")
+    assert "migrate-contract" in rep["fatal"]
+    assert "Traceback" not in capsys.readouterr().err
+
+
 def test_recover_downloads_old_inventory_key_is_an_error_line(tmp_path, monkeypatch, capsys):
     (tmp_path / "data").mkdir()
     (tmp_path / "data" / "download_errors.jsonl").write_text(
