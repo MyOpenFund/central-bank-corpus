@@ -40,20 +40,19 @@ file untouched). "Malformed" is storage's definition in both modes: broken
 JSON, broken UTF-8, or a JSON value that is not an object (`[1, 2]`). A row
 whose JSON holds an escaped lone surrogate is rewritten with ASCII escapes
 (see `_dump`). The rewrite is fsynced before os.replace and its temp file
-removed on any failure.
+removed on any failure (document_url_migrate.rewrite_file).
 """
 from __future__ import annotations
 
 import copy
 import json
-import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Optional
 
 from .config import Config
-from .document_url_migrate import _read_lines_dry, _read_lines_locked
+from .document_url_migrate import _read_lines_dry, _read_lines_locked, rewrite_file
 from .filelock import locked_sidecar
 from .models import PATH_KEYS, contract_upgrade
 from .vocabulary import VOCABULARY_FILE, vocabulary_bytes, write_vocabulary
@@ -184,17 +183,7 @@ def _migrate_file(path: Path, cfg: Config, *, write: bool) -> FileCounts:
             return counts
         out = plan(_read_lines_locked(path, counts, manifest=True))
         if counts.upgraded or (counts.torn and out):
-            tmp = path.with_suffix(path.suffix + ".tmp")
-            try:
-                with tmp.open("w", encoding="utf-8") as fh:
-                    for line in out:
-                        fh.write(line + "\n")
-                    fh.flush()
-                    os.fsync(fh.fileno())
-                os.replace(tmp, path)
-            except BaseException:
-                tmp.unlink(missing_ok=True)      # never leave a half-written temp
-                raise
+            rewrite_file(path, out)
             counts.written = True
     return counts
 

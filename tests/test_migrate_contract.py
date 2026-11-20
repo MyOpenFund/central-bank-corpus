@@ -315,11 +315,10 @@ def test_failed_rewrite_leaves_the_file_and_no_temp(tmp_path, monkeypatch):
     cfg = Config(data_dir=tmp_path)
     path = _write(cfg.manifest_file("aa"), [_row("aa", 1)])
     before = path.read_bytes()
-    import cb_corpus.contract_migrate as cm
 
     def boom(src, dst):
         raise OSError(28, "No space left on device")
-    monkeypatch.setattr(cm.os, "replace", boom)
+    monkeypatch.setattr(os, "replace", boom)
     with pytest.raises(OSError):
         migrate_contract(cfg, write=True)
     assert path.read_bytes() == before
@@ -327,11 +326,10 @@ def test_failed_rewrite_leaves_the_file_and_no_temp(tmp_path, monkeypatch):
 
 
 def test_rewrite_is_fsynced_before_the_replace(tmp_path, monkeypatch):
-    import cb_corpus.contract_migrate as cm
     events = []
     real_fsync, real_replace = os.fsync, os.replace
-    monkeypatch.setattr(cm.os, "fsync", lambda fd: (events.append("fsync"), real_fsync(fd))[1])
-    monkeypatch.setattr(cm.os, "replace",
+    monkeypatch.setattr(os, "fsync", lambda fd: (events.append("fsync"), real_fsync(fd))[1])
+    monkeypatch.setattr(os, "replace",
                         lambda a, b: (events.append("replace"), real_replace(a, b))[1])
     cfg = Config(data_dir=tmp_path)
     _write(cfg.manifest_file("aa"), [_row("aa", 1)])

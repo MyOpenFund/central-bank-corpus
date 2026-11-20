@@ -26,9 +26,9 @@ fresh under it. Per row: the key is renamed IN PLACE (same position, every
 value unchanged, `json.dumps(..., ensure_ascii=False)` like every writer);
 a row already using the new name is kept byte-identical; a row carrying BOTH
 names is an error: it is left untouched and reported, never guessed at. The
-file is rewritten (temp + os.replace) only when a row changed, so a second
-run does nothing. Dry run by default: nothing is written, the sidecar lock
-is not taken (a read of a live file may see a partly written last line,
+file is rewritten only when a row changed (rewrite_file: temp file, fsync,
+os.replace, temp removed on any failure), so a second run does nothing.
+Dry run by default: nothing is written, the sidecar lock is not taken (a read of a live file may see a partly written last line,
 which the counts report as `torn`).
 
 Malformed lines: a manifest follows storage's rewrite rule (a torn FINAL
@@ -183,13 +183,28 @@ def _migrate_file(path: Path, *, write: bool, manifest: bool) -> FileCounts:
         # A torn manifest tail is dropped by the rewrite, as storage's other
         # locked rewrites do (only when a row remains, like apply_row_updates).
         if counts.renamed or (manifest and counts.torn and out):
-            tmp = path.with_suffix(path.suffix + ".tmp")
-            with tmp.open("w", encoding="utf-8", errors="surrogateescape") as fh:
-                for line in out:
-                    fh.write(line + "\n")
-            os.replace(tmp, path)
+            rewrite_file(path, out, errors="surrogateescape")
             counts.written = True
     return counts
+
+
+def rewrite_file(path: Path, lines: list[str], *, errors: str = "strict") -> None:
+    """Replace `path` with `lines` (one per line, UTF-8): written to a temp
+    file beside it, fsynced, then os.replace'd over it -- a crash leaves the
+    old file or the new one, never a torn one. The temp file is removed on
+    any failure. `errors="surrogateescape"` writes back verbatim a line kept
+    undecoded (a malformed download-error log line)."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        with tmp.open("w", encoding="utf-8", errors=errors) as fh:
+            for line in lines:
+                fh.write(line + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)      # never leave a half-written temp
+        raise
 
 
 def migrate_document_url(cfg: Config, *, write: bool = False,
