@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from cb_corpus.config import Config
-from cb_corpus.models import DocRecord, upgrade_row
+from cb_corpus.models import DocRecord
 from cb_corpus.storage import Storage, iter_manifest_rows
 from cb_corpus.taxonomy import DocType
 from cb_corpus.sources.ecb_foedb import (
@@ -53,7 +53,7 @@ def test_to_row_serializes_alt_urls_and_quality_fields():
 def test_load_existing_indexes_alt_urls(tmp_path):
     cfg = Config(data_dir=tmp_path)
     Storage(cfg)  # ensures dirs
-    row = {"doc_id": "d1", "bank_code": "ecb", "doc_type": "D1",
+    row = {"doc_id": "d1", "corpus": "central-bank", "source_code": "ecb", "doc_type": "D1",
            "document_url": "https://x//pub/wp.pdf", "alt_urls": ["https://native/wp.pdf"],
            "sha256": "abc"}
     cfg.manifest_path.write_text(json.dumps(row) + "\n")
@@ -66,7 +66,7 @@ def test_load_existing_indexes_alt_urls(tmp_path):
 def test_load_existing_tolerates_null_alt_urls(tmp_path):
     cfg = Config(data_dir=tmp_path)
     Storage(cfg)
-    row = {"doc_id": "d1", "bank_code": "ecb", "doc_type": "D1",
+    row = {"doc_id": "d1", "corpus": "central-bank", "source_code": "ecb", "doc_type": "D1",
            "document_url": "https://x/wp.pdf", "alt_urls": None}
     cfg.manifest_path.write_text(json.dumps(row) + "\n")
     st = Storage(cfg)                                    # must not raise on None
@@ -80,11 +80,11 @@ def test_rewrite_manifest_is_atomic_and_idempotent(tmp_path):
     # rows that already exist on disk -- it never conjures new ones (see
     # apply_row_updates) -- so the manifest must be seeded first.
     seed = [
-        {"doc_id": "a", "bank_code": "ecb", "doc_type": "D1",
+        {"doc_id": "a", "corpus": "central-bank", "source_code": "ecb", "doc_type": "D1",
          "document_url": "https://x/a.pdf", "alt_urls": [], "date": "2020-01-02"},
-        {"doc_id": "b", "bank_code": "ecb", "doc_type": "D2",
+        {"doc_id": "b", "corpus": "central-bank", "source_code": "ecb", "doc_type": "D2",
          "document_url": "https://x/b.pdf", "alt_urls": [], "date": "2021-03-04"},
-        {"doc_id": "c", "bank_code": "ecb", "doc_type": "D1",
+        {"doc_id": "c", "corpus": "central-bank", "source_code": "ecb", "doc_type": "D1",
          "document_url": "https://x/c.pdf", "alt_urls": [], "date": "2022-05-06"},
     ]
     ecb_file = cfg.manifest_file("ecb")
@@ -104,8 +104,8 @@ def test_rewrite_manifest_is_atomic_and_idempotent(tmp_path):
     assert st.rewrite_manifest(updates) == 2
     # rows go to the per-bank file data/manifest/ecb.jsonl
     on_disk = [json.loads(l) for l in ecb_file.read_text().splitlines() if l.strip()]
-    # replaced rows are written in the documents-contract form; c verbatim
-    assert on_disk == [upgrade_row(dict(updates["a"])), upgrade_row(dict(updates["b"])),
+    # replaced rows written as given; c verbatim
+    assert on_disk == [updates["a"], updates["b"],
                        seed[2]]
     assert not ecb_file.with_suffix(".jsonl.tmp").exists()
     # dedup indexes refreshed from the new content, incl. alt_urls
@@ -355,24 +355,24 @@ def test_build_report_join_classifies_and_proposes(monkeypatch):
 
     manifest = [
         # A: month row, matches 3244 by key -> proposed change
-        {"doc_id": "aaa", "bank_code": "ecb", "doc_type": "D1", "date": "2026-06-01",
+        {"doc_id": "aaa", "corpus": "central-bank", "source_code": "ecb", "doc_type": "D1", "date": "2026-06-01",
          "document_url": "https://www.ecb.europa.eu//pub/pdf/scpwps/ecb.wp3244~aa.en.pdf",
          "source_url": "https://ideas.repec.org/p/ecb/ecbwps/20263244.html"},
         # C: already migrated (matches 3243) -> counted already_day, no change
-        {"doc_id": "ccc", "bank_code": "ecb", "doc_type": "D1", "date": "2026-06-03",
+        {"doc_id": "ccc", "corpus": "central-bank", "source_code": "ecb", "doc_type": "D1", "date": "2026-06-03",
          "date_precision": "day", "date_source": "bank_site",
          "document_url": "https://www.ecb.europa.eu//pub/pdf/scpwps/ecb.wp3243~bb.en.pdf",
          "source_url": "https://ideas.repec.org/p/ecb/ecbwps/20263243.html"},
         # B: legacy OP number 2, no native match -> unmatched
-        {"doc_id": "bbb", "bank_code": "ecb", "doc_type": "D2", "date": "2002-02-01",
+        {"doc_id": "bbb", "corpus": "central-bank", "source_code": "ecb", "doc_type": "D2", "date": "2002-02-01",
          "document_url": "https://www.ecb.europa.eu//pub/pdf/scpops/ecbocp2.pdf",
          "source_url": "https://ideas.repec.org/p/ecb/ecbops/20022.html"},
         # F: month OP 388 matches -> proposed change
-        {"doc_id": "fff", "bank_code": "ecb", "doc_type": "D2", "date": "2026-02-01",
+        {"doc_id": "fff", "corpus": "central-bank", "source_code": "ecb", "doc_type": "D2", "date": "2026-02-01",
          "document_url": "https://www.ecb.europa.eu//pub/pdf/scpops/ecb.op388.en.pdf",
          "source_url": "https://ideas.repec.org/p/ecb/ecbops/2026388.html"},
         # E: different bank -> ignored entirely
-        {"doc_id": "eee", "bank_code": "us", "doc_type": "D1", "date": "2020-01-01",
+        {"doc_id": "eee", "corpus": "central-bank", "source_code": "us", "doc_type": "D1", "date": "2020-01-01",
          "document_url": "https://federalreserve.gov/x.pdf", "source_url": ""},
     ]
 
@@ -589,7 +589,7 @@ def test_build_report_title_tier_matches_slug_drift(monkeypatch):
                         document_url="https://x/-/media/boe/files/working-paper/2025/new-slug.pdf",
                         date=date(2025, 5, 30))]
     monkeypatch.setitem(wp_migrate._NATIVE, "gb", lambda fetcher: iter(native))
-    manifest = [{"doc_id": "g1", "bank_code": "gb", "doc_type": "D1", "date": "2025-01-01",
+    manifest = [{"doc_id": "g1", "corpus": "central-bank", "source_code": "gb", "doc_type": "D1", "date": "2025-01-01",
                  "document_url": "https://x/-/media/boe/files/working-paper/2025/old-slug.pdf",
                  "source_url": "https://ideas.repec.org/p/boe/boeewp/1116.html",
                  "title": "Some BoE Paper: A Study"}]
@@ -678,11 +678,11 @@ def test_build_report_fr_join_stamps_alt_url_and_upgrades_date(monkeypatch):
     monkeypatch.setitem(wp_migrate._NATIVE, "fr", lambda fetcher: iter(native))
 
     manifest = [
-        {"doc_id": "fr155", "bank_code": "fr", "doc_type": "D1", "date": "2006-03-01",
+        {"doc_id": "fr155", "corpus": "central-bank", "source_code": "fr", "doc_type": "D1", "date": "2006-03-01",
          "document_url": ("https://publications.banque-france.fr/sites/default/files/"
                      "medias/documents/working-paper_155_2006.pdf"),
          "source_url": "https://ideas.repec.org/p/bfr/banfra/155.html",
-         "sha256": "h155", "local_path": "/raw/155.pdf"},
+         "sha256": "h155", "local_path": "raw/155.pdf"},
     ]
     summary, changes = build_report("fr", fetcher=None, manifest_rows=manifest)
     assert summary["matched_key"] == 1
@@ -865,7 +865,7 @@ def test_wp_migrate_se_key_match_registers_alt_url(monkeypatch):
         date=date(2016, 3, 3), date_precision="day")]   # as the Riksbank scraper states it
     monkeypatch.setitem(wp_migrate._NATIVE, "se", lambda fetcher: iter(native))
     manifest = [{
-        "doc_id": "s317", "bank_code": "se", "doc_type": "D1", "date": "2016-03-01",
+        "doc_id": "s317", "corpus": "central-bank", "source_code": "se", "doc_type": "D1", "date": "2016-03-01",
         "document_url": "http://www.riksbank.se/Documents/Rapporter/Working_papers/2016/rap_wp317_160303.pdf",
         "source_url": "https://ideas.repec.org/p/hhs/rbnkwp/0317.html",
     }]
@@ -960,7 +960,7 @@ def test_wp_dates_apply_only_replays_index(tmp_path):
     from cb_corpus.wp_dates import index_path, row_key
     cfg = Config(data_dir=tmp_path)
     Storage(cfg)
-    row = {"doc_id": "d1", "bank_code": "ecb", "doc_type": "D1", "date": "2010-01-01",
+    row = {"doc_id": "d1", "corpus": "central-bank", "source_code": "ecb", "doc_type": "D1", "date": "2010-01-01",
            "date_precision": "month", "date_source": "repec",
            "source_url": "https://ideas.repec.org/p/ecb/ecbwps/2010100.html",
            "title": "X", "document_url": "https://x/wp.pdf", "year": 2010}
@@ -992,15 +992,15 @@ def test_run_wp_migrate_write_applies_in_place_and_is_idempotent(tmp_path, monke
     cfg = Config(data_dir=tmp_path)
     Storage(cfg)  # ensure dirs exist
     rows = [
-        {"doc_id": "id3244", "bank_code": "ecb", "doc_type": "D1", "date": "2026-06-01",
+        {"doc_id": "id3244", "corpus": "central-bank", "source_code": "ecb", "doc_type": "D1", "date": "2026-06-01",
          "document_url": "https://www.ecb.europa.eu//pub/pdf/scpwps/ecb.wp3244~aa.en.pdf",
          "source_url": "https://ideas.repec.org/p/ecb/ecbwps/20263244.html",
-         "sha256": "h1", "local_path": "/raw/3244.pdf"},
-        {"doc_id": "id388", "bank_code": "ecb", "doc_type": "D2", "date": "2026-02-01",
+         "sha256": "h1", "local_path": "raw/3244.pdf"},
+        {"doc_id": "id388", "corpus": "central-bank", "source_code": "ecb", "doc_type": "D2", "date": "2026-02-01",
          "document_url": "https://www.ecb.europa.eu//pub/pdf/scpops/ecb.op388.en.pdf",
          "source_url": "https://ideas.repec.org/p/ecb/ecbops/2026388.html",
-         "sha256": "h2", "local_path": "/raw/388.pdf"},
-        {"doc_id": "idus", "bank_code": "us", "doc_type": "D1", "date": "2020-01-01",
+         "sha256": "h2", "local_path": "raw/388.pdf"},
+        {"doc_id": "idus", "corpus": "central-bank", "source_code": "us", "doc_type": "D1", "date": "2020-01-01",
          "document_url": "https://federalreserve.gov/x.pdf", "source_url": ""},
     ]
     cfg.manifest_path.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
@@ -1014,10 +1014,10 @@ def test_run_wp_migrate_write_applies_in_place_and_is_idempotent(tmp_path, monke
     assert a["repec_handle"] == "RePEc:ecb:ecbwps:20263244"
     assert "https://www.ecb.europa.eu/pub/pdf/scpwps/ecb.wp3244~aa.en.pdf" in a["alt_urls"]
     # invariant #1: identity/content/file pointers untouched
-    assert a["doc_id"] == "id3244" and a["sha256"] == "h1" and a["local_path"] == "/raw/3244.pdf"
+    assert a["doc_id"] == "id3244" and a["sha256"] == "h1" and a["local_path"] == "raw/3244.pdf"
     assert a["document_url"] == rows[0]["document_url"]
     # non-ECB row passes through byte-for-byte (no schema fields injected)
-    assert after["idus"] == upgrade_row(dict(rows[2]))       # as read (contract keys)
+    assert after["idus"] == rows[2]
 
     # idempotent: a second --write finds them already migrated and rewrites nothing new
     summary2 = wp_migrate.run_wp_migrate(bank_codes=["ecb"], write=True, config=cfg)

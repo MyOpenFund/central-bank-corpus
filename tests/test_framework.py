@@ -794,11 +794,11 @@ def test_ecb_d3_double_slash_legacy_row_deduped_via_alt_url(tmp_path):
     normalized_url = ("https://www.ecb.europa.eu/press/blog/date/2023/html/"
                        "ecb.blog230824~362178a805.en.html")
     row = {
-        "bank_code": "ecb", "doc_type": "D3", "title": "ECB D3 2023-08-24",
+        "corpus": "central-bank", "source_code": "ecb", "doc_type": "D3", "title": "ECB D3 2023-08-24",
         "document_url": legacy_url, "source_url": "", "date": "2023-08-24",
         "language": "en", "provenance": "bank_site", "mime_type": "text/html",
         "sha256": "f8ee5df6f1402ceee7af11b4e8e9706638c8b213bfe844b1e265c6b4160e7b86",
-        "local_path": "data/raw/ecb/D3/2023/f0d212497f8b1289.html",
+        "local_path": "raw/ecb/D3/2023/f0d212497f8b1289.html",
         "doc_id": "f0d212497f8b1289", "year": 2023,
         "alt_urls": [normalized_url],
     }
@@ -822,11 +822,11 @@ def test_ecb_d3_known_legacy_row_filtered_before_any_fetch_through_discover_flow
     normalized_url = ("https://www.ecb.europa.eu/press/blog/date/2023/html/"
                        "ecb.blog230824~362178a805.en.html")
     row = {
-        "bank_code": "ecb", "doc_type": "D3", "title": "ECB D3 2023-08-24",
+        "corpus": "central-bank", "source_code": "ecb", "doc_type": "D3", "title": "ECB D3 2023-08-24",
         "document_url": legacy_url, "source_url": "", "date": "2023-08-24",
         "language": "en", "provenance": "bank_site", "mime_type": "text/html",
         "sha256": "f8ee5df6f1402ceee7af11b4e8e9706638c8b213bfe844b1e265c6b4160e7b86",
-        "local_path": "data/raw/ecb/D3/2023/f0d212497f8b1289.html",
+        "local_path": "raw/ecb/D3/2023/f0d212497f8b1289.html",
         "doc_id": "f0d212497f8b1289", "year": 2023,
         "alt_urls": [normalized_url],
     }
@@ -892,11 +892,11 @@ def test_discovery_slash_variant_of_indexed_row_skipped_before_fetch(tmp_path):
     clean_url = ("https://www.ecb.europa.eu/press/blog/date/2023/html/"
                  "ecb.blog230824~362178a805.en.html")
     row = {
-        "bank_code": "ecb", "doc_type": "D3", "title": "ECB D3 2023-08-24",
+        "corpus": "central-bank", "source_code": "ecb", "doc_type": "D3", "title": "ECB D3 2023-08-24",
         "document_url": clean_url, "source_url": "", "date": "2023-08-24",
         "language": "en", "provenance": "bank_site", "mime_type": "text/html",
         "sha256": "f8ee5df6f1402ceee7af11b4e8e9706638c8b213bfe844b1e265c6b4160e7b86",
-        "local_path": "data/raw/ecb/D3/2023/f0d212497f8b1289.html",
+        "local_path": "raw/ecb/D3/2023/f0d212497f8b1289.html",
         "doc_id": "f0d212497f8b1289", "year": 2023,
     }
     cfg = Config(data_dir=tmp_path)
@@ -995,11 +995,11 @@ def test_ecb_c2_double_slash_legacy_row_deduped_via_alt_url(tmp_path):
     normalized_url = ("https://www.ecb.europa.eu/press/inter/date/2019/html/"
                        "ecb.in191216~8014b1bae6.en.html")
     row = {
-        "bank_code": "ecb", "doc_type": "C2", "title": "Interview with NOS Nieuwsuur",
+        "corpus": "central-bank", "source_code": "ecb", "doc_type": "C2", "title": "Interview with NOS Nieuwsuur",
         "document_url": legacy_url, "source_url": "", "date": "2019-12-16",
         "language": "en", "provenance": "bank_site", "mime_type": "text/html",
         "sha256": "9d67b7c417f25253b3b81fe698bea2b0263f0cef430f2f2bdb239192eb2e7fb6",
-        "local_path": "data/raw/ecb/C2/2019/18f03b281e9ab1ba.html",
+        "local_path": "raw/ecb/C2/2019/18f03b281e9ab1ba.html",
         "doc_id": "18f03b281e9ab1ba", "year": 2019,
         "alt_urls": [normalized_url],
     }
@@ -1023,14 +1023,14 @@ def test_ecb_d1_double_slash_legacy_row_deduped_via_alt_url(tmp_path):
     normalized_url = ("https://www.ecb.europa.eu/pub/pdf/scpwps/"
                        "ecb.wp3252~91761af52b.en.pdf")
     row = {
-        "bank_code": "ecb", "doc_type": "D1",
+        "corpus": "central-bank", "source_code": "ecb", "doc_type": "D1",
         "title": "A theory of bank liquidity requirements",
         "document_url": legacy_url,
         "source_url": "https://ideas.repec.org/p/ecb/ecbwps/20263252.html",
         "date": "2026-07-01", "language": "en", "provenance": "repec_discovery",
         "mime_type": "application/pdf",
         "sha256": "f0aa3f6773d68af8026f8c6beb33ca67df3698d46c5d5667410c20f82f579248",
-        "local_path": "data/raw/ecb/D1/2026/c58765e17500b626.pdf",
+        "local_path": "raw/ecb/D1/2026/c58765e17500b626.pdf",
         "doc_id": "c58765e17500b626", "year": 2026,
         "alt_urls": [normalized_url],
     }
@@ -1321,10 +1321,10 @@ def test_retry_html_recovers_and_records_failures(tmp_path, monkeypatch):
     with cfg.manifest_path.open("w") as fh:
         for p, mime, code in zip(paths, ["text/html", "text/html", "application/pdf"], ["a", "b", "c"]):
             fh.write(_json.dumps({
-                "bank_code": "ecb", "doc_type": "A3", "title": "x",
+                "corpus": "central-bank", "source_code": "ecb", "doc_type": "A3", "title": "x",
                 "document_url": f"https://e.test/{code}.en.html",
                 "date": "2024-01-01", "year": 2024, "doc_id": code,
-                "mime_type": mime, "local_path": str(p),
+                "mime_type": mime, "local_path": cfg.stored_path(p),
                 "sha256": None, "language": "en",
             }) + "\n")
 
@@ -1375,10 +1375,10 @@ def test_convert_existing_rewrites_manifest(tmp_path, monkeypatch):
     cfg.manifest_path.parent.mkdir(parents=True, exist_ok=True)
     with cfg.manifest_path.open("w") as fh:
         fh.write(_json.dumps({
-            "bank_code": "ecb", "doc_type": "A3", "title": "x",
+            "corpus": "central-bank", "source_code": "ecb", "doc_type": "A3", "title": "x",
             "document_url": "https://e.test/abc.en.html",
             "date": "2024-01-01", "year": 2024, "doc_id": "abc123",
-            "mime_type": "text/html", "local_path": str(html_path),
+            "mime_type": "text/html", "local_path": cfg.stored_path(html_path),
             "sha256": None, "language": "en",
         }) + "\n")
 

@@ -53,8 +53,8 @@ def _index(cfg: Config, bank: str, *rows: dict, blank_line: bool = False) -> Non
 
 
 def _row(doc_id: str, data: bytes, bank: str, rel: str) -> dict:
-    return {"doc_id": doc_id, "bank_code": bank, "doc_type": rel.split("/")[1],
-            "sha256": _sha(data), "local_path": f"data/raw/{rel}", "document_url": f"https://x/{doc_id}.pdf"}
+    return {"doc_id": doc_id, "corpus": "central-bank", "source_code": bank, "doc_type": rel.split("/")[1],
+            "sha256": _sha(data), "local_path": f"raw/{rel}", "document_url": f"https://x/{doc_id}.pdf"}
 
 
 # --- Task 1: index, walk, classify ------------------------------------------
@@ -286,25 +286,23 @@ def test_duplicate_is_kept_when_the_owner_path_resolves_to_the_file_itself(tmp_p
     assert row["error"] == "owner is this file"
 
 
-def test_absolute_local_path_pointing_at_the_owner_file_is_accepted(tmp_path):
-    """local_path is absolute and has no `raw/` segment anywhere — this must
-    exercise the absolute branch of `_resolve_local_path`, not the marker
-    branch. The copy lives outside raw/ but holds the owner's exact bytes so
-    H1's verification still passes."""
+def test_absolute_local_path_fails_loudly_and_moves_nothing(tmp_path):
+    """The documents contract stores paths relative to the data root: an
+    absolute `local_path` (accepted until 2026-11-20) stops the sweep with
+    the migrate-contract hint instead of being trusted as an owner."""
+    from cb_corpus.models import ContractRowError
     cfg = _cfg(tmp_path)
-    outside_dir = tmp_path / "outside_owner"
-    outside_dir.mkdir()
-    owner_copy = outside_dir / "aaaa.pdf"
+    owner_copy = tmp_path / "outside_owner" / "aaaa.pdf"
+    owner_copy.parent.mkdir()
     owner_copy.write_bytes(PDF_A)
     dup = _write(cfg, "us/C1/2015/dup.pdf", PDF_A)
-    row = {"doc_id": "aaaa", "bank_code": "us", "doc_type": "C1", "sha256": _sha(PDF_A),
+    row = {"doc_id": "aaaa", "corpus": "central-bank", "source_code": "us", "doc_type": "C1", "sha256": _sha(PDF_A),
            "local_path": str(owner_copy), "document_url": "https://x/aaaa.pdf"}
     _index(cfg, "us", row)
-    s = orphans.sweep_orphans(cfg, move=True)
-    assert s.owner_missing == 0
-    assert s.moved == 1
-    assert not dup.exists()
-    assert (cfg.orphans_dir / "us/C1/2015/dup.pdf").read_bytes() == PDF_A
+    with pytest.raises(ContractRowError, match="migrate-contract"):
+        orphans.sweep_orphans(cfg, move=True)
+    assert dup.read_bytes() == PDF_A and not cfg.orphans_dir.exists()
+
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses unix permission checks")
 def test_unreadable_file_is_reported_not_fatal_and_others_still_move(tmp_path):

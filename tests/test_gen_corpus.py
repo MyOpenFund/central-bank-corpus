@@ -25,7 +25,7 @@ def _write(path, rows, blank_lines=False):
 
 
 def _row(bank, doc_type, year, **extra):
-    r = {"doc_id": f"{bank}-{doc_type}-{year}-{len(extra)}", "bank_code": bank,
+    r = {"doc_id": f"{bank}-{doc_type}-{year}-{len(extra)}", "corpus": "central-bank", "source_code": bank,
          "doc_type": doc_type, "language": "en", "provenance": "bank_site"}
     if year is not None:
         r["year"] = year
@@ -105,8 +105,17 @@ def test_main_writes_output_path(corpus, tmp_path):
     assert out.read_text().startswith("# Central bank corpus")
 
 
-def test_rows_missing_bank_or_type_do_not_crash(tmp_path):
+def test_rows_missing_type_do_not_crash(tmp_path):
     cfg = Config(data_dir=tmp_path / "data")
-    _write(cfg.manifest_dir / "xx.jsonl", [{"doc_id": "a", "year": 2001}, _row("ca", "D1", 2002)])
+    _write(cfg.manifest_dir / "xx.jsonl", [{"doc_id": "a", "year": 2001, "corpus": "central-bank",
+                                            "source_code": "xx"}, _row("ca", "D1", 2002)])
     md = gen_corpus.build_corpus_md(cfg)
     assert "| Documents | **2** |" in md
+
+
+def test_a_row_without_a_bank_fails_loudly(tmp_path):
+    from cb_corpus.models import ContractRowError
+    cfg = Config(data_dir=tmp_path / "data")
+    _write(cfg.manifest_dir / "xx.jsonl", [{"doc_id": "a", "year": 2001}, _row("ca", "D1", 2002)])
+    with pytest.raises(ContractRowError, match="migrate-contract"):
+        gen_corpus.build_corpus_md(cfg)

@@ -39,7 +39,7 @@ from typing import Iterable, Optional
 
 from .config import Config
 from .storage import iter_manifest_rows
-from .models import row_bank
+from .models import SOURCE_KEY
 
 _DEFAULT_OVERDUE_GRACE_DAYS = 7
 _DEFAULT_SOON_DAYS = 60
@@ -183,7 +183,7 @@ def compute_series(cfg: Config, *, today: Optional[date] = None,
         d = _parse_date(row.get("date"))
         if d is None:
             continue
-        bank = (row_bank(row) or "").strip().lower()
+        bank = (row.get(SOURCE_KEY) or "").strip().lower()
         dtype = (row.get("doc_type") or "").strip()
         if not bank or not dtype:
             continue

@@ -28,7 +28,7 @@ from typing import Iterable, Optional
 
 from .config import Config
 from .http import Fetcher
-from .models import row_bank, row_url
+from .models import SOURCE_KEY, URL_KEY
 from .sources.ecb_foedb import discover_ecb_wp, ecb_wp_number, repec_ecb_number
 from .sources.fed_wp import discover_fed_wp, fed_key_from_url, fed_key_from_handle
 from .sources.boj_wp import discover_boj_wp, boj_code
@@ -110,7 +110,7 @@ def normalize_title(s: str) -> str:
 
 def _row_key(bank: str, row: dict):
     """(doc_type, number) join key for a manifest row: from document_url, else handle."""
-    return (_KEY_FROM_PDF[bank](row_url(row) or "")
+    return (_KEY_FROM_PDF[bank](row.get(URL_KEY) or "")
             or _KEY_FROM_HANDLE[bank](row.get("source_url") or ""))
 
 
@@ -146,14 +146,14 @@ def build_report(bank: str, fetcher: Fetcher,
     changes: list[dict] = []
 
     for row in manifest_rows:
-        if row_bank(row) != bank or row.get("doc_type") not in ("D1", "D2"):
+        if row.get(SOURCE_KEY) != bank or row.get("doc_type") not in ("D1", "D2"):
             continue
         summary["manifest_total"] += 1
         key = _row_key(bank, row)
         native = native_by_key.get(key) if key is not None else None
         match_type = "key" if native is not None else ""
         if native is None:
-            native = native_by_url.get(match_key_url(row_url(row) or ""))
+            native = native_by_url.get(match_key_url(row.get(URL_KEY) or ""))
             match_type = "url" if native is not None else ""
         if native is None:
             native = native_by_title.get(normalize_title(row.get("title") or ""))
@@ -185,10 +185,10 @@ def build_report(bank: str, fetcher: Fetcher,
             # date / date_precision / date_source untouched (alt URL + handle only)
             "date_from_native": native.date is not None,
             "match_type": match_type,
-            "old_url": row_url(row),
+            "old_url": row.get(URL_KEY),
             "native_url": native_url,
             "repec_handle": repec_handle_from_source_url(row.get("source_url") or ""),
-            "alt_url_added": native_url if native_url != (row_url(row) or "") else "",
+            "alt_url_added": native_url if native_url != (row.get(URL_KEY) or "") else "",
         })
 
     summary["native_only"] = sum(1 for u in native_by_url if u not in matched_native_urls)
@@ -217,7 +217,7 @@ def apply_change(row: dict, change: dict) -> None:
     if change.get("repec_handle"):
         row["repec_handle"] = change["repec_handle"]
     alt = change.get("alt_url_added")
-    if alt and alt != row_url(row):
+    if alt and alt != row.get(URL_KEY):
         alts = list(row.get("alt_urls") or [])
         if alt not in alts:
             alts.append(alt)

@@ -1,13 +1,14 @@
 """`migrate-contract`: rewrite the stored manifests in the documents-contract form.
 
 One-shot for the documents contract (vault-contract 1.0.0, 2026-11-20). New
-rows are written in the contract form (DocRecord.to_row) and rows read by any
-command are upgraded in memory (models.upgrade_row); this command rewrites
-the rows already stored, so the transition fallbacks (models.row_bank,
-Config.resolve_stored_path's `data/` branch, upgrade_row) and the vault's
-own transition mode can be removed afterwards. Per row
-(models.contract_upgrade, every key keeping its position, every other value
-unchanged):
+rows are written in the contract form (DocRecord.to_row) and every reader
+expects that form: a row still in an older form makes any other command
+stop with models.ContractRowError, naming this command (the read-time
+upgrade of the transition was removed on 2026-11-20, once the NAS manifests
+were migrated). This command rewrites the rows already stored; it works on
+the raw JSON (no reader of this package involved), so an outside clone with
+manifests of any earlier form can still run it. Per row (contract_upgrade,
+every key keeping its position, every other value unchanged):
 
   - `corpus: "central-bank"` added as the first key;
   - `bank_code` renamed `source_code` (`pdf_url` -> `document_url` too, if any
@@ -22,7 +23,9 @@ unchanged):
 
 It also writes `vocabulary.json` at the data root (vocabulary.write_vocabulary).
 
-Files handled: every per-bank manifest `data/manifest/<bank>.jsonl`. Not
+Files handled: every per-bank manifest `data/manifest/<bank>.jsonl`; with
+--write, a pre-split single `data/manifest.jsonl` is first split per bank
+(storage.migrate_legacy_layout, raw lines kept). Not
 handled, and why: `download_errors.jsonl` entries (and the cadence files) are
 not documents rows -- their `bank_code` is this repo's internal name, read
 back by recover-downloads under that name; nothing else stored carries a
@@ -49,13 +52,97 @@ import json
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Any, Iterable, MutableMapping, Optional
 
 from .config import Config
-from .document_url_migrate import _read_lines_dry, _read_lines_locked, rewrite_file
+from .document_url_migrate import (LEGACY_URL_KEY, _read_lines_dry, _read_lines_locked,
+                                   rewrite_file)
 from .filelock import locked_sidecar
-from .models import PATH_KEYS, contract_upgrade
+from .models import CORPUS, PATH_KEYS, SOURCE_KEY, URL_KEY
+from .storage import migrate_legacy_layout
 from .vocabulary import VOCABULARY_FILE, vocabulary_bytes, write_vocabulary
+
+#: The source code's key before the documents contract (2026-11-20).
+LEGACY_SOURCE_KEY = "bank_code"
+#: The prefix manifest paths carried before they became relative to the data
+#: root (`data/raw/...` -> `raw/...`, 2026-11-20).
+LEGACY_DATA_PREFIX = "data/"
+
+
+def contract_upgrade(row: MutableMapping[str, Any], *, undated: bool = True) -> list[str]:
+    """Bring one manifest row to the documents contract IN PLACE, every key
+    keeping its position and every other value untouched. Returns what
+    changed, in this order (empty = already in the contract form):
+
+      - `document_url`: `pdf_url` renamed (row and retired_duplicates entries);
+      - `corpus`: `corpus: "central-bank"` added as the first key;
+      - `source_code`: `bank_code` renamed; `both_source_names` instead when
+        the row carries BOTH names -- left as is, never guess which value is
+        right (migrate-contract reports it as an error);
+      - `local_path`, `html_path`: the legacy `data/` prefix dropped (paths
+        become relative to the data root; an absolute path is left as is);
+        `bad_path` instead when what would remain is not a clean relative
+        path (`data//raw/...`, `data/data/raw/...`, a bare `data/`): that
+        path is left as is (migrate-contract leaves the whole row and
+        reports it as an error);
+      - `date_precision`: nulled on an undated row (no date, no precision);
+      - `date_kind`: dropped from an undated row (the key is absent, never
+        null, when there is no date -- DocRecord.to_row's rule).
+    The last two are data fixes, not renames: only with `undated=True` (the
+    default; `undated=False` leaves them to the tools that own dates).
+
+    Pure raw-JSON work: no reader of this package is involved, so an outside
+    clone holding manifests of any earlier form can still run it."""
+    changes: list[str] = []
+    renamed = _rename_key(row)
+    for entry in row.get("retired_duplicates") or []:
+        if isinstance(entry, dict):
+            renamed = _rename_key(entry) or renamed
+    if renamed:
+        changes.append(URL_KEY)
+    if "corpus" not in row:
+        items = [("corpus", CORPUS), *row.items()]
+        row.clear()
+        row.update(items)
+        changes.append("corpus")
+    if LEGACY_SOURCE_KEY in row:
+        if SOURCE_KEY in row:
+            changes.append("both_source_names")
+        elif _rename_key(row, LEGACY_SOURCE_KEY, SOURCE_KEY):
+            changes.append(SOURCE_KEY)
+    for key in PATH_KEYS:
+        v = row.get(key)
+        if isinstance(v, str) and v.startswith(LEGACY_DATA_PREFIX):
+            rest = v[len(LEGACY_DATA_PREFIX):]
+            # Fixed point: strip only when the remainder is a clean relative
+            # path. `data//raw/x` would become absolute, `data/data/raw/x`
+            # would need a second pass, a bare `data/` would become empty.
+            if rest and not rest.startswith("/") and not rest.startswith(LEGACY_DATA_PREFIX):
+                row[key] = rest
+                changes.append(key)
+            elif "bad_path" not in changes:
+                changes.append("bad_path")
+    if undated and not row.get("date"):
+        if row.get("date_precision") is not None:
+            row["date_precision"] = None
+            changes.append("date_precision")
+        if "date_kind" in row:
+            del row["date_kind"]
+            changes.append("date_kind")
+    return changes
+
+
+def _rename_key(d: MutableMapping[str, Any], old: str = LEGACY_URL_KEY,
+                new: str = URL_KEY) -> bool:
+    """`old` -> `new` in place, position kept. False (nothing done) when `old`
+    is absent or `new` is already there."""
+    if old not in d or new in d:
+        return False
+    items = [((new if k == old else k), v) for k, v in d.items()]
+    d.clear()
+    d.update(items)
+    return True
+
 
 #: contract_upgrade change names -> FileCounts attribute.
 _CHANGE_FIELDS = {"document_url": "document_url", "corpus": "corpus",
@@ -192,15 +279,18 @@ def migrate_contract(cfg: Config, *, write: bool = False,
                      bank_codes: Optional[Iterable[str]] = None) -> MigrationResult:
     """Upgrade every per-bank manifest (or the given banks) to the documents
     contract, then write `vocabulary.json` at the data root. Dry run unless
-    `write`. A legacy single `data/manifest.jsonl` is not handled (any
-    Storage start splits it into per-bank files first)."""
+    `write`. A legacy single `data/manifest.jsonl` is split into per-bank
+    files first with --write (storage.migrate_legacy_layout); the dry run
+    only warns about it."""
+    if write:
+        migrate_legacy_layout(cfg)
     if bank_codes:
         files = [cfg.manifest_file(b) for b in bank_codes]
     else:
         files = sorted(cfg.manifest_dir.glob("*.jsonl")) if cfg.manifest_dir.is_dir() else []
         if cfg.manifest_path.exists():
             print(f"[migrate-contract] WARNING: legacy {cfg.manifest_path} not "
-                  f"handled (split it first: any Storage start does)", file=sys.stderr)
+                  f"counted (--write splits it per bank first)", file=sys.stderr)
     for f in files:
         if not f.exists():
             print(f"[migrate-contract] WARNING: no manifest {f} (unknown bank code?)",

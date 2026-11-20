@@ -30,7 +30,7 @@ from bs4 import BeautifulSoup
 from .banks import get_bank
 from .config import Config
 from .http import Fetcher
-from .models import row_url
+from .models import URL_KEY
 from .runreport import SourceStats
 from .sources.repec import (IDEAS, SERIES, _paper_meta, cap_truncation,
                             extract_pdf_candidates, listing_error_truncation,
@@ -194,7 +194,7 @@ def run_repec_check(bank_codes: Optional[Iterable[str]] = None,
                 if track:
                     by_h.setdefault(h, set()).add(did)
             if key_pdf:
-                k = key_pdf(row_url(row) or "") or (key_handle and key_handle(row.get("source_url") or ""))
+                k = key_pdf(row.get(URL_KEY) or "") or (key_handle and key_handle(row.get("source_url") or ""))
                 if k:
                     keys.add(k)
                     if track:
@@ -204,7 +204,7 @@ def run_repec_check(bank_codes: Optional[Iterable[str]] = None,
                 titles.add(t)
                 if track:
                     by_t.setdefault(t, set()).add(did)
-            for u in [row_url(row), *(row.get("alt_urls") or [])]:
+            for u in [row.get(URL_KEY), *(row.get("alt_urls") or [])]:
                 if u:
                     urls.add(match_key_url(u))
                     if track:
@@ -303,7 +303,7 @@ def run_repec_check(bank_codes: Optional[Iterable[str]] = None,
                                      "doc_type": row.get("doc_type", ""),
                                      "date": row.get("date", ""),
                                      "title": row.get("title", ""),
-                                     "document_url": (row_url(row) or ""), "bucket": bucket})
+                                     "document_url": (row.get(URL_KEY) or ""), "bucket": bucket})
         results[bank] = summary
         print(f"{bank}: {summary}")
 
@@ -351,14 +351,14 @@ def _build_indexes(storage: Storage, bank: str) -> dict:
         if h:
             by_handle.setdefault(h, []).append(row)
         if key_pdf:
-            k = key_pdf(row_url(row) or "") or (
+            k = key_pdf(row.get(URL_KEY) or "") or (
                 key_handle and key_handle(row.get("source_url") or ""))
             if k:
                 by_key.setdefault(k, []).append(row)
         t = normalize_title(row.get("title") or "")
         if t:
             by_title.setdefault(t, []).append(row)
-        for u in [row_url(row), *(row.get("alt_urls") or [])]:
+        for u in [row.get(URL_KEY), *(row.get("alt_urls") or [])]:
             if u:
                 by_url.setdefault(match_key_url(u), []).append(row)
         src = row.get("source_url")

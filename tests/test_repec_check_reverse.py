@@ -61,7 +61,7 @@ SIXTY = (TODAY - timedelta(days=60)).isoformat()
 
 def _rows():
     def r(doc_id, doc_type="D1", date_=None, **kw):
-        row = {"doc_id": doc_id, "bank_code": "jp", "doc_type": doc_type,
+        row = {"doc_id": doc_id, "corpus": "central-bank", "source_code": "jp", "doc_type": doc_type,
                "title": kw.pop("title", doc_id), "document_url": kw.pop("document_url", f"https://x.test/{doc_id}.pdf"),
                "source_url": kw.pop("source_url", "")}
         if date_:
@@ -207,7 +207,7 @@ def test_month_precision_date_counts_as_recent(tmp_path, monkeypatch):
     c.manifest_dir.mkdir(parents=True)
     ym = TODAY.strftime("%Y-%m")
     c.manifest_file("jp").write_text(json.dumps(
-        {"doc_id": "m", "bank_code": "jp", "doc_type": "D1", "title": "m",
+        {"doc_id": "m", "corpus": "central-bank", "source_code": "jp", "doc_type": "D1", "title": "m",
          "document_url": "https://x.test/m.pdf", "date": ym}) + "\n")
     _, buckets, _ = _run(c, monkeypatch, grace_days=40)
     assert buckets == {"m": "pending_repec"}
@@ -253,7 +253,7 @@ def test_se_key_tier_matches(tmp_path, monkeypatch):
     c = Config(data_dir=tmp_path / "data")
     c.manifest_dir.mkdir(parents=True)
     c.manifest_file("se").write_text(json.dumps(
-        {"doc_id": "s1", "bank_code": "se", "doc_type": "D1", "date": "2019-12-01",
+        {"doc_id": "s1", "corpus": "central-bank", "source_code": "se", "doc_type": "D1", "date": "2019-12-01",
          "title": "Some paper (Revised December 2019)",
          "document_url": "https://www.riksbank.se/globalassets/media/rapporter/working-papers/2019/no.-463-some-paper.pdf"}) + "\n")
 
@@ -275,11 +275,11 @@ def test_two_series_bank_tracks_both_doc_types(tmp_path, monkeypatch):
     D2 row matched by the ops series is not reported."""
     c = Config(data_dir=tmp_path / "data")
     c.manifest_dir.mkdir(parents=True)
-    rows = [{"doc_id": "w", "bank_code": "ecb", "doc_type": "D1", "date": "2020-01-10", "title": "w",
+    rows = [{"doc_id": "w", "corpus": "central-bank", "source_code": "ecb", "doc_type": "D1", "date": "2020-01-10", "title": "w",
              "document_url": "https://x.test/w.pdf", "repec_handle": "RePEc:ecb:ecbwps:20202001"},
-            {"doc_id": "o", "bank_code": "ecb", "doc_type": "D2", "date": "2020-02-10", "title": "o",
+            {"doc_id": "o", "corpus": "central-bank", "source_code": "ecb", "doc_type": "D2", "date": "2020-02-10", "title": "o",
              "document_url": "https://x.test/o.pdf", "repec_handle": "RePEc:ecb:ecbops:2020240"},
-            {"doc_id": "x", "bank_code": "ecb", "doc_type": "D2", "date": "2021-02-10", "title": "x",
+            {"doc_id": "x", "corpus": "central-bank", "source_code": "ecb", "doc_type": "D2", "date": "2021-02-10", "title": "x",
              "document_url": "https://x.test/x.pdf"}]
     c.manifest_file("ecb").write_text("".join(json.dumps(r) + "\n" for r in rows))
 

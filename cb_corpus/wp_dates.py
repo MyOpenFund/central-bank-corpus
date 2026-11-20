@@ -34,7 +34,7 @@ from typing import Iterable, Optional
 
 from .config import LEGACY_DATA_PREFIX, Config
 from .http import Fetcher
-from .models import row_bank, row_url
+from .models import SOURCE_KEY, URL_KEY
 from .sources.wayback import first_capture
 from .storage import Storage, apply_row_updates
 from .wp_migrate import normalize_title, repec_handle_from_source_url
@@ -79,7 +79,7 @@ def row_key(row: dict) -> Optional[str]:
     t = normalize_title(row.get("title") or "")
     if not t:
         return None
-    bank = (row_bank(row) or "").strip().lower()
+    bank = (row.get(SOURCE_KEY) or "").strip().lower()
     return f"t:{bank}:{t}"
 
 
@@ -223,7 +223,7 @@ def _url_variants(row: dict) -> list[str]:
     """Distinct URLs worth querying Wayback for: the document_url, its abs/pdf sibling,
     and any alt_urls (e.g. the native bank URL registered during migration)."""
     out: list[str] = []
-    for u in [row_url(row), *(row.get("alt_urls") or [])]:
+    for u in [row.get(URL_KEY), *(row.get("alt_urls") or [])]:
         if not u:
             continue
         out.append(u)
@@ -293,7 +293,7 @@ def run_wp_dates(bank_codes: Optional[Iterable[str]] = None,
 
     try:
         for row in storage.iter_manifest():
-            if (row_bank(row) not in codes or row.get("doc_type") not in ("D1", "D2")
+            if (row.get(SOURCE_KEY) not in codes or row.get("doc_type") not in ("D1", "D2")
                     or row.get("date_precision") == "day"):
                 continue
             if row.get("date_precision") == "year":

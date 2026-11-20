@@ -54,12 +54,12 @@ class FakeFetcher:
 
 def _row(doc_id, title, document_url, source_url="", alt_urls=None, doc_type="D1"):
     return {
-        "bank_code": "gb", "doc_type": doc_type, "title": title,
+        "corpus": "central-bank", "source_code": "gb", "doc_type": doc_type, "title": title,
         "document_url": document_url, "source_url": source_url,
         "alt_urls": alt_urls or [], "date": "2001-01-01", "year": 2001,
         "language": "en", "provenance": "bank_site",
         "mime_type": "application/pdf", "sha256": "deadbeef",
-        "local_path": f"/data/{doc_id}.pdf", "doc_id": doc_id,
+        "local_path": f"raw/{doc_id}.pdf", "doc_id": doc_id,
         "date_precision": "day", "date_source": "bank_site", "repec_handle": "",
     }
 
@@ -896,7 +896,7 @@ def test_cli_csv_symlink_alias_of_apply_csv_is_an_argparse_error(tmp_path, capsy
 
 def _jp_row(doc_id, title, document_url, source_url=""):
     r = _row(doc_id, title, document_url, source_url=source_url)
-    r["bank_code"] = "jp"
+    r["source_code"] = "jp"
     return r
 
 

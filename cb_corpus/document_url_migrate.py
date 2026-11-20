@@ -3,8 +3,10 @@
 One-shot for the field rename of 2026-11-19 (`DocRecord.pdf_url` became
 `DocRecord.document_url`; the value, and so every doc_id, is unchanged).
 New rows are written with `document_url`; this command renames the key in
-the rows already stored, so the transition fallback (models.row_url /
-models.upgrade_row) can be removed afterwards.
+the rows already stored (the readers' transition fallback was removed on
+2026-11-20: a reader now refuses a row still carrying `pdf_url`). Kept for
+an outside clone still holding such rows: it works on the raw JSON, with no
+reader of this package involved (`migrate-contract` also renames the key).
 
 Files handled (the persistent state that stores the key):
 
@@ -18,7 +20,8 @@ Not handled, and why: `wp_dates_index.jsonl` (`evidence_url`) and
 `download_quarantine.jsonl` (`url`) never stored the key; the CSV reports
 under `data/reports/` are rewritten whole by their own command on the next
 run and never read back; a recover-downloads `--candidates` file is the
-operator's own input, read with the old key as fallback (`dead_pdf_url`).
+operator's own input (a line still using `dead_pdf_url` is refused by
+recover-downloads with a message asking for `dead_document_url`).
 
 Each file is processed under its sidecar lock (filelock.locked_sidecar, the
 manifests' and the download-error log's writers take the same lock), re-read
@@ -47,10 +50,12 @@ from typing import Iterable, Optional
 
 from .config import Config
 from .filelock import locked_sidecar
-from .models import LEGACY_URL_KEY, URL_KEY
+from .models import URL_KEY
 from .storage import _read_rows_for_rewrite
 
 DOWNLOAD_ERRORS = "download_errors.jsonl"
+#: The document URL key's name until 2026-11-19.
+LEGACY_URL_KEY = "pdf_url"
 
 
 @dataclass

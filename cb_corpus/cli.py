@@ -293,7 +293,7 @@ def main(argv: list[str] | None = None) -> int:
     rdl.add_argument("--candidates", default="",
                      help="JSONL of externally-recovered docs ({dead_document_url, file_path, "
                           "recovered_from: wayback|bank_site|mirror, final_url, title?}; "
-                          "the old key dead_pdf_url is still read) -- "
+                          "a line still using the old key dead_pdf_url is refused) -- "
                           "switches to candidates-only mode, no CDX walk; --download registers "
                           "them into the corpus via Storage.reindex")
     rdl.add_argument("--seed-quarantine", default="",

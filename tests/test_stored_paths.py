@@ -130,7 +130,7 @@ def _seed_html_row(cfg: Config, form: str, doc_id: str = "abc123") -> Path:
     html.write_bytes(b"<html>seed</html>")
     cfg.manifest_dir.mkdir(parents=True, exist_ok=True)
     cfg.manifest_file("ecb").write_text(json.dumps({
-        "bank_code": "ecb", "doc_type": "A3", "title": "x",
+        "corpus": "central-bank", "source_code": "ecb", "doc_type": "A3", "title": "x",
         "document_url": f"https://e.test/{doc_id}.en.html", "date": "2024-01-01",
         "year": 2024, "doc_id": doc_id, "mime_type": "text/html",
         "local_path": _stored(form, rel), "sha256": None, "language": "en",
@@ -138,10 +138,9 @@ def _seed_html_row(cfg: Config, form: str, doc_id: str = "abc123") -> Path:
     return html
 
 
-@pytest.mark.parametrize("form", FORMS)
-def test_convert_html_reads_either_form_and_writes_the_contract_form(elsewhere, monkeypatch, form):
+def test_convert_html_reads_and_writes_the_contract_form(elsewhere, monkeypatch):
     from cb_corpus import convert as convert_mod
-    html = _seed_html_row(elsewhere, form)
+    html = _seed_html_row(elsewhere, "contract")
     monkeypatch.setattr(convert_mod, "find_chrome", lambda: "/fake/chrome")
     monkeypatch.setattr(convert_mod, "render_url_to_pdf",
                         lambda url, output, **kw: output.write_bytes(pdf_body(b"%PDF-1.4 ok")))
@@ -153,10 +152,9 @@ def test_convert_html_reads_either_form_and_writes_the_contract_form(elsewhere, 
     assert row["html_path"] == "raw/ecb/A3/2024/abc123.html"
 
 
-@pytest.mark.parametrize("form", FORMS)
-def test_retry_html_reads_either_form_and_writes_the_contract_form(elsewhere, monkeypatch, form):
+def test_retry_html_reads_and_writes_the_contract_form(elsewhere, monkeypatch):
     from cb_corpus import retry_html as retry_mod
-    html = _seed_html_row(elsewhere, form)
+    html = _seed_html_row(elsewhere, "contract")
     monkeypatch.setattr(retry_mod, "find_chrome", lambda: "/fake/chrome")
 
     def fake_try(chrome, url, output, **kw):
@@ -169,6 +167,29 @@ def test_retry_html_reads_either_form_and_writes_the_contract_form(elsewhere, mo
     [row] = list(iter_manifest_rows(elsewhere))
     assert row["local_path"] == "raw/ecb/A3/2024/abc123.pdf"
     assert row["html_path"] == "raw/ecb/A3/2024/abc123.html"
+
+
+@pytest.mark.parametrize("cmd", ["convert-html", "retry-html"])
+def test_a_legacy_path_stops_the_render_commands_before_any_render(elsewhere, monkeypatch, cmd):
+    """A row still storing `data/raw/...` (pre-contract) is refused at read
+    time, naming migrate-contract: nothing rendered, the manifest untouched."""
+    from cb_corpus import convert as convert_mod
+    from cb_corpus import retry_html as retry_mod
+    from cb_corpus.models import ContractRowError
+    html = _seed_html_row(elsewhere, "legacy")
+    before = elsewhere.manifest_file("ecb").read_bytes()
+    rendered = []
+    monkeypatch.setattr(convert_mod, "find_chrome", lambda: "/fake/chrome")
+    monkeypatch.setattr(retry_mod, "find_chrome", lambda: "/fake/chrome")
+    monkeypatch.setattr(convert_mod, "render_url_to_pdf", lambda *a, **kw: rendered.append(a))
+    monkeypatch.setattr(retry_mod, "_try_strategy", lambda *a, **kw: rendered.append(a))
+    with pytest.raises(ContractRowError, match="migrate-contract"):
+        if cmd == "convert-html":
+            convert_mod.convert_existing(elsewhere, resolver=public_resolver)
+        else:
+            retry_mod.retry_failed(elsewhere, parallelism=1, resolver=public_resolver)
+    assert rendered == [] and not html.with_suffix(".pdf").exists()
+    assert elsewhere.manifest_file("ecb").read_bytes() == before
 
 
 @pytest.mark.parametrize("form", FORMS)

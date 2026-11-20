@@ -19,9 +19,9 @@ def _setup(tmp_path, files):
             p = data / rel
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_bytes(content)
-        rows.append({"doc_id": doc_id, "bank_code": "xx", "doc_type": "A1", "title": doc_id,
+        rows.append({"doc_id": doc_id, "corpus": "central-bank", "source_code": "xx", "doc_type": "A1", "title": doc_id,
                      "document_url": f"https://x/{doc_id}", "mime_type": mime,
-                     "local_path": f"data/{rel}"})
+                     "local_path": rel})
     cfg.manifest_dir.mkdir(parents=True, exist_ok=True)
     (cfg.manifest_dir / "xx.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
     return cfg
@@ -108,7 +108,7 @@ def test_small_file_outside_window_and_rows_without_a_pdf_artifact(tmp_path):
     cfg = _setup(tmp_path, {"cut": (small_cut, "application/pdf", "pdf"),
                             "page": (b"<html></html>", "application/pdf", "html")})
     rows = (cfg.manifest_dir / "xx.jsonl").read_text() + json.dumps(
-        {"doc_id": "nofile", "bank_code": "xx", "doc_type": "A1", "mime_type": "application/pdf"}) + "\n"
+        {"doc_id": "nofile", "corpus": "central-bank", "source_code": "xx", "doc_type": "A1", "mime_type": "application/pdf"}) + "\n"
     (cfg.manifest_dir / "xx.jsonl").write_text(rows)
     s = audit_pdfs(cfg, progress_every=0)
     assert (s.rows_checked, s.by_reason) == (1, {"no-eof-in-window": 1})   # the .html and the pathless row are out

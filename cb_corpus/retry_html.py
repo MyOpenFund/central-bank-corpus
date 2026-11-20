@@ -23,7 +23,7 @@ from typing import Optional
 
 from .config import Config
 from .htmlpdf import RenderRefused, chrome_print_to_pdf, find_chrome, render_allowed
-from .models import row_bank, row_url
+from .models import SOURCE_KEY, URL_KEY
 from .storage import (apply_row_updates, iter_manifest_rows, pdf_file_problem,
                       render_pdf_checked)
 
@@ -123,7 +123,7 @@ def retry_failed(config: Optional[Config] = None,
             continue
         # Either stored form, resolved against the data root (never the CWD).
         html_path = cfg.resolve_stored_path(row.get("local_path"))
-        url = row_url(row)
+        url = row.get(URL_KEY)
         if html_path is None or not url:
             counts["skip"] = counts.get("skip", 0) + 1
             continue
@@ -178,7 +178,7 @@ def retry_failed(config: Optional[Config] = None,
         row, html_path, pdf_path = args
         udd = get_udd()
         try:
-            ok = _try_all_strategies(chrome, row_url(row), pdf_path, udd, cfg,
+            ok = _try_all_strategies(chrome, row.get(URL_KEY), pdf_path, udd, cfg,
                                      resolver=resolver)
         except RenderRefused as exc:     # DNS changed since the pre-check
             with counts_lock:
@@ -194,12 +194,12 @@ def retry_failed(config: Optional[Config] = None,
                 counts["recovered"] = counts.get("recovered", 0) + 1
         else:
             with failures_lock:
-                failures.append((row_url(row), row_bank(row) or "?"))
+                failures.append((row.get(URL_KEY), row.get(SOURCE_KEY) or "?"))
             with counts_lock:
                 counts["still-fail"] = counts.get("still-fail", 0) + 1
         with counts_lock:
             done = (counts.get("recovered", 0) + counts.get("still-fail", 0))
-        print(f"[retry-html] {done}/{len(worklist)} {row_url(row)[:80]} -> "
+        print(f"[retry-html] {done}/{len(worklist)} {row.get(URL_KEY)[:80]} -> "
               f"{'recovered' if ok else 'FAIL'}",
               file=sys.stderr, flush=True)
 

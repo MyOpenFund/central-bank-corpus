@@ -386,12 +386,12 @@ def test_sync_after_the_backfill_leaves_known_rows_alone(tmp_path):
 
     from cb_corpus.policy_dates import run_policy_dates
     url = "https://www.boj.or.jp/en/mopo/mpmsche_minu/minu_2026/g260123.pdf"
-    row = {"bank_code": "jp", "doc_type": "A3",
+    row = {"corpus": "central-bank", "source_code": "jp", "doc_type": "A3",
            "title": "Minutes [PDF 292KB]", "document_url": url,
            "source_url": "https://www.boj.or.jp/en/mopo/mpmsche_minu/minu_2026/index.htm",
            "date": None, "language": "en", "provenance": "bank_site",
            "mime_type": "application/pdf", "sha256": "aa" * 32,
-           "local_path": "data/raw/jp/A3/0/x.pdf", "doc_id": compute_doc_id("jp", "A3", url),
+           "local_path": "raw/jp/A3/0/x.pdf", "doc_id": compute_doc_id("jp", "A3", url),
            "year": None, "html_path": None, "date_precision": "day",
            "date_source": "bank_site", "repec_handle": "", "alt_urls": []}
     cfg = Config(data_dir=tmp_path, html_to_pdf=False)

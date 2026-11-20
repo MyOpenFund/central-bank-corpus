@@ -38,7 +38,7 @@ from .config import Config
 from .filelock import locked_sidecar
 from .http import Fetcher
 from .htmlpdf import RenderRefused, render_allowed, render_url_to_pdf
-from .models import DocRecord, row_bank, row_url, upgrade_row
+from .models import SOURCE_KEY, URL_KEY, DocRecord, check_contract_row
 from .pdfcheck import check_pdf_bytes, has_pdf_magic
 from .quarantine import Quarantine
 
@@ -394,11 +394,11 @@ def _iter_manifest_file(f: Path) -> Iterator[dict]:
                 f"append, hard stop): {f}:{i + 1}: {exc}"
             ) from exc
         offset += len(ln)
-    # upgrade_row: TRANSITION (pdf_url -> document_url, see models.row_url):
-    # a row read under the old key name is handed out under the new one, so
-    # any rewrite built from it writes `document_url` only.
+    # Every reader expects the documents-contract form: a row in an older
+    # form stops the read (ContractRowError, naming migrate-contract) rather
+    # than being filed under `_unknown` or read with a missing URL.
     for row in rows:
-        yield upgrade_row(row)
+        yield check_contract_row(row, f.name)
 
 
 def iter_manifest_rows(cfg: Config, bank_code: Optional[str] = None) -> Iterator[dict]:
@@ -415,6 +415,11 @@ def migrate_legacy_layout(cfg: Config) -> int:
     No-op when there is no legacy file or per-bank files already exist. Preserves
     each row's exact bytes (no reserialization), then retires the legacy file to
     `*.pre-split.bak` so it is not double-read. Returns #banks written (0 = no-op).
+
+    A layout migration, so it reads the raw JSON: the bank is `source_code`
+    or, on a pre-contract row (the only kind a pre-split file holds), its
+    `bank_code`; the split files are then upgraded by `migrate-contract`. A
+    row with neither is a ValueError and nothing is written.
     """
     legacy = cfg.manifest_path
     if not legacy.exists():
@@ -427,7 +432,11 @@ def migrate_legacy_layout(cfg: Config) -> int:
             s = line.strip()
             if not s:
                 continue
-            bank = row_bank(json.loads(s)) or "_unknown"
+            row = json.loads(s)
+            bank = row.get(SOURCE_KEY) or row.get("bank_code")
+            if not bank:
+                raise ValueError(f"{legacy}: row {row.get('doc_id')!r} has no source_code "
+                                 f"(nor bank_code): split refused, nothing written")
             by_bank.setdefault(bank, []).append(s)
     cfg.manifest_dir.mkdir(parents=True, exist_ok=True)
     for bank, lines in by_bank.items():
@@ -452,7 +461,7 @@ def _write_per_bank_unlocked(cfg: Config, rows: Iterable[dict]) -> int:
     by_bank: dict[str, list[dict]] = {}
     n = 0
     for row in rows:
-        by_bank.setdefault(row_bank(row) or "_unknown", []).append(row)
+        by_bank.setdefault(check_contract_row(row)[SOURCE_KEY], []).append(row)
         n += 1
     cfg.manifest_dir.mkdir(parents=True, exist_ok=True)
     for bank, brows in by_bank.items():
@@ -515,8 +524,9 @@ def _read_rows_for_rewrite(f: Path) -> list[tuple[str, Optional[str]]]:
 def apply_row_updates(cfg: Config, updates: Mapping[str, dict]) -> int:
     """Lock-protected keyed rewrite of manifest rows (issue #18).
 
-    `updates`: doc_id -> full replacement row (row's `source_code`, or its
-    pre-contract `bank_code`, selects the bank file; models.row_bank). Per
+    `updates`: doc_id -> full replacement row, in the documents-contract
+    form (its `source_code` selects the bank file; any other form raises
+    models.ContractRowError before anything is written). Per
     bank, under the sidecar lock: re-read fresh, replace rows whose doc_id
     is in `updates`, keep every other line VERBATIM — including rows
     appended after the caller built its snapshot — then temp+os.replace.
@@ -531,7 +541,7 @@ def apply_row_updates(cfg: Config, updates: Mapping[str, dict]) -> int:
         return 0
     by_bank: dict[str, dict[str, dict]] = {}
     for did, row in updates.items():
-        bank = row_bank(row) or "_unknown"
+        bank = check_contract_row(row, "apply_row_updates")[SOURCE_KEY]
         by_bank.setdefault(bank, {})[did] = row
     migrate_legacy_layout(cfg)           # never let a legacy file shadow a write
     replaced = 0
@@ -547,9 +557,6 @@ def apply_row_updates(cfg: Config, updates: Mapping[str, dict]) -> int:
                     for raw, did in pairs:
                         upd = bank_updates.get(did) if did else None
                         if upd is not None:
-                            # transition (models.upgrade_row): never write
-                            # the old `pdf_url` key name back.
-                            upd = upgrade_row(dict(upd))
                             fh.write(json.dumps(upd, ensure_ascii=False) + "\n")
                             seen.add(did)
                             replaced += 1
@@ -608,7 +615,7 @@ def merge_rows_locked(cfg: Config, merges: Mapping[str, Mapping[str, object]]) -
             for raw, did in pairs:
                 fn = bank_merges.get(did) if did else None
                 if fn is not None:
-                    row = upgrade_row(json.loads(raw))   # transition, see models
+                    row = check_contract_row(json.loads(raw), path.name)
                     if fn(row):
                         out.append(json.dumps(row, ensure_ascii=False))
                         changed += 1
@@ -752,10 +759,10 @@ class Storage:
     def _load_existing(self) -> None:
         for rec in self.iter_manifest():
             self._ids.add(rec["doc_id"])
-            self._bank_by_id[rec["doc_id"]] = row_bank(rec) or "_unknown"
+            self._bank_by_id[rec["doc_id"]] = rec[SOURCE_KEY]
             if rec.get("sha256"):
                 self._hash_docid[rec["sha256"]] = rec["doc_id"]
-            url = row_url(rec)
+            url = rec.get(URL_KEY)
             if url:
                 self._urls.add(normalize_url(url))
             # Persisted alt_urls (WP v3): the same paper may have been registered
@@ -837,7 +844,7 @@ class Storage:
             for row in self.iter_manifest():
                 did = row.get("doc_id")
                 if did in missing:
-                    out[did] = row_bank(row) or "_unknown"
+                    out[did] = row[SOURCE_KEY]
                     self._bank_by_id[did] = out[did]
         return out
 

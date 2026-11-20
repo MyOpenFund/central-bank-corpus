@@ -68,11 +68,11 @@ class FakeFetcher:
 
 def _row(doc_id, bank, *, content, ext="pdf", mime="application/pdf", doc_type="D1",
          html_path=None, source_url="", document_url=None, alt_urls=None):
-    return {"doc_id": doc_id, "bank_code": bank, "doc_type": doc_type, "title": doc_id,
+    return {"doc_id": doc_id, "corpus": "central-bank", "source_code": bank, "doc_type": doc_type, "title": doc_id,
             "document_url": document_url or f"https://{bank}.example/{doc_id}.pdf",
             "source_url": source_url, "mime_type": mime,
             "sha256": sha(content) if content is not None else None,
-            "local_path": f"data/raw/{bank}/{doc_type}/2020/{doc_id}.{ext}",
+            "local_path": f"raw/{bank}/{doc_type}/2020/{doc_id}.{ext}",
             "html_path": html_path, "alt_urls": list(alt_urls or [])}
 
 
@@ -83,10 +83,10 @@ def _setup(tmp_path, rows_and_bytes):
     by_bank: dict[str, list[dict]] = {}
     for row, content in rows_and_bytes:
         if content is not None:
-            p = data / row["local_path"][len("data/"):]
+            p = data / row["local_path"]
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_bytes(content)
-        by_bank.setdefault(row["bank_code"], []).append(row)
+        by_bank.setdefault(row["source_code"], []).append(row)
     cfg.manifest_dir.mkdir(parents=True, exist_ok=True)
     for bank, rows in by_bank.items():
         cfg.manifest_file(bank).write_text("".join(json.dumps(r) + "\n" for r in rows))
@@ -108,7 +108,7 @@ def _rows(cfg):
 
 
 def _file(cfg, row):
-    return cfg.data_dir / row["local_path"][len("data/"):]
+    return cfg.data_dir / row["local_path"]
 
 
 def _tree(root):
@@ -212,7 +212,7 @@ def test_committed_plans_match_the_committed_manifests():
             if p.action == "retire":
                 owner = rows[p.candidates[0][len("duplicate-of:"):]]
                 assert owner["mime_type"] == "application/pdf" and not owner.get("html_path")
-                assert owner["bank_code"] == rows[p.doc_id]["bank_code"]
+                assert owner["source_code"] == rows[p.doc_id]["source_code"]
     for p in load_plan(root / "deploy/plans/2026-11-19-unresolved.csv"):
         assert p.action == "retire"
         assert retired_onto.get(p.doc_id) == p.candidates[0][len("duplicate-of:"):]
@@ -258,8 +258,7 @@ def test_fallback_candidate_after_a_failing_one_write(tmp_path):
     assert _file(cfg, row).read_bytes() == GOOD
     new = _rows(cfg)["wp895"]
     assert new["doc_id"] == "wp895" and new["document_url"] == row["document_url"]
-    # same file; a rewritten row stores its path in the contract form (no data/)
-    assert new["local_path"] == row["local_path"].removeprefix("data/")
+    assert new["local_path"] == row["local_path"]                # same file
     assert new["sha256"] == sha(GOOD) and new["mime_type"] == "application/pdf"
     assert new["alt_urls"] == ["https://a/good"]
     assert new["artifact_replaced"] == [{"at": "2026-11-19T10:00:00+00:00",
@@ -392,7 +391,7 @@ def test_dry_run_writes_nothing(tmp_path):
 
 
 def test_rendered_row_keeps_its_html_sibling(tmp_path):
-    html_path = "data/raw/ecb/A3/2020/rend.html"
+    html_path = "raw/ecb/A3/2020/rend.html"
     row = _row("rend", "ecb", content=TRUNCATED, doc_type="A3", html_path=html_path)
     cfg = _setup(tmp_path, [(row, TRUNCATED)])
     sib = cfg.data_dir / "raw/ecb/A3/2020/rend.html"
@@ -402,8 +401,8 @@ def test_rendered_row_keeps_its_html_sibling(tmp_path):
     assert _one(s, "rend")["outcome"] == "replaced"
     assert sib.read_bytes() == b"<html>the source</html>"
     new = _rows(cfg)["rend"]
-    assert new["html_path"] == html_path.removeprefix("data/")
-    assert new["local_path"] == row["local_path"].removeprefix("data/")
+    assert new["html_path"] == html_path
+    assert new["local_path"] == row["local_path"]
     assert _file(cfg, row).read_bytes() == GOOD
 
 
@@ -478,7 +477,7 @@ def test_retire_refused_when_owner_missing_or_bad(tmp_path, case):
     owner_kw = {"content": OWNER, "doc_type": "C1"}
     owner_bytes = OWNER
     if case == "html-owner":
-        owner_kw["html_path"] = "data/raw/it/C1/2020/owner.html"
+        owner_kw["html_path"] = "raw/it/C1/2020/owner.html"
     owner = _row("owner", "it", **owner_kw)
     if case == "bad-file":
         owner_bytes = TRUNCATED
@@ -587,10 +586,10 @@ def test_retire_refuses_to_clobber_a_different_file_in_raw_orphans(tmp_path):
 
 def test_replace_refuses_an_artifact_outside_raw(tmp_path):
     row = _row("x", "fr", content=TRUNCATED)
-    outside = tmp_path / "elsewhere" / "x.pdf"
-    outside.parent.mkdir()
+    outside = tmp_path / "data" / "elsewhere" / "x.pdf"   # under the data root, not raw/
+    outside.parent.mkdir(parents=True)
     outside.write_bytes(TRUNCATED)
-    row["local_path"] = str(outside)
+    row["local_path"] = "raw/../elsewhere/x.pdf"
     cfg = _setup(tmp_path, [(row, None)])
     r = _one(replace_artifacts(cfg, _plan(tmp_path, [["x", "replace", "https://a/good", "n"]]),
                                write=True, fetcher=FakeFetcher({"https://a/good": GOOD})), "x")
@@ -668,7 +667,7 @@ def test_retire_refused_when_a_third_row_shares_the_retired_file(tmp_path):
 def test_replace_refused_when_another_row_shares_the_file(tmp_path):
     row = _row("r", "fr", content=TRUNCATED)
     twin = _row("twin", "nl", content=TRUNCATED)
-    twin["local_path"] = "data/raw/fr/D1/2020/../2020/r.pdf"   # same file once resolved
+    twin["local_path"] = "raw/fr/D1/2020/../2020/r.pdf"   # same file once resolved
     cfg = _setup(tmp_path, [(row, TRUNCATED), (twin, None)])
     before = _tree(cfg.data_dir)
     f = FakeFetcher({"https://a/good": GOOD})

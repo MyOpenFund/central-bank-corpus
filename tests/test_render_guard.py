@@ -282,9 +282,9 @@ def _html_manifest(tmp_path, url):
     html = tmp_path / "raw" / "ecb" / "A3" / "2024" / "d1.html"
     html.parent.mkdir(parents=True, exist_ok=True)
     html.write_bytes(b"<html>x</html>")
-    row = {"bank_code": "ecb", "doc_type": "A3", "title": "x", "document_url": url,
+    row = {"corpus": "central-bank", "source_code": "ecb", "doc_type": "A3", "title": "x", "document_url": url,
            "date": "2024-01-01", "year": 2024, "doc_id": "d1", "mime_type": "text/html",
-           "local_path": str(html), "sha256": None, "language": "en"}
+           "local_path": "raw/ecb/A3/2024/d1.html", "sha256": None, "language": "en"}
     mf = tmp_path / "manifest" / "ecb.jsonl"
     mf.parent.mkdir(parents=True, exist_ok=True)
     mf.write_text(json.dumps(row) + "\n")

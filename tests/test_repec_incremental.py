@@ -136,7 +136,7 @@ def test_storage_is_known_source_url(tmp_path):
     from cb_corpus.storage import Storage
     data = tmp_path / "data"
     (data / "manifest").mkdir(parents=True)
-    row = {"bank_code": "se", "doc_type": "D1", "title": "t",
+    row = {"corpus": "central-bank", "source_code": "se", "doc_type": "D1", "title": "t",
            "document_url": "https://bank.test/wp/1.pdf",
            "source_url": _paper_url("0001"),
            "date": "2026-01-01", "language": "en", "provenance": "repec_discovery",

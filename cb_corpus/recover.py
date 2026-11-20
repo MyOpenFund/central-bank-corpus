@@ -50,8 +50,8 @@ walk at all): each JSONL line is an EXTERNALLY-recovered file (hunted by hand
 via Wayback / the bank's current site / a legitimate mirror --
 recover-quarantine design decision 1/2) --
 ``{dead_document_url, file_path, recovered_from: wayback|bank_site|mirror,
-final_url, title?}`` (``dead_pdf_url``, the key's name until 2026-11-19, is
-still read when ``dead_document_url`` is absent: models.row_url, transition).
+final_url, title?}`` (a line still using ``dead_pdf_url``, the key's name
+until 2026-11-19, is refused: ValueError asking for ``dead_document_url``).
 The audit entry is matched by ``dead_document_url`` (an
 entry with no match is reported ``unknown-entry``, never guessed at); the
 already-downloaded local file is verified (``%PDF`` magic, >20KB) before
@@ -80,7 +80,7 @@ from urllib.parse import urlparse
 from .banks import get_bank
 from .config import Config
 from .http import Fetcher
-from .models import DocRecord, row_url
+from .models import URL_KEY, DocRecord
 from .pdfcheck import MAGIC_WINDOW, has_pdf_magic
 from .quarantine import Quarantine
 from .sources.repec import IDEAS, _paper_meta, extract_pdf_candidates
@@ -103,11 +103,15 @@ _DUPLICATE_CONTENT_PREFIX = "skip:duplicate-content"
 # hunted candidates, a different question (integrity wave 2026-11).
 _MIN_CANDIDATE_PDF_BYTES = 20 * 1024
 
+# The document URL key's name until 2026-11-19: an entry still under it is
+# refused (migrate-document-url renames it), never read as an entry without
+# a URL.
+_OLD_URL_KEY = "pdf_url"
+
 
 def _read_inventory(cfg: Config,
                     bank_codes: Optional[Iterable[str]] = None) -> list[dict]:
-    """Read ``data/download_errors.jsonl``, dedup by ``document_url`` (or
-    ``pdf_url`` on a line written before 2026-11-19: models.row_url) keeping the
+    """Read ``data/download_errors.jsonl``, dedup by ``document_url`` keeping the
     LATEST entry (the file is append-ordered, so a later line simply
     overwrites an earlier one for the same url). Optional ``bank_codes``
     filter. A missing file is tolerated: empty inventory, a stderr note, no
@@ -121,7 +125,11 @@ def _read_inventory(cfg: Config,
     (a writer killed mid-write, or torn mid UTF-8 character) is an expected
     accident, not a reason to make every later recover-downloads run crash
     until someone hand-edits it. Unlike ``_apply_seed_quarantine``, which
-    reads the operator's own file and aborts on purpose."""
+    reads the operator's own file and aborts on purpose.
+
+    An entry still under the pre-2026-11-19 key ``pdf_url`` (a log not yet
+    migrated) is a ValueError naming ``migrate-document-url``: never read as
+    an entry without a URL."""
     path = cfg.data_dir / "download_errors.jsonl"
     if not path.exists():
         print(f"[recover] no {path} -- nothing to recover", file=sys.stderr, flush=True)
@@ -146,9 +154,14 @@ def _read_inventory(cfg: Config,
                 print(f"[recover] WARNING: line {lineno} of {path} is not a JSON "
                       f"object, skipped", file=sys.stderr, flush=True)
                 continue
+            if _OLD_URL_KEY in entry and URL_KEY not in entry:
+                raise ValueError(
+                    f"{path}:{lineno}: entry under the pre-2026-11-19 key "
+                    f"`{_OLD_URL_KEY}`: run `python -m cb_corpus migrate-document-url "
+                    f"--write` once on this data root")
             if codes is not None and entry.get("bank_code") not in codes:
                 continue
-            url = row_url(entry)
+            url = entry.get(URL_KEY)
             if not url:
                 continue
             by_url[url] = entry   # later line wins -> latest entry per document_url
@@ -162,7 +175,7 @@ def _is_converged(storage: Storage, entry: dict) -> bool:
     a real PDF owner; no network needed to know that. A duplicate held back
     because its owner is not a real PDF (see _apply_stamps) is never
     persisted, so a fresh Storage does not know it: it is NOT converged."""
-    if storage.is_known_url(row_url(entry) or ""):
+    if storage.is_known_url(entry.get(URL_KEY) or ""):
         return True
     for alt in entry.get("alt_urls") or []:
         if alt and storage.is_known_url(alt):
@@ -232,7 +245,11 @@ def _read_candidates(path: str) -> list[dict]:
     that line (identifying it by line number), the good lines around it
     still collected. There is no CSV row for it -- a line that doesn't even
     parse has no URL to report against, unlike the recognised bad-* actions
-    below which all start from a valid, parsed candidate."""
+    below which all start from a valid, parsed candidate.
+
+    A line using the pre-2026-11-19 key ``dead_pdf_url`` (and not
+    ``dead_document_url``) is a ValueError: the file is the operator's own,
+    one key to rename, never read as a candidate without a URL."""
     out: list[dict] = []
     with open(path) as fh:
         for lineno, line in enumerate(fh, start=1):
@@ -240,10 +257,16 @@ def _read_candidates(path: str) -> list[dict]:
             if not line:
                 continue
             try:
-                out.append(json.loads(line))
+                cand = json.loads(line)
             except json.JSONDecodeError as exc:
                 print(f"[recover] WARNING: malformed JSON on line {lineno} of "
                       f"{path}, skipped: {exc}", file=sys.stderr, flush=True)
+                continue
+            if (isinstance(cand, dict) and "dead_pdf_url" in cand
+                    and "dead_document_url" not in cand):
+                raise ValueError(f"{path}:{lineno}: rename the key `dead_pdf_url` to "
+                                 f"`dead_document_url` (renamed 2026-11-19)")
+            out.append(cand)
     return out
 
 
@@ -394,7 +417,7 @@ def _run_candidates_pass(cfg: Config, storage: Storage, fetcher: Fetcher,
     that genuinely doesn't exist -- the former is ``filtered``, the latter
     ``unknown-entry`` (never conflated)."""
     entries = _read_inventory(cfg, None)
-    by_url = {row_url(e): e for e in entries if row_url(e)}
+    by_url = {e[URL_KEY]: e for e in entries if e.get(URL_KEY)}
     codes = set(bank_codes) if bank_codes else None
 
     results: dict[str, dict] = {}
@@ -411,7 +434,7 @@ def _run_candidates_pass(cfg: Config, storage: Storage, fetcher: Fetcher,
 
     try:
         for cand in _read_candidates(candidates_path):
-            dead_url = row_url(cand, "dead_document_url") or ""
+            dead_url = cand.get("dead_document_url") or ""
             entry = by_url.get(dead_url)
 
             if entry is None:
@@ -731,7 +754,7 @@ def run_recover_downloads(bank_codes: Optional[Iterable[str]] = None,
         for entry in entries:
             bank = entry.get("bank_code") or "_unknown"
             summary = results.setdefault(bank, {a: 0 for a in _ACTIONS})
-            document_url = row_url(entry) or ""
+            document_url = entry.get(URL_KEY) or ""
 
             if _is_converged(storage, entry):
                 summary["converged"] += 1

@@ -64,7 +64,7 @@ def _seed(tmp_path, bank="xx", n=3):
     cfg = Config(data_dir=tmp_path)
     path = cfg.manifest_file(bank)
     path.parent.mkdir(parents=True, exist_ok=True)
-    rows = [{"doc_id": f"{bank}-{i}", "bank_code": bank, "title": f"t{i}",
+    rows = [{"doc_id": f"{bank}-{i}", "corpus": "central-bank", "source_code": bank, "title": f"t{i}",
              "document_url": f"https://example.org/{bank}/{i}.pdf"} for i in range(n)]
     with path.open("w") as fh:
         for r in rows:
@@ -90,7 +90,7 @@ def test_apply_row_updates_unknown_docid_warns_and_skips(tmp_path, capsys):
     from cb_corpus.storage import apply_row_updates
     cfg, path, rows = _seed(tmp_path)
     before = path.read_text()
-    ghost = {"doc_id": "xx-ghost", "bank_code": "xx", "title": "g",
+    ghost = {"doc_id": "xx-ghost", "corpus": "central-bank", "source_code": "xx", "title": "g",
              "document_url": "https://example.org/g.pdf"}
     n = apply_row_updates(cfg, {"xx-ghost": ghost})
     assert n == 0
@@ -110,7 +110,7 @@ def test_apply_row_updates_missing_bank_file_warns(tmp_path, capsys):
     from cb_corpus.storage import apply_row_updates
     from cb_corpus.config import Config
     cfg = Config(data_dir=tmp_path)
-    row = {"doc_id": "zz-1", "bank_code": "zz", "title": "t",
+    row = {"doc_id": "zz-1", "corpus": "central-bank", "source_code": "zz", "title": "t",
            "document_url": "https://example.org/z.pdf"}
     assert apply_row_updates(cfg, {"zz-1": row}) == 0
     assert not cfg.manifest_file("zz").exists()        # never conjures a file
@@ -151,7 +151,7 @@ from cb_corpus.storage import _locked
 path = Path(sys.argv[1])
 with _locked(path):
     with path.open("a") as fh:
-        fh.write(json.dumps({"doc_id": sys.argv[2], "bank_code": "xx",
+        fh.write(json.dumps({"doc_id": sys.argv[2], "corpus": "central-bank", "source_code": "xx",
                              "document_url": "https://example.org/race.pdf"}) + "\n")
 """
 
@@ -292,7 +292,7 @@ def test_convert_existing_preserves_concurrent_append(tmp_path, monkeypatch):
     # Make row 0 an HTML row with an existing file so _convert_one converts it.
     html = tmp_path / "doc.html"; html.write_text("<html/>")
     raws = [json.loads(l) for l in path.read_text().splitlines()]
-    raws[0]["mime_type"] = "text/html"; raws[0]["local_path"] = str(html)
+    raws[0]["mime_type"] = "text/html"; raws[0]["local_path"] = cfg.stored_path(html)
     with path.open("w") as fh:
         for r in raws:
             fh.write(json.dumps(r) + "\n")
