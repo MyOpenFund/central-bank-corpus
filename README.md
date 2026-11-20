@@ -159,7 +159,9 @@ python3.13 -m pytest -q
 Every work command (`discover`, `bis-sitemap`, `repec`) writes `data/vocabulary.json` (the
 documents-contract vocabulary the vault reads before the manifests; rewritten only when the
 code changed it; a failure to write it is logged, listed under `warnings` in the run report
-and makes the run degraded, `3`, without stopping it) and appends a structured
+and makes that command degraded, `3`, without stopping its crawl; in `run-job.sh sync` a
+persistent failure still ends the nightly sync as failed, because each per-bank `discover` exiting
+3 counts as a failed bank: the crawl data is kept, the autocommit is skipped) and appends a structured
 run-report line to `data/runs.jsonl` (run id, per-source counters, fetch
 errors, `bad_content` — failed documents whose URLs served the wrong bytes —,
 an explicit `truncated` flag) and exits honestly: `0` clean, `1`
