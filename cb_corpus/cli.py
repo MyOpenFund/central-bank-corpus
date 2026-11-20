@@ -350,8 +350,14 @@ def main(argv: list[str] | None = None) -> int:
         report = RunReport("central-bank-corpus", args.cmd)
         try:
             # The corpus vocabulary (documents contract) at the data root,
-            # beside runs.jsonl: rewritten only when the code changed it.
-            write_vocabulary(_runs_path().parent)
+            # beside runs.jsonl: rewritten only when the code changed it. A
+            # failure must not cost the night its crawl: logged, run degraded.
+            try:
+                write_vocabulary(_runs_path().parent)
+            except OSError as exc:
+                msg = f"vocabulary.json not written: {exc}"
+                print(f"[{args.cmd}] WARNING: {msg}", file=sys.stderr, flush=True)
+                report.degrade(msg)
             if args.cmd == "discover":
                 scope = _types(args.types)
                 results = run(bank_codes=banks, scope=scope, since=args.since,

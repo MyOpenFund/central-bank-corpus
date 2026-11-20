@@ -101,6 +101,14 @@ class RunReport:
         self.exit_code: int | None = None
         self._sources: dict[str, SourceStats] = {}
         self._fatal: str | None = None
+        self._warnings: list[str] = []
+
+    def degrade(self, reason: str) -> None:
+        """A run-level problem that cost no document but must not read as a
+        clean run (e.g. vocabulary.json could not be written): the run ends
+        degraded (rc 3) unless fatal, and `reason` is listed under
+        `warnings` in its report line."""
+        self._warnings.append(reason)
 
     def source(self, code: str) -> SourceStats:
         if code not in self._sources:
@@ -117,7 +125,8 @@ class RunReport:
         if fatal is not None:
             self.outcome, self.exit_code = "failed", 1
         elif (
-            any(s.truncated for s in srcs)
+            self._warnings
+            or any(s.truncated for s in srcs)
             or (total_new == 0 and (total_failed > 0 or any_fetch_errors))
         ):
             self.outcome, self.exit_code = "degraded", 3
@@ -144,6 +153,8 @@ class RunReport:
         }
         if self._fatal:
             d["fatal"] = self._fatal[:500]
+        if self._warnings:
+            d["warnings"] = [w[:500] for w in self._warnings]
         return d
 
     def write(self, path: str) -> None:

@@ -114,3 +114,19 @@ def test_dict_error_message_survives_truncation():
     assert error_sample.startswith("discovery_phase:")
     # Verify truncation happened (message is 300 chars)
     assert len(error_sample) <= 300
+
+
+def test_degrade_marks_an_otherwise_clean_run_degraded():
+    from cb_corpus.runreport import RunReport
+    r = RunReport("t", "discover")
+    r.source("us").record_saved_counts({"saved": 1})
+    r.degrade("vocabulary.json not written: disk full")
+    assert r.finish() == 3 and r.outcome == "degraded"
+    assert r.to_dict()["warnings"] == ["vocabulary.json not written: disk full"]
+
+
+def test_fatal_still_wins_over_degrade():
+    from cb_corpus.runreport import RunReport
+    r = RunReport("t", "discover")
+    r.degrade("x")
+    assert r.finish(fatal="boom") == 1
