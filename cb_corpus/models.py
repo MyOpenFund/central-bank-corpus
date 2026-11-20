@@ -48,6 +48,13 @@ class ContractRowError(ValueError):
     `_unknown`); `migrate-contract --write` is the fix."""
 
 
+class LegacyKeyError(ValueError):
+    """A stored entry that is not a manifest row (a `download_errors.jsonl`
+    entry, a recover-downloads candidate) still under a key renamed on
+    2026-11-19 (`pdf_url`, `dead_pdf_url`): refused, never read as an entry
+    without a URL. The message names the fix."""
+
+
 def contract_problems(row: Mapping[str, Any]) -> list[str]:
     """What keeps `row` out of the documents-contract form, as short phrases
     (empty = in the contract form). Checks the keys every reader relies on,

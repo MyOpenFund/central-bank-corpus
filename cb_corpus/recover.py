@@ -80,7 +80,7 @@ from urllib.parse import urlparse
 from .banks import get_bank
 from .config import Config
 from .http import Fetcher
-from .models import URL_KEY, DocRecord
+from .models import URL_KEY, DocRecord, LegacyKeyError
 from .pdfcheck import MAGIC_WINDOW, has_pdf_magic
 from .quarantine import Quarantine
 from .sources.repec import IDEAS, _paper_meta, extract_pdf_candidates
@@ -128,8 +128,8 @@ def _read_inventory(cfg: Config,
     reads the operator's own file and aborts on purpose.
 
     An entry still under the pre-2026-11-19 key ``pdf_url`` (a log not yet
-    migrated) is a ValueError naming ``migrate-document-url``: never read as
-    an entry without a URL."""
+    migrated) is a LegacyKeyError (a ValueError) naming ``migrate-document-url``:
+    never read as an entry without a URL."""
     path = cfg.data_dir / "download_errors.jsonl"
     if not path.exists():
         print(f"[recover] no {path} -- nothing to recover", file=sys.stderr, flush=True)
@@ -155,7 +155,7 @@ def _read_inventory(cfg: Config,
                       f"object, skipped", file=sys.stderr, flush=True)
                 continue
             if _OLD_URL_KEY in entry and URL_KEY not in entry:
-                raise ValueError(
+                raise LegacyKeyError(
                     f"{path}:{lineno}: entry under the pre-2026-11-19 key "
                     f"`{_OLD_URL_KEY}`: run `python -m cb_corpus migrate-document-url "
                     f"--write` once on this data root")
@@ -248,8 +248,8 @@ def _read_candidates(path: str) -> list[dict]:
     below which all start from a valid, parsed candidate.
 
     A line using the pre-2026-11-19 key ``dead_pdf_url`` (and not
-    ``dead_document_url``) is a ValueError: the file is the operator's own,
-    one key to rename, never read as a candidate without a URL."""
+    ``dead_document_url``) is a LegacyKeyError (a ValueError): the file is
+    the operator's own, one key to rename, never read as a candidate without a URL."""
     out: list[dict] = []
     with open(path) as fh:
         for lineno, line in enumerate(fh, start=1):
@@ -264,8 +264,8 @@ def _read_candidates(path: str) -> list[dict]:
                 continue
             if (isinstance(cand, dict) and "dead_pdf_url" in cand
                     and "dead_document_url" not in cand):
-                raise ValueError(f"{path}:{lineno}: rename the key `dead_pdf_url` to "
-                                 f"`dead_document_url` (renamed 2026-11-19)")
+                raise LegacyKeyError(f"{path}:{lineno}: rename the key `dead_pdf_url` to "
+                                     f"`dead_document_url` (renamed 2026-11-19)")
             out.append(cand)
     return out
 

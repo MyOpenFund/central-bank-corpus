@@ -17,6 +17,7 @@ from pathlib import Path
 from .banks import BIS_63
 from .completeness import build_matrix, export_csv, summarize
 from .config import Config
+from .models import ContractRowError, LegacyKeyError
 from .convert import convert_existing
 from .pipeline import (run, run_bis_sitemap, run_repec,
                        reindex_bis_from_disk, reindex_native_from_disk)
@@ -74,6 +75,20 @@ def _temps_moved_note(summary) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """The CLI. A stored row or entry in a form this code no longer reads
+    (models.ContractRowError: a manifest row outside the documents contract;
+    models.LegacyKeyError: a recover-downloads input under a renamed key) is
+    one `error: ...` line on stderr naming the fix, exit 1 -- not a
+    traceback. A reporting command catches it first, like any crash, and
+    records it in runs.jsonl as `outcome: failed` (exit 1 too)."""
+    try:
+        return _main(argv)
+    except (ContractRowError, LegacyKeyError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+
+def _main(argv: list[str] | None) -> int:
     p = argparse.ArgumentParser(prog="cb_corpus")
     sub = p.add_subparsers(dest="cmd", required=True)
 
