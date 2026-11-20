@@ -77,12 +77,15 @@ def build_corpus_md(cfg: Config) -> str:
     W("\n## 2. Data schema (`data/manifest/<bank>.jsonl`)\n")
     W("| Field | RAG use |")
     W("|---|---|")
-    for f, u in [("bank_code", "bank/country **filter**"), ("doc_type", "type **filter**"),
+    for f, u in [("corpus", "`central-bank` (documents contract)"),
+                 ("source_code", "bank/country **filter** (`bank_code` before 2026-11-20)"),
+                 ("doc_type", "type **filter**"),
                  ("title", "title / embedding"), ("date / year", "**temporal filter**"),
                  ("document_url", "**citation** (official source; `pdf_url` before 2026-11-19)"), ("source_url", "origin page"),
-                 ("provenance", "`bis_index` / `bank_site` / `repec_discovery`"),
+                 ("provenance", "`bis_index` / `bank_site` / `repec_discovery` / `wayback` / `mirror`"),
                  ("mime_type", "`application/pdf` / `text/html`"),
-                 ("local_path", "**file path** to read"), ("html_path", "HTML source (if rendered)"),
+                 ("local_path", "**file path** to read, relative to `data/` (`data/raw/...` before 2026-11-20)"),
+                 ("html_path", "HTML source (if rendered), relative to `data/`"),
                  ("sha256", "dedup / integrity"), ("doc_id", "stable primary key"),
                  ("date_precision / date_source",
                   "date quality: `day` / `month` / `year` (a month or a year is stored "
