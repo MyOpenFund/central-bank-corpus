@@ -13,6 +13,7 @@ from pathlib import Path
 
 from cb_corpus.banks import BIS_63
 from cb_corpus.config import Config
+from cb_corpus.models import row_bank
 from cb_corpus.storage import iter_manifest_rows
 
 
@@ -37,7 +38,7 @@ def build_corpus_md(cfg: Config) -> str:
     bankyears = collections.defaultdict(list)
     ty_dec = collections.defaultdict(collections.Counter)
     for d in rows:
-        c, t = d.get("bank_code") or "?", d.get("doc_type") or "?"
+        c, t = row_bank(d) or "?", d.get("doc_type") or "?"
         bt[c][t] += 1; bytype[t] += 1
         prov[d.get("provenance", "?")] += 1; lang[d.get("language", "?")] += 1
         if d.get("year"):

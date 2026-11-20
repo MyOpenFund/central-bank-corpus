@@ -38,7 +38,7 @@ from .config import Config
 from .filelock import locked_sidecar
 from .http import Fetcher
 from .htmlpdf import RenderRefused, render_allowed, render_url_to_pdf
-from .models import DocRecord, row_url, upgrade_row
+from .models import DocRecord, row_bank, row_url, upgrade_row
 from .pdfcheck import check_pdf_bytes, has_pdf_magic
 from .quarantine import Quarantine
 
@@ -408,7 +408,7 @@ def migrate_legacy_layout(cfg: Config) -> int:
             s = line.strip()
             if not s:
                 continue
-            bank = json.loads(s).get("bank_code") or "_unknown"
+            bank = row_bank(json.loads(s)) or "_unknown"
             by_bank.setdefault(bank, []).append(s)
     cfg.manifest_dir.mkdir(parents=True, exist_ok=True)
     for bank, lines in by_bank.items():
@@ -433,7 +433,7 @@ def _write_per_bank_unlocked(cfg: Config, rows: Iterable[dict]) -> int:
     by_bank: dict[str, list[dict]] = {}
     n = 0
     for row in rows:
-        by_bank.setdefault(row.get("bank_code") or "_unknown", []).append(row)
+        by_bank.setdefault(row_bank(row) or "_unknown", []).append(row)
         n += 1
     cfg.manifest_dir.mkdir(parents=True, exist_ok=True)
     for bank, brows in by_bank.items():
@@ -511,7 +511,7 @@ def apply_row_updates(cfg: Config, updates: Mapping[str, dict]) -> int:
         return 0
     by_bank: dict[str, dict[str, dict]] = {}
     for did, row in updates.items():
-        bank = row.get("bank_code") or "_unknown"
+        bank = row_bank(row) or "_unknown"
         by_bank.setdefault(bank, {})[did] = row
     migrate_legacy_layout(cfg)           # never let a legacy file shadow a write
     replaced = 0
@@ -732,7 +732,7 @@ class Storage:
     def _load_existing(self) -> None:
         for rec in self.iter_manifest():
             self._ids.add(rec["doc_id"])
-            self._bank_by_id[rec["doc_id"]] = rec.get("bank_code") or "_unknown"
+            self._bank_by_id[rec["doc_id"]] = row_bank(rec) or "_unknown"
             if rec.get("sha256"):
                 self._hash_docid[rec["sha256"]] = rec["doc_id"]
             url = row_url(rec)
@@ -817,7 +817,7 @@ class Storage:
             for row in self.iter_manifest():
                 did = row.get("doc_id")
                 if did in missing:
-                    out[did] = row.get("bank_code") or "_unknown"
+                    out[did] = row_bank(row) or "_unknown"
                     self._bank_by_id[did] = out[did]
         return out
 

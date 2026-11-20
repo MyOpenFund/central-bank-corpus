@@ -57,7 +57,9 @@ def test_committed_manifest_doc_ids_hash_the_url_value():
 def test_to_row_keeps_the_field_position():
     row = DocRecord(bank_code="xx", doc_type=DocType.D1, title="t",
                     document_url="https://x/a.pdf").to_row()
-    assert list(row)[:5] == ["bank_code", "doc_type", "title", "document_url", "source_url"]
+    # documents contract (2026-11-20): corpus + source_code (was bank_code) first
+    assert list(row)[:6] == ["corpus", "source_code", "doc_type", "title", "document_url",
+                             "source_url"]
 
 
 # -- row_url / upgrade_row ---------------------------------------------------
@@ -77,7 +79,9 @@ def test_upgrade_row_renames_in_place_keeping_position_and_values():
            "retired_duplicates": [{"doc_id": "r1", "pdf_url": "ru", "at": "x"}, "junk"]}
     same = upgrade_row(row)
     assert same is row
-    assert list(row) == ["bank_code", "title", "document_url", "source_url", "retired_duplicates"]
+    # (the documents-contract upgrade also adds corpus and renames bank_code)
+    assert list(row) == ["corpus", "source_code", "title", "document_url", "source_url",
+                         "retired_duplicates"]
     assert row["document_url"] == "u"
     assert list(row["retired_duplicates"][0]) == ["doc_id", "document_url", "at"]
     assert row["retired_duplicates"][1] == "junk"
@@ -85,8 +89,8 @@ def test_upgrade_row_renames_in_place_keeping_position_and_values():
 
 def test_upgrade_row_leaves_both_names_alone():
     row = {"pdf_url": "o", "document_url": "n"}
-    assert upgrade_row(row) == {"pdf_url": "o", "document_url": "n"}
-    assert upgrade_row({"document_url": "n"}) == {"document_url": "n"}
+    assert upgrade_row(row) == {"corpus": "central-bank", "pdf_url": "o", "document_url": "n"}
+    assert upgrade_row({"document_url": "n"}) == {"corpus": "central-bank", "document_url": "n"}
 
 
 # -- storage: read under the old name, rewrite under the new one -------------
@@ -129,7 +133,7 @@ def test_apply_row_updates_from_a_legacy_snapshot_writes_the_new_name_only(tmp_p
     assert apply_row_updates(cfg, {upd["doc_id"]: upd, raw["doc_id"]: raw}) == 2
     on_disk = _disk_rows(path)
     for row in on_disk:
-        assert "pdf_url" not in row and list(row)[3] == "document_url"
+        assert "pdf_url" not in row and list(row)[4] == "document_url"   # after corpus
     assert [r["title"] for r in on_disk] == ["new", "raw"]
 
 

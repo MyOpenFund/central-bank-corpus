@@ -5,7 +5,7 @@ from datetime import date
 from pathlib import Path
 
 from cb_corpus.config import Config
-from cb_corpus.models import DocRecord
+from cb_corpus.models import DocRecord, upgrade_row
 from cb_corpus.storage import Storage, iter_manifest_rows
 from cb_corpus.taxonomy import DocType
 from cb_corpus import c2_migrate
@@ -240,4 +240,5 @@ def test_c2_migrate_non_c2_ecb_rows_pass_through_unchanged(tmp_path, monkeypatch
 
     run_c2_migrate(cfg, fetcher=object(), write=True)
     after = {r["doc_id"]: r for r in iter_manifest_rows(cfg, "ecb")}
-    assert after["wpid"] == d1_row
+    # as read: the documents-contract upgrade (corpus, source_code) only
+    assert after["wpid"] == upgrade_row(dict(d1_row))

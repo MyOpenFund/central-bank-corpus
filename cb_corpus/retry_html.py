@@ -23,7 +23,7 @@ from typing import Optional
 
 from .config import Config
 from .htmlpdf import RenderRefused, chrome_print_to_pdf, find_chrome, render_allowed
-from .models import row_url
+from .models import row_bank, row_url
 from .storage import (apply_row_updates, iter_manifest_rows, pdf_file_problem,
                       render_pdf_checked)
 
@@ -194,7 +194,7 @@ def retry_failed(config: Optional[Config] = None,
                 counts["recovered"] = counts.get("recovered", 0) + 1
         else:
             with failures_lock:
-                failures.append((row_url(row), row.get("bank_code", "?")))
+                failures.append((row_url(row), row_bank(row) or "?"))
             with counts_lock:
                 counts["still-fail"] = counts.get("still-fail", 0) + 1
         with counts_lock:

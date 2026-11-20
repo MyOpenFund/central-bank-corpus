@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from cb_corpus.config import Config
-from cb_corpus.models import DocRecord
+from cb_corpus.models import DocRecord, upgrade_row
 from cb_corpus.storage import Storage, iter_manifest_rows
 from cb_corpus.taxonomy import DocType
 from cb_corpus.sources.ecb_foedb import (
@@ -104,7 +104,9 @@ def test_rewrite_manifest_is_atomic_and_idempotent(tmp_path):
     assert st.rewrite_manifest(updates) == 2
     # rows go to the per-bank file data/manifest/ecb.jsonl
     on_disk = [json.loads(l) for l in ecb_file.read_text().splitlines() if l.strip()]
-    assert on_disk == [updates["a"], updates["b"], seed[2]]
+    # replaced rows are written in the documents-contract form; c verbatim
+    assert on_disk == [upgrade_row(dict(updates["a"])), upgrade_row(dict(updates["b"])),
+                       seed[2]]
     assert not ecb_file.with_suffix(".jsonl.tmp").exists()
     # dedup indexes refreshed from the new content, incl. alt_urls
     assert st.is_known_url("https://x/a-alt.pdf") and st.is_known_url("https://x/b-alt.pdf")
@@ -1015,7 +1017,7 @@ def test_run_wp_migrate_write_applies_in_place_and_is_idempotent(tmp_path, monke
     assert a["doc_id"] == "id3244" and a["sha256"] == "h1" and a["local_path"] == "/raw/3244.pdf"
     assert a["document_url"] == rows[0]["document_url"]
     # non-ECB row passes through byte-for-byte (no schema fields injected)
-    assert after["idus"] == rows[2]
+    assert after["idus"] == upgrade_row(dict(rows[2]))       # as read (contract keys)
 
     # idempotent: a second --write finds them already migrated and rewrites nothing new
     summary2 = wp_migrate.run_wp_migrate(bank_codes=["ecb"], write=True, config=cfg)

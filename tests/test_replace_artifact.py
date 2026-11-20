@@ -258,7 +258,8 @@ def test_fallback_candidate_after_a_failing_one_write(tmp_path):
     assert _file(cfg, row).read_bytes() == GOOD
     new = _rows(cfg)["wp895"]
     assert new["doc_id"] == "wp895" and new["document_url"] == row["document_url"]
-    assert new["local_path"] == row["local_path"]
+    # same file; a rewritten row stores its path in the contract form (no data/)
+    assert new["local_path"] == row["local_path"].removeprefix("data/")
     assert new["sha256"] == sha(GOOD) and new["mime_type"] == "application/pdf"
     assert new["alt_urls"] == ["https://a/good"]
     assert new["artifact_replaced"] == [{"at": "2026-11-19T10:00:00+00:00",
@@ -401,7 +402,8 @@ def test_rendered_row_keeps_its_html_sibling(tmp_path):
     assert _one(s, "rend")["outcome"] == "replaced"
     assert sib.read_bytes() == b"<html>the source</html>"
     new = _rows(cfg)["rend"]
-    assert new["html_path"] == html_path and new["local_path"] == row["local_path"]
+    assert new["html_path"] == html_path.removeprefix("data/")
+    assert new["local_path"] == row["local_path"].removeprefix("data/")
     assert _file(cfg, row).read_bytes() == GOOD
 
 

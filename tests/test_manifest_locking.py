@@ -56,7 +56,7 @@ def test_append_blocks_on_sidecar(tmp_path):
     proc.wait()
     assert elapsed >= hold * 0.8, f"_append ignored the sidecar lock ({elapsed:.2f}s)"
     rows = [json.loads(l) for l in data.read_text().splitlines() if l.strip()]
-    assert len(rows) == 1 and rows[0]["bank_code"] == "xx"
+    assert len(rows) == 1 and rows[0]["source_code"] == "xx"
 
 
 def _seed(tmp_path, bank="xx", n=3):

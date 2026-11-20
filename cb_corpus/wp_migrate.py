@@ -28,7 +28,7 @@ from typing import Iterable, Optional
 
 from .config import Config
 from .http import Fetcher
-from .models import row_url
+from .models import row_bank, row_url
 from .sources.ecb_foedb import discover_ecb_wp, ecb_wp_number, repec_ecb_number
 from .sources.fed_wp import discover_fed_wp, fed_key_from_url, fed_key_from_handle
 from .sources.boj_wp import discover_boj_wp, boj_code
@@ -146,7 +146,7 @@ def build_report(bank: str, fetcher: Fetcher,
     changes: list[dict] = []
 
     for row in manifest_rows:
-        if row.get("bank_code") != bank or row.get("doc_type") not in ("D1", "D2"):
+        if row_bank(row) != bank or row.get("doc_type") not in ("D1", "D2"):
             continue
         summary["manifest_total"] += 1
         key = _row_key(bank, row)
