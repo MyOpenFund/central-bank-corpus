@@ -318,3 +318,18 @@ def test_data_strip_is_a_fixed_point(bad):
     assert row["local_path"] == bad
     row2 = dict(LEGACY, html_path=bad)
     assert "bad_path" in contract_upgrade(row2) and row2["html_path"] == bad
+
+
+@pytest.mark.parametrize("bad", [dict(bank_code=""), dict(local_path="/abs/raw/ecb/x.pdf"),
+                                 dict(html_path="data/raw/ecb/x.html")])
+def test_append_never_writes_a_row_the_readers_would_refuse(tmp_path, bad):
+    cfg = Config(data_dir=tmp_path)
+    st = Storage(cfg)
+    st._append(_rec())
+    path = cfg.manifest_file("ecb")
+    before = path.read_bytes()
+    rec = _rec(document_url="https://www.ecb.europa.eu/other.pdf", **bad)
+    with pytest.raises(ContractRowError):
+        st._append(rec)
+    assert path.read_bytes() == before
+    assert not cfg.manifest_file("").exists() and not cfg.manifest_file("_unknown").exists()

@@ -804,6 +804,10 @@ class Storage:
         yield from iter_manifest_rows(self.cfg, bank_code)
 
     def _append(self, rec: DocRecord) -> None:
+        # The readers' own check before anything is touched: a row they would
+        # refuse (an empty source_code, an absolute or `data/` path) never
+        # reaches disk, where it would stop every later read of the bank.
+        line = json.dumps(check_contract_row(rec.to_row(), "append"), ensure_ascii=False)
         path = self.cfg.manifest_file(rec.bank_code)
         path.parent.mkdir(parents=True, exist_ok=True)
         # Sidecar lock (stable inode): mutual exclusion with (a) another
@@ -812,7 +816,7 @@ class Storage:
         # data file itself would be unsound — os.replace swaps its inode.
         with _locked(path):
             with path.open("a") as fh:
-                fh.write(json.dumps(rec.to_row(), ensure_ascii=False) + "\n")
+                fh.write(line + "\n")
 
     def rewrite_manifest(self, updates: Mapping[str, dict]) -> int:
         """Apply keyed row updates under the per-bank sidecar lock (see
