@@ -333,9 +333,11 @@ read as UTF-8 (a BOM is accepted); doc_ids are stripped and lowercased.
 ### Maintenance: migrate-document-url (one-shot, 2026-11-19)
 
 The manifest field `pdf_url` was renamed `document_url` (same value, so no `doc_id` moves).
-New rows are written with `document_url`; until the stored rows are migrated, every reader
-accepts the old name (`models.row_url`, a transition to remove once the NAS manifests are
-migrated). The one-shot renames the stored key:
+Every reader expects `document_url`: a manifest row still under `pdf_url` stops the command
+(`ContractRowError`, naming `migrate-contract`, which renames it too), and a
+`download_errors.jsonl` entry under it stops recover-downloads (naming this command). The
+NAS data was migrated on 2026-11-19; the one-shot stays for a clone holding older data. It
+works on the raw JSON and renames the stored key:
 
 ```bash
 python -m cb_corpus migrate-document-url            # dry-run: counts per file, writes nothing
@@ -345,25 +347,32 @@ python -m cb_corpus migrate-document-url --write    # rename, then re-run: renam
 Per-bank manifests and `data/download_errors.jsonl` (the recover-downloads inventory), each
 under its sidecar lock, re-read fresh under it: the key is renamed in place (same position,
 every value unchanged; a row already migrated is kept byte-identical; the file is rewritten
-only when a row changed, so a rerun does nothing). Per file: `renamed`, `already_new`,
+only when a row changed, so a rerun does nothing; the rewrite goes through a temp file,
+fsynced before `os.replace`, removed on any failure). Per file: `renamed`, `already_new`,
 `both` (both names on one row: left untouched, listed by `doc_id`, exit 1, never guessed),
 `no_url`, `torn` (a torn final manifest line: dropped on `--write`, fragment saved to
 `<file>.torn`, like every manifest rewrite), `unparsed` (a download-error log line that does
 not parse: kept verbatim). `--banks` restricts to those manifests (the log is then skipped).
 Not migrated: `wp_dates_index.jsonl` and `download_quarantine.jsonl` never stored the key;
-CSV reports are rewritten by their command; a recover-downloads `--candidates` file is read
-with `dead_pdf_url` as a fallback. On the committed data (2026-11-19) the dry run counts
-61 manifests, 39,665 rows, all `renamed`.
+CSV reports are rewritten by their command; a recover-downloads `--candidates` file is the
+operator's own input: a line still using `dead_pdf_url` is refused, asking for
+`dead_document_url`. On the committed data (2026-11-19) the dry run counted 61 manifests,
+39,665 rows, all `renamed`.
 
 ### Maintenance: migrate-contract (one-shot, 2026-11-20)
 
 Manifest rows now follow the MyOpenFund `documents` contract (vault-contract 1.0.0, the rules
 the vault enforces at ingestion; see [`INGESTION_RAG.md`](INGESTION_RAG.md) §1): `corpus:
 "central-bank"` first, `source_code` instead of `bank_code`, `local_path` / `html_path`
-relative to the data root (`raw/...`, no `data/` prefix). New rows are written that way, and
-every command reads both forms (rows read from the manifests are upgraded in memory by
-`models.upgrade_row`, so a rewritten row comes out in the contract form; paths resolve
-against the data root, never the working directory). The one-shot rewrites the stored rows:
+relative to the data root (`raw/...`, no `data/` prefix, never absolute). New rows are
+written that way and every command reads that form only: a row in an older form (no
+`corpus`, `bank_code`, `pdf_url`, a `data/`-prefixed or absolute path) stops the command
+with `ContractRowError`, naming the file, the `doc_id` and this one-shot, rather than being
+filed under the bank `_unknown`; paths resolve against the data root, never the working
+directory (`Config.resolve_stored_path`, the one resolver). The NAS manifests were migrated
+on 2026-11-20 and the read-time transition removed the same day; the one-shot stays for a
+clone holding older data (it works on the raw JSON, no reader involved) and rewrites the
+stored rows:
 
 ```bash
 python -m cb_corpus migrate-contract            # dry-run: counts per file, writes nothing
@@ -374,7 +383,8 @@ Per row, in place (every key keeps its position, every other value is unchanged)
 added as the first key, `bank_code` renamed `source_code` (`pdf_url` too, if a row still has
 it), the `data/` prefix dropped from `local_path` and `html_path` (an absolute path under the
 data root is made relative), and on an undated row `date_precision` nulled and `date_kind`
-dropped. It also writes `vocabulary.json` at the data root (the contract's vocabulary,
+dropped. With `--write`, a pre-split single `data/manifest.jsonl` is first split per bank.
+It also writes `vocabulary.json` at the data root (the contract's vocabulary,
 generated from `banks.py`, `taxonomy.py` and `models.PROVENANCES`; the nightly sync rewrites
 it whenever the code changes it). Per-bank manifests only, each under its sidecar lock,
 re-read fresh under it; a row already migrated is kept byte-identical and a file is rewritten
@@ -386,10 +396,10 @@ absolute path outside the data root: left as is, listed, exit 1) and `torn` (as
 `migrate-document-url`). `--banks` restricts to those manifests. Not migrated:
 `download_errors.jsonl` and the cadence files are not documents rows (their `bank_code` is
 read back under that name by recover-downloads and cadence-watch). On the committed data
-(2026-11-20) the dry run counts 61 manifests, 39,664 rows, all `upgraded` (`local_path`
-39,664, `html_path` 6,714, `date_precision` 7, `both` 0); after `--write`,
-`python -m vault_contract.check data/manifest --corpus central-bank --vocabulary
-data/vocabulary.json --no-transition` reports 0 refusals.
+(2026-11-20) the dry run counted 61 manifests, 39,664 rows, all `upgraded` (`local_path`
+39,664, `html_path` 6,714, `date_precision` 7, `both` 0); after `--write` (commit `5fec83a`)
+a rerun upgrades 0 and `python -m vault_contract.check data/manifest --corpus central-bank
+--vocabulary data/vocabulary.json --no-transition` reports 0 refusals.
 
 ## Use
 
@@ -564,9 +574,11 @@ tests/               1,000+ tests at 2026-11-18 (taxonomy, registry, parsers, de
 - **Data schema change, 2026-11-19:** the manifest field `pdf_url` is renamed
   `document_url` (canonical document URL: PDF preferred, HTML accepted). Same values, same
   `doc_id`s; manifests published before the migration still carry `pdf_url`
-  (schema: [`INGESTION_RAG.md`](INGESTION_RAG.md)).
+  (`migrate-document-url` or `migrate-contract` rewrites them; this code reads only
+  `document_url`; schema: [`INGESTION_RAG.md`](INGESTION_RAG.md)).
 - **Data schema change, 2026-11-20 (documents contract):** every row starts with
   `corpus: "central-bank"`; `bank_code` is renamed `source_code` (same values); `local_path`
   and `html_path` are relative to the data root (`raw/...` instead of `data/raw/...`); undated
   rows carry no `date_precision` / `date_kind`. Same `doc_id`s; manifests published before
-  the migration keep the old form (schema: [`INGESTION_RAG.md`](INGESTION_RAG.md) §1).
+  the migration keep the old form, which this code no longer reads (`migrate-contract
+  --write` rewrites them; schema: [`INGESTION_RAG.md`](INGESTION_RAG.md) §1).
