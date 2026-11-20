@@ -1225,7 +1225,7 @@ class Storage:
             html_path = self.target_path(rec)
             html_path.parent.mkdir(parents=True, exist_ok=True)
             _atomic_write_bytes(html_path, content)
-            rec.html_path = str(html_path)
+            rec.html_path = self.cfg.stored_path(html_path)
 
             refused = None
             if self.cfg.html_to_pdf:
@@ -1272,7 +1272,7 @@ class Storage:
             _atomic_write_bytes(path, content)
 
         rec.sha256 = digest
-        rec.local_path = str(path)
+        rec.local_path = self.cfg.stored_path(path)
         self._ids.add(rec.doc_id)
         self._hash_docid[digest] = rec.doc_id
         self._bank_by_id[rec.doc_id] = rec.bank_code
@@ -1333,9 +1333,9 @@ class Storage:
 
         rec.mime_type = {"pdf": "application/pdf", "html": "text/html"}.get(ext, rec.mime_type)
         if ext == "html":
-            rec.html_path = str(path)
+            rec.html_path = self.cfg.stored_path(path)
         rec.sha256 = digest
-        rec.local_path = str(path)
+        rec.local_path = self.cfg.stored_path(path)
         self._ids.add(rec.doc_id)
         self._hash_docid[digest] = rec.doc_id
         self._bank_by_id[rec.doc_id] = rec.bank_code

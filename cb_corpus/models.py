@@ -104,6 +104,10 @@ class DocRecord:
     provenance: str = "bank_site"      # bank_site | bis_index | repec_discovery
     mime_type: str = ""                # "application/pdf" | "text/html" | ""
     sha256: Optional[str] = None       # filled after download
+    # Both paths are POSIX and RELATIVE TO THE DATA ROOT (the directory holding
+    # manifest/), e.g. "raw/ecb/C1/2023/<doc_id>.pdf" (Config.stored_path;
+    # documents contract). Rows written before 2026-11-20 carry "data/raw/..."
+    # until `migrate-contract --write`; read with Config.resolve_stored_path.
     local_path: Optional[str] = None   # filled after download — the canonical artifact (PDF preferred)
     html_path: Optional[str] = None    # set when source was HTML — the original HTML sibling file
     # Date-quality metadata. `date_precision` is how precise `date` is;

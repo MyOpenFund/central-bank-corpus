@@ -46,7 +46,7 @@ def test_saved_pdf_follows_the_umask(tmp_path, umask, mask, expected):
     st = _storage(tmp_path, {U: (make_pdf(), "application/pdf")})
     rec = _rec(U)
     assert st.save(rec) == "saved"
-    assert _mode(Path(rec.local_path)) == expected
+    assert _mode((tmp_path / rec.local_path)) == expected
 
 
 @pytest.mark.parametrize("mask,expected", [(0o022, 0o644), (0o002, 0o664)])
@@ -57,8 +57,8 @@ def test_rendered_pdf_follows_the_umask(tmp_path, monkeypatch, umask, mask, expe
     rec = _rec(U, mime="text/html")
     assert st.save(rec) == "saved"
     assert rec.local_path.endswith(".pdf")
-    assert _mode(Path(rec.local_path)) == expected
-    assert _mode(Path(rec.html_path)) == expected
+    assert _mode((tmp_path / rec.local_path)) == expected
+    assert _mode((tmp_path / rec.html_path)) == expected
 
 
 # -- S4: sniff the bytes before trusting an HTML mime header ---------------
@@ -73,7 +73,7 @@ def test_pdf_bytes_served_as_html_are_stored_as_pdf(tmp_path, producer_mime, ser
     assert st.save(rec) == "saved"
     assert rec.mime_type == "application/pdf"
     assert rec.local_path.endswith(".pdf") and rec.html_path is None
-    assert Path(rec.local_path).read_bytes() == body
+    assert (tmp_path / rec.local_path).read_bytes() == body
 
 
 @pytest.mark.parametrize("mode", ["reject", "accept"])

@@ -116,7 +116,7 @@ def test_consent_page_for_expected_pdf_is_rejected_and_fallback_wins(tmp_path):
     rec = _rec(U, alt_urls=[ALT])
     assert st.save(rec) == "saved"
     assert st.fetcher.calls == [U, ALT]
-    assert Path(rec.local_path).read_bytes() == good
+    assert (tmp_path / rec.local_path).read_bytes() == good
     assert rec.mime_type == "application/pdf" and rec.html_path is None
     [row] = _manifest_rows(tmp_path)
     assert row["document_url"] == U and row["local_path"].endswith(".pdf")
@@ -160,7 +160,7 @@ def test_valid_pdf_after_leading_whitespace_is_saved(tmp_path):
     st = _storage(tmp_path, {U: (body, "application/pdf")})
     rec = _rec(U)
     assert st.save(rec) == "saved"
-    assert Path(rec.local_path).read_bytes() == body
+    assert (tmp_path / rec.local_path).read_bytes() == body
 
 
 @pytest.mark.parametrize("producer_mime", ["application/pdf", "", "text/html"])
@@ -187,7 +187,7 @@ def test_accept_mode_keeps_the_old_behaviour(tmp_path):
     rec = _rec(U)
     assert st.save(rec) == "saved"
     assert rec.mime_type == "text/html" and rec.local_path.endswith(".html")
-    assert Path(rec.local_path).read_bytes() == CONSENT_PAGE
+    assert (tmp_path / rec.local_path).read_bytes() == CONSENT_PAGE
 
 
 @pytest.mark.parametrize("producer_mime", ["text/html", ""])
@@ -340,14 +340,14 @@ def test_chrome_renders_to_a_temp_path_then_moves_into_place(tmp_path, monkeypat
                                 lambda out: out.write_bytes(rendered))
     rec = _rec(U, mime="text/html")
     assert st.save(rec) == "saved"
-    final = Path(rec.local_path)
+    final = (tmp_path / rec.local_path)
     assert rec.mime_type == "application/pdf" and final.suffix == ".pdf"
     assert final.read_bytes() == rendered
     [tmp_out] = calls
     assert tmp_out != final and tmp_out.parent == final.parent
     assert not tmp_out.exists()
     assert sorted(p.name for p in final.parent.iterdir()) == sorted(
-        [final.name, Path(rec.html_path).name])
+        [final.name, (tmp_path / rec.html_path).name])
 
 
 @pytest.mark.parametrize("output", [
@@ -361,8 +361,8 @@ def test_bad_chrome_output_keeps_the_html_as_artifact(tmp_path, monkeypatch, out
     assert st.save(rec) == "saved"
     assert rec.mime_type == "text/html" and rec.local_path == rec.html_path
     assert rec.local_path.endswith(".html")
-    d = Path(rec.local_path).parent
-    assert [p.name for p in d.iterdir()] == [Path(rec.local_path).name]  # no .pdf, no temp
+    d = (tmp_path / rec.local_path).parent
+    assert [p.name for p in d.iterdir()] == [(tmp_path / rec.local_path).name]  # no .pdf, no temp
     assert "render output rejected" in capsys.readouterr().err
 
 
@@ -374,8 +374,8 @@ def test_chrome_failure_removes_its_temp_output(tmp_path, monkeypatch):
     rec = _rec(U, mime="text/html")
     assert st.save(rec) == "saved"
     assert rec.local_path.endswith(".html")
-    d = Path(rec.local_path).parent
-    assert [p.name for p in d.iterdir()] == [Path(rec.local_path).name]
+    d = (tmp_path / rec.local_path).parent
+    assert [p.name for p in d.iterdir()] == [(tmp_path / rec.local_path).name]
 
 
 # -- A2: Storage.reindex() ------------------------------------------------

@@ -221,14 +221,17 @@ def _url_variants(row: dict) -> list[str]:
     return list(dict.fromkeys(out))
 
 
-def recover(fetcher: Fetcher, row: dict, use_wayback: bool = True) -> Optional[dict]:
+def recover(fetcher: Fetcher, row: dict, use_wayback: bool = True,
+            cfg: Optional[Config] = None) -> Optional[dict]:
     """Recover a day for one legacy row → {date, date_source, evidence_url} | None.
 
     On-disk PDF /CreationDate first (free), then (unless `use_wayback` is False)
     the Wayback first-capture of each URL variant (PDF, its abs/pdf sibling,
     alt_urls). Every candidate must pass the month constraint.
     """
-    cd = pdf_creation_date(row.get("local_path"))
+    # the stored path (either form) is relative to the data root, not the CWD
+    on_disk = (cfg or Config()).resolve_stored_path(row.get("local_path"))
+    cd = pdf_creation_date(str(on_disk) if on_disk else None)
     if month_ok(cd, row):
         return {"date": cd.isoformat(), "date_source": "pdf_meta",
                 "evidence_url": f"file://{row.get('local_path')}"}
@@ -295,7 +298,8 @@ def run_wp_dates(bank_codes: Optional[Iterable[str]] = None,
             if hit is None and not apply_only:
                 yr = (_row_ym(row) or (0, 0))[0]
                 # PDF meta is free (any year); Wayback only from ~the online era.
-                r = recover(fetcher, row, use_wayback=(use_wayback and yr >= since_year))
+                r = recover(fetcher, row, use_wayback=(use_wayback and yr >= since_year),
+                            cfg=cfg)
                 if key and key in idx:
                     # this row's own key belongs to another paper (its entry
                     # failed the month check here): never shadow it -- see doc_key
