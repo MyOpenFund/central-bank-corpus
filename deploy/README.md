@@ -243,6 +243,42 @@ skips the autocommit, so the files already rewritten are pushed by the next run'
 fix the cause and run `--write` again (it is safe to repeat). A manifest whose last line is torn
 is rewritten too (the torn line saved to `.torn`, as every rewrite does), even with no rename.
 
+Migration example — the documents contract (README § Maintenance: migrate-contract): rows
+carry `corpus`, `source_code` (was `bank_code`) and paths relative to the data root, and
+`vocabulary.json` is written at the data root (`/app/data/vocabulary.json` in this container;
+the vault ingestion reads the same file as `VOCABULARY_PATH=/cbdata/vocabulary.json`). Order
+(it matters both ways):
+
+1. **The vault first** (its own deploy, with its `contract/` mount and `VOCABULARY_PATH`): the
+   previous vault knows neither `source_code` nor `corpus` and would refuse or mis-read
+   migrated rows; the new one reads both forms during its transition.
+2. **`cb-refresh` → Mettre à jour** onto the image that ships `migrate-contract`: it writes new
+   rows in the contract form and reads both forms. The previous image reads only `bank_code`
+   (and opens `local_path` relative to `/app`): given a migrated manifest it would file every
+   row under `_unknown` and miss every known file, so never run the previous image on
+   migrated manifests.
+3. **`cb-campain`** with `command: ["/app/deploy/run-job.sh", "campaign", "migrate-contract"]`
+   and "Mettre à jour": dry-run, per-file counts in the container log, nothing written. On the
+   committed manifests of 2026-11-20 the TOTAL line reads `files=61 rows=39664 upgraded=39664
+   unchanged=0 both=0 corpus=39664 source_code=39664 document_url=0 local_path=39664
+   html_path=6714 date_precision=7 date_kind=0 bad_path=0 torn=0` and `vocabulary.json:
+   would-write` (the NAS has a few more rows each night: `upgraded` = `rows`, `both=0`,
+   `bad_path=0` are what matter; `vocabulary.json: unchanged` if a sync already ran on the new
+   image).
+4. The same with `"--write"`: every manifest rewritten under its sidecar lock,
+   `files_written=61`, `vocabulary.json: written` (or `unchanged`); the autocommit pushes the
+   manifests (vocabulary.json is not committed).
+5. The dry-run once more: `upgraded=0 unchanged=<rows>` everywhere, `files_written=0`.
+6. The central-bank vault ingestion: expected 0 refused, no `corpus_missing` /
+   `legacy_alias` / `legacy_data_prefix` notice, and no `vocabulary: missing` warning.
+
+Exit 1 has three causes, all visible in the log: a row carrying both `bank_code` and
+`source_code` (left untouched, `both_ids=` lists its `doc_id`), an absolute path outside the
+data root (`bad_path_ids=`), or a malformed line before the end of a manifest (the run stops
+there; files sorted before it are already rewritten). On exit 1 `run-job.sh` marks the run
+FAILED and skips the autocommit; fix the cause and run `--write` again (it is safe to
+repeat).
+
 ## 4a. Weekly cadence watchdog (automated)
 
 The cadence watchdog detects silent series — banks/doc-types with no new

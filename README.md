@@ -146,7 +146,7 @@ no machine-translated or model-generated text.
 ## Install / test
 
 ```bash
-pip install -r requirements-dev.txt      # runtime deps + pytest + pytest-socket
+pip install -r requirements-dev.txt      # runtime deps + pytest + pytest-socket + vault-contract
 python3.13 -m pytest -q
 ```
 > The suite is network-free by construction: `pytest.ini` sets `--disable-socket`,
@@ -156,7 +156,9 @@ python3.13 -m pytest -q
 
 ## Operations
 
-Every work command (`discover`, `bis-sitemap`, `repec`) appends a structured
+Every work command (`discover`, `bis-sitemap`, `repec`) writes `data/vocabulary.json` (the
+documents-contract vocabulary the vault reads before the manifests; rewritten only when the
+code changed it) and appends a structured
 run-report line to `data/runs.jsonl` (run id, per-source counters, fetch
 errors, `bad_content` — failed documents whose URLs served the wrong bytes —,
 an explicit `truncated` flag) and exits honestly: `0` clean, `1`
@@ -350,6 +352,42 @@ CSV reports are rewritten by their command; a recover-downloads `--candidates` f
 with `dead_pdf_url` as a fallback. On the committed data (2026-11-19) the dry run counts
 61 manifests, 39,665 rows, all `renamed`.
 
+### Maintenance: migrate-contract (one-shot, 2026-11-20)
+
+Manifest rows now follow the MyOpenFund `documents` contract (vault-contract 1.0.0, the rules
+the vault enforces at ingestion; see [`INGESTION_RAG.md`](INGESTION_RAG.md) §1): `corpus:
+"central-bank"` first, `source_code` instead of `bank_code`, `local_path` / `html_path`
+relative to the data root (`raw/...`, no `data/` prefix). New rows are written that way, and
+every command reads both forms (rows read from the manifests are upgraded in memory by
+`models.upgrade_row`, so a rewritten row comes out in the contract form; paths resolve
+against the data root, never the working directory). The one-shot rewrites the stored rows:
+
+```bash
+python -m cb_corpus migrate-contract            # dry-run: counts per file, writes nothing
+python -m cb_corpus migrate-contract --write    # rewrite, then re-run: upgraded=0 everywhere
+```
+
+Per row, in place (every key keeps its position, every other value is unchanged): `corpus`
+added as the first key, `bank_code` renamed `source_code` (`pdf_url` too, if a row still has
+it), the `data/` prefix dropped from `local_path` and `html_path` (an absolute path under the
+data root is made relative), and on an undated row `date_precision` nulled and `date_kind`
+dropped. It also writes `vocabulary.json` at the data root (the contract's vocabulary,
+generated from `banks.py`, `taxonomy.py` and `models.PROVENANCES`; the nightly sync rewrites
+it whenever the code changes it). Per-bank manifests only, each under its sidecar lock,
+re-read fresh under it; a row already migrated is kept byte-identical and a file is rewritten
+only when a row changed, so a rerun does nothing. Per file: `upgraded`, `unchanged`, `both`
+(`bank_code` **and** `source_code` on one row: left untouched, listed by `doc_id`, exit 1,
+never guessed), then the rows each change applies to (`corpus`, `source_code`,
+`document_url`, `local_path`, `html_path`, `date_precision`, `date_kind`), `bad_path` (an
+absolute path outside the data root: left as is, listed, exit 1) and `torn` (as
+`migrate-document-url`). `--banks` restricts to those manifests. Not migrated:
+`download_errors.jsonl` and the cadence files are not documents rows (their `bank_code` is
+read back under that name by recover-downloads and cadence-watch). On the committed data
+(2026-11-20) the dry run counts 61 manifests, 39,664 rows, all `upgraded` (`local_path`
+39,664, `html_path` 6,714, `date_precision` 7, `both` 0); after `--write`,
+`python -m vault_contract.check data/manifest --corpus central-bank --vocabulary
+data/vocabulary.json --no-transition` reports 0 refusals.
+
 ## Use
 
 ```bash
@@ -481,6 +519,8 @@ cb_corpus/
   pdf_audit.py       audit-pdfs (stored PDFs against the content check, read-only)
   replace_artifact.py  replace-artifact (re-fetch or retire a bad artifact from a plan CSV)
   document_url_migrate.py  migrate-document-url (one-shot: stored key pdf_url -> document_url)
+  contract_migrate.py  migrate-contract (one-shot: stored rows -> documents contract)
+  vocabulary.py      vocabulary.json (documents-contract codes, generated from the code)
   convert.py / retry_html.py   HTML -> PDF migration and retries
   wp_migrate.py      WP v3 date migration (native bank-site dates, zero re-download)
   wp_dates.py        WP v3 day recovery (PDF /CreationDate + Wayback, committed index)
@@ -522,3 +562,8 @@ tests/               1,000+ tests at 2026-11-18 (taxonomy, registry, parsers, de
   `document_url` (canonical document URL: PDF preferred, HTML accepted). Same values, same
   `doc_id`s; manifests published before the migration still carry `pdf_url`
   (schema: [`INGESTION_RAG.md`](INGESTION_RAG.md)).
+- **Data schema change, 2026-11-20 (documents contract):** every row starts with
+  `corpus: "central-bank"`; `bank_code` is renamed `source_code` (same values); `local_path`
+  and `html_path` are relative to the data root (`raw/...` instead of `data/raw/...`); undated
+  rows carry no `date_precision` / `date_kind`. Same `doc_id`s; manifests published before
+  the migration keep the old form (schema: [`INGESTION_RAG.md`](INGESTION_RAG.md) §1).
