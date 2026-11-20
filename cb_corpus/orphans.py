@@ -118,26 +118,6 @@ class ManifestIndex:
     owner_path: dict[str, Path]      # sha256 -> resolved on-disk path of the owning row
 
 
-def _resolve_local_path(cfg: Config, local_path: str) -> Optional[Path]:
-    """Best-effort on-disk path for a manifest row's ``local_path``.
-
-    If it is absolute, use it as is; else if it contains ``"raw/"``, take the
-    part after the FIRST occurrence and join it to ``cfg.raw_dir``; else the
-    owner path is unknown (treated as missing). Both stored forms resolve
-    alike: the contract form ``raw/...`` (relative to the data root, written
-    since 2026-11-20) and the legacy ``data/raw/...`` (TRANSITION, see
-    Config.resolve_stored_path).
-    """
-    p = Path(local_path)
-    if p.is_absolute():
-        return p
-    marker = "raw/"
-    idx = local_path.find(marker)
-    if idx != -1:
-        return cfg.raw_dir / local_path[idx + len(marker):]
-    return None
-
-
 def load_manifest_index(cfg: Config) -> ManifestIndex:
     """Index every per-bank manifest into doc_ids, a sha256->doc_id map, and a
     sha256->owner on-disk path map.
@@ -158,11 +138,9 @@ def load_manifest_index(cfg: Config) -> ManifestIndex:
         if sha:
             by_hash.setdefault(sha, doc_id)
             if sha not in owner_path:
-                local_path = rec.get("local_path")
-                if local_path:
-                    resolved = _resolve_local_path(cfg, local_path)
-                    if resolved is not None:
-                        owner_path[sha] = resolved
+                resolved = cfg.resolve_stored_path(rec.get("local_path"))
+                if resolved is not None:
+                    owner_path[sha] = resolved
     return ManifestIndex(doc_ids=ids, by_hash=by_hash, owner_path=owner_path)
 
 

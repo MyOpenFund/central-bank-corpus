@@ -32,14 +32,30 @@ def test_stored_path_outside_the_root_is_refused(tmp_path):
         cfg.stored_path(tmp_path / "elsewhere" / "a.pdf")
 
 
-def test_resolve_both_forms_and_absolute(tmp_path):
+def test_resolve_the_contract_form(tmp_path):
     cfg = Config(data_dir=tmp_path / "d")
     want = cfg.raw_dir / "ecb" / "C1" / "2023" / "x.pdf"
     assert cfg.resolve_stored_path("raw/ecb/C1/2023/x.pdf") == want
-    assert cfg.resolve_stored_path("data/raw/ecb/C1/2023/x.pdf") == want      # legacy
-    assert cfg.resolve_stored_path(str(want)) == want                         # absolute
     assert cfg.resolve_stored_path("") is None
     assert cfg.resolve_stored_path(None) is None
+    # relative to the data root, whatever it holds (no `raw/` marker needed)
+    assert cfg.resolve_stored_path("elsewhere/x.pdf") == cfg.data_dir / "elsewhere" / "x.pdf"
+
+
+@pytest.mark.parametrize("stored", ["data/raw/ecb/C1/2023/x.pdf", "/app/data/raw/ecb/C1/2023/x.pdf"])
+def test_resolve_refuses_the_pre_contract_forms(tmp_path, stored):
+    """`data/raw/...` (the pre-contract prefix) and an absolute path are no
+    longer guessed at: ValueError naming migrate-contract."""
+    cfg = Config(data_dir=tmp_path / "d")
+    with pytest.raises(ValueError, match="migrate-contract"):
+        cfg.resolve_stored_path(stored)
+
+
+def test_one_resolver():
+    import cb_corpus.config as config
+    import cb_corpus.orphans as orphans
+    assert not hasattr(config, "LEGACY_DATA_PREFIX")
+    assert not hasattr(orphans, "_resolve_local_path")
 
 
 def test_round_trip(tmp_path):
@@ -57,7 +73,6 @@ from cb_corpus.storage import Storage, iter_manifest_rows  # noqa: E402
 from cb_corpus.taxonomy import DocType  # noqa: E402
 from tests.conftest import pdf_body, public_resolver  # noqa: E402
 
-FORMS = ["contract", "legacy"]
 
 
 def _stored(form: str, rel: str) -> str:
@@ -192,8 +207,7 @@ def test_a_legacy_path_stops_the_render_commands_before_any_render(elsewhere, mo
     assert elsewhere.manifest_file("ecb").read_bytes() == before
 
 
-@pytest.mark.parametrize("form", FORMS)
-def test_wp_dates_reads_the_pdf_through_the_data_root(elsewhere, form):
+def test_wp_dates_reads_the_pdf_through_the_data_root(elsewhere):
     from datetime import date
     from cb_corpus.wp_dates import recover
     rel = "raw/us/D1/2002/x.pdf"
@@ -201,30 +215,33 @@ def test_wp_dates_reads_the_pdf_through_the_data_root(elsewhere, form):
     p.parent.mkdir(parents=True)
     p.write_bytes(b"%PDF-1.4 /CreationDate (D:20020115120000) x")
     row = {"date": "2002-01-01", "document_url": "https://x/200201pap.pdf",
-           "local_path": _stored(form, rel)}
+           "local_path": rel}
     r = recover(object(), row, use_wayback=False, cfg=elsewhere)
     assert r["date"] == date(2002, 1, 15).isoformat() and r["date_source"] == "pdf_meta"
 
 
-@pytest.mark.parametrize("form", FORMS)
-def test_orphan_resolver_reads_either_form(elsewhere, form):
-    from cb_corpus.orphans import _resolve_local_path
-    assert _resolve_local_path(elsewhere, _stored(form, "raw/us/C1/2015/a.pdf")) == \
-        elsewhere.raw_dir / "us" / "C1" / "2015" / "a.pdf"
+def test_orphan_index_resolves_owners_through_the_data_root(elsewhere):
+    from cb_corpus.orphans import load_manifest_index
+    elsewhere.manifest_dir.mkdir(parents=True, exist_ok=True)
+    elsewhere.manifest_file("us").write_text(json.dumps({
+        "corpus": "central-bank", "source_code": "us", "doc_type": "C1", "doc_id": "a",
+        "document_url": "https://x/a.pdf", "sha256": "h",
+        "local_path": "raw/us/C1/2015/a.pdf"}) + "\n")
+    assert load_manifest_index(elsewhere).owner_path == {
+        "h": elsewhere.raw_dir / "us" / "C1" / "2015" / "a.pdf"}
 
 
-@pytest.mark.parametrize("form", FORMS)
-def test_wp_dates_evidence_keeps_the_committed_index_form(elsewhere, form):
+def test_wp_dates_evidence_keeps_the_committed_index_form(elsewhere):
     """The committed wp_dates_index.jsonl spells PDF evidence
     `file://data/raw/...` (1,309 entries on 2026-11-20, the path as seen from
     the app directory). It is evidence text, never read back as a path, so a
-    new entry keeps that one spelling whichever form the row stores."""
+    new entry keeps that one spelling from the row's `raw/...`."""
     from cb_corpus.wp_dates import recover
     rel = "raw/us/D1/2002/x.pdf"
     p = elsewhere.data_dir / rel
     p.parent.mkdir(parents=True)
     p.write_bytes(b"%PDF-1.4 /CreationDate (D:20020115120000) x")
     row = {"date": "2002-01-01", "document_url": "https://x/200201pap.pdf",
-           "local_path": _stored(form, rel)}
+           "local_path": rel}
     r = recover(object(), row, use_wayback=False, cfg=elsewhere)
     assert r["evidence_url"] == "file://data/raw/us/D1/2002/x.pdf"

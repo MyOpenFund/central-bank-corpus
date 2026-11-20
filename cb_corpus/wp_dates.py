@@ -32,7 +32,7 @@ import sys
 from datetime import date
 from typing import Iterable, Optional
 
-from .config import LEGACY_DATA_PREFIX, Config
+from .config import Config
 from .http import Fetcher
 from .models import SOURCE_KEY, URL_KEY
 from .sources.wayback import first_capture
@@ -198,12 +198,9 @@ def _file_evidence(stored: Optional[str]) -> str:
     """`evidence_url` of a PDF /CreationDate hit. The committed index spells
     every one `file://data/raw/...` (the path as seen from the app directory,
     the manifests' form before the documents contract); it is evidence text,
-    never read back as a path, so new entries keep that single spelling
-    whichever form the row stores (`raw/...` or `data/raw/...`)."""
-    s = stored or ""
-    if s and not s.startswith("/") and not s.startswith(LEGACY_DATA_PREFIX):
-        s = LEGACY_DATA_PREFIX + s
-    return f"file://{s}"
+    never read back as a path, so new entries keep that single spelling,
+    built from the row's `raw/...`."""
+    return f"file://data/{stored}" if stored else "file://"
 
 
 def _abs_variant(url: Optional[str]) -> Optional[str]:
@@ -241,7 +238,7 @@ def recover(fetcher: Fetcher, row: dict, use_wayback: bool = True,
     the Wayback first-capture of each URL variant (PDF, its abs/pdf sibling,
     alt_urls). Every candidate must pass the month constraint.
     """
-    # the stored path (either form) is relative to the data root, not the CWD
+    # the stored path is relative to the data root, not the CWD
     on_disk = (cfg or Config()).resolve_stored_path(row.get("local_path"))
     cd = pdf_creation_date(str(on_disk) if on_disk else None)
     if month_ok(cd, row):

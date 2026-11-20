@@ -38,7 +38,6 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from .config import Config
-from .orphans import _resolve_local_path
 from .pdfcheck import EOF_MARKER, EOF_WINDOW, MAGIC_WINDOW, pdf_problem
 from .storage import iter_manifest_rows
 from .models import SOURCE_KEY
@@ -151,7 +150,7 @@ def _write_audit(cfg, wanted, tmp, tail_bytes, progress_every, summary,
             if wanted and bank not in wanted:
                 continue
             lp = row.get("local_path") or ""
-            path = _resolve_local_path(cfg, lp) if lp else None
+            path = cfg.resolve_stored_path(lp)
             if not lp or not _is_pdf_row(row):
                 continue
             summary.rows_checked += 1

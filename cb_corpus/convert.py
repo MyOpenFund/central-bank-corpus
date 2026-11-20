@@ -81,8 +81,7 @@ def _convert_one(row: dict, *, dry_run: bool,
     if row.get("mime_type") != "text/html":
         return "skip-not-html"
     cfg = cfg or Config()
-    # Either stored form (contract `raw/...` or legacy `data/raw/...`),
-    # resolved against the data root, never the CWD.
+    # The stored `raw/...`, resolved against the data root, never the CWD.
     html_path = cfg.resolve_stored_path(row.get("local_path"))
     if html_path is None:
         return "skip-missing"

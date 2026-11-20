@@ -78,7 +78,7 @@ from typing import Any, Iterator, Optional
 from .config import Config
 from .http import Fetcher
 from .models import SOURCE_KEY, URL_KEY
-from .orphans import OrphanEntry, _resolve_local_path, _sha256_of, move_to_orphans
+from .orphans import OrphanEntry, _sha256_of, move_to_orphans
 from .pdfcheck import check_pdf_bytes
 from .sources.wayback import pdf_captures, raw_url
 from .storage import (Storage, _atomic_write_bytes, is_stampable_owner, iter_manifest_rows,
@@ -203,7 +203,7 @@ class _Run:
 
     # -- helpers -------------------------------------------------------------
     def _path_key(self, local_path: str) -> str:
-        p = _resolve_local_path(self.cfg, local_path) if local_path else None
+        p = self.cfg.resolve_stored_path(local_path)
         return str(p.resolve()) if p is not None else ""
 
     def _single(self, doc_id: str, what: str) -> None:
@@ -263,7 +263,7 @@ class _Run:
             raise _RowError(f"unknown doc_id {plan.doc_id!r} (not in any manifest)")
         res["bank_code"] = row.get(SOURCE_KEY) or ""
         lp = row.get("local_path") or ""
-        path = _resolve_local_path(self.cfg, lp) if lp else None
+        path = self.cfg.resolve_stored_path(lp)
         if path is None or path.suffix.lower() != ".pdf":
             raise _RowError(f"artifact is not a .pdf path ({lp or 'no local_path'}): "
                             f"only a PDF artifact can be replaced")
@@ -380,7 +380,7 @@ class _Run:
                             f"{owner.get('mime_type')!r}, html_path "
                             f"{'set' if owner.get('html_path') else 'unset'})")
         olp = owner.get("local_path") or ""
-        opath = _resolve_local_path(self.cfg, olp) if olp else None
+        opath = self.cfg.resolve_stored_path(olp)
         if opath is None:
             raise _RowError(f"owner {owner_id} has no resolvable local_path ({olp!r})")
         problem = pdf_file_problem(opath, self.cfg)
@@ -394,7 +394,7 @@ class _Run:
         paths: list[Path] = []
         for key in ("local_path", "html_path"):
             lp = row.get(key) or ""
-            p = _resolve_local_path(self.cfg, lp) if lp else None
+            p = self.cfg.resolve_stored_path(lp)
             if p is not None and p not in paths:
                 if not _inside(p, self.cfg.raw_dir):
                     raise _RowError(f"{key} {p} is outside {self.cfg.raw_dir}")
