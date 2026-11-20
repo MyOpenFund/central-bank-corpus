@@ -35,7 +35,12 @@ the contract form is kept byte-identical; a row carrying BOTH `bank_code` and
 file is rewritten (temp + os.replace) only when a row changed, so a second
 run does nothing. Dry run by default: nothing is written, no lock is taken.
 A torn final manifest line follows storage's rewrite rule (saved to
-`<file>.torn`, dropped); a malformed earlier line is a hard stop.
+`<file>.torn`, dropped); a malformed earlier line is a hard stop (exit 1, the
+file untouched). "Malformed" is storage's definition in both modes: broken
+JSON, broken UTF-8, or a JSON value that is not an object (`[1, 2]`). A row
+whose JSON holds an escaped lone surrogate is rewritten with ASCII escapes
+(see `_dump`). The rewrite is fsynced before os.replace and its temp file
+removed on any failure.
 """
 from __future__ import annotations
 
@@ -103,6 +108,22 @@ class MigrationResult:
     vocabulary: str
 
 
+def _dump(row: dict) -> str:
+    """A rewritten row as one JSON line, UTF-8 as every writer
+    (`ensure_ascii=False`). A row holding a lone surrogate (an escaped
+    `\\ud800` in the stored JSON: it parses, but cannot be encoded as
+    UTF-8) is written with ASCII escapes instead: same values, still a valid
+    UTF-8 file, decided here so the dry run plans exactly what --write
+    writes. (The vault refuses such a row, `bad_text`/`bad_extra`, before
+    and after the migration alike.)"""
+    line = json.dumps(row, ensure_ascii=False)
+    try:
+        line.encode("utf-8")
+    except UnicodeEncodeError:
+        line = json.dumps(row, ensure_ascii=True)
+    return line
+
+
 def _relativize(row: dict, cfg: Config) -> tuple[list[str], bool]:
     """Absolute `local_path`/`html_path` under the data root -> relative.
     Returns (keys changed, any absolute path left outside the root)."""
@@ -149,7 +170,7 @@ def _migrate_file(path: Path, cfg: Config, *, write: bool) -> FileCounts:
                 setattr(counts, attr, getattr(counts, attr) + 1)
             if changes:
                 counts.upgraded += 1
-                out.append(json.dumps(new, ensure_ascii=False))
+                out.append(_dump(new))
             else:
                 counts.unchanged += 1
                 out.append(raw)
@@ -164,10 +185,16 @@ def _migrate_file(path: Path, cfg: Config, *, write: bool) -> FileCounts:
         out = plan(_read_lines_locked(path, counts, manifest=True))
         if counts.upgraded or (counts.torn and out):
             tmp = path.with_suffix(path.suffix + ".tmp")
-            with tmp.open("w", encoding="utf-8", errors="surrogateescape") as fh:
-                for line in out:
-                    fh.write(line + "\n")
-            os.replace(tmp, path)
+            try:
+                with tmp.open("w", encoding="utf-8") as fh:
+                    for line in out:
+                        fh.write(line + "\n")
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(tmp, path)
+            except BaseException:
+                tmp.unlink(missing_ok=True)      # never leave a half-written temp
+                raise
             counts.written = True
     return counts
 

@@ -248,3 +248,110 @@ def test_unclean_data_prefix_is_a_bad_path_left_untouched(tmp_path, monkeypatch,
     assert json.loads(lines[0])["source_code"] == "aa"
     res = migrate_contract(cfg, write=True)              # still reported, never rewritten
     assert (res.files[0].bad_path, res.files[0].upgraded) == (1, 0)
+
+
+# --- dry run / --write parity on malformed input --------------------------------
+
+_SURROGATE = '{"bank_code": "aa", "doc_type": "D1", "title": "bad \\ud800 title", "doc_id": "s1", "date": null, "local_path": "data/raw/aa/D1/0/s1.pdf"}'
+
+
+def _counts_of(res):
+    keep = ("upgraded", "unchanged", "both", "corpus", "source_code", "local_path",
+            "date_precision", "bad_path", "torn")
+    return [{k: getattr(f, k) for k in keep} for f in res.files]
+
+
+@pytest.mark.parametrize("tail", ["[1, 2]\n", '{"bank_code": "aa", "doc', "42\n"])
+def test_dry_run_and_write_agree_on_a_malformed_final_line(tmp_path, tail):
+    cfg = Config(data_dir=tmp_path)
+    path = _write(cfg.manifest_file("aa"), [_row("aa", 1)], tail=tail)
+    dry = migrate_contract(cfg)
+    res = migrate_contract(cfg, write=True)
+    assert _counts_of(dry) == _counts_of(res)
+    assert (res.files[0].torn, res.files[0].upgraded) == (1, 1)
+    assert len(_lines(path)) == 1
+
+
+@pytest.mark.parametrize("bad", ["[1, 2]", "42", '"x"'])
+def test_dry_run_and_write_agree_on_a_malformed_earlier_line(tmp_path, monkeypatch, capsys, bad):
+    cfg = Config(data_dir=tmp_path / "data")
+    path = cfg.manifest_file("aa")
+    path.parent.mkdir(parents=True)
+    content = json.dumps(_row("aa", 1)) + "\n" + bad + "\n" + json.dumps(_row("aa", 2)) + "\n"
+    path.write_text(content)
+    monkeypatch.chdir(tmp_path)
+    for argv in (["migrate-contract"], ["migrate-contract", "--write"]):
+        assert cli.main(argv) == 1
+        err = capsys.readouterr().err
+        assert "corrupt manifest line" in err and "Traceback" not in err
+    assert path.read_text() == content                   # file left untouched
+    assert not list(path.parent.glob("*.tmp"))
+
+
+def test_lone_surrogate_escape_is_kept_as_an_escape_in_both_modes(tmp_path):
+    """A row whose JSON holds an escaped lone surrogate (`\\ud800`) parses but
+    cannot be written as UTF-8: the upgraded row is serialized with ASCII
+    escapes (same values, valid UTF-8 file), in --write as planned in the dry
+    run; never a crash, never a half-written temp file."""
+    cfg = Config(data_dir=tmp_path)
+    path = cfg.manifest_file("aa")
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(_row("aa", 1)) + "\n" + _SURROGATE + "\n", encoding="utf-8")
+    dry = migrate_contract(cfg)
+    res = migrate_contract(cfg, write=True)
+    assert _counts_of(dry) == _counts_of(res)
+    assert res.files[0].upgraded == 2
+    raw = path.read_bytes()
+    raw.decode("utf-8")                                   # strict: a valid UTF-8 file
+    rows = _lines(path)
+    assert rows[1]["title"] == "bad \ud800 title" and rows[1]["source_code"] == "aa"
+    assert "\\ud800" in raw.decode("utf-8").splitlines()[1]
+    assert rows[0]["title"] == "Titre é 1"                # other rows keep plain UTF-8
+    assert "Titre é 1" in raw.decode("utf-8")
+    assert migrate_contract(cfg, write=True).files[0].upgraded == 0
+
+
+def test_failed_rewrite_leaves_the_file_and_no_temp(tmp_path, monkeypatch):
+    cfg = Config(data_dir=tmp_path)
+    path = _write(cfg.manifest_file("aa"), [_row("aa", 1)])
+    before = path.read_bytes()
+    import cb_corpus.contract_migrate as cm
+
+    def boom(src, dst):
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(cm.os, "replace", boom)
+    with pytest.raises(OSError):
+        migrate_contract(cfg, write=True)
+    assert path.read_bytes() == before
+    assert sorted(p.name for p in path.parent.iterdir()) == [".aa.jsonl.lock", "aa.jsonl"]
+
+
+def test_rewrite_is_fsynced_before_the_replace(tmp_path, monkeypatch):
+    import cb_corpus.contract_migrate as cm
+    events = []
+    real_fsync, real_replace = os.fsync, os.replace
+    monkeypatch.setattr(cm.os, "fsync", lambda fd: (events.append("fsync"), real_fsync(fd))[1])
+    monkeypatch.setattr(cm.os, "replace",
+                        lambda a, b: (events.append("replace"), real_replace(a, b))[1])
+    cfg = Config(data_dir=tmp_path)
+    _write(cfg.manifest_file("aa"), [_row("aa", 1)])
+    migrate_contract(cfg, write=True)
+    assert events[:2] == ["fsync", "replace"]
+
+
+def test_write_waits_for_a_writer_holding_the_sidecar_lock(tmp_path):
+    """An appender (or any locked rewriter) holding the bank's sidecar lock
+    blocks migrate-contract --write on that file until it lets go; the
+    migration then re-reads the file fresh."""
+    from tests.test_manifest_locking import _spawn_holder
+    import time
+    cfg = Config(data_dir=tmp_path)
+    path = _write(cfg.manifest_file("aa"), [_row("aa", 1)])
+    hold = 1.0
+    proc = _spawn_holder(path, hold)
+    t0 = time.monotonic()
+    res = migrate_contract(cfg, write=True)
+    elapsed = time.monotonic() - t0
+    proc.wait()
+    assert elapsed >= hold * 0.8, f"migrate-contract ignored the sidecar lock ({elapsed:.2f}s)"
+    assert res.files[0].upgraded == 1 and _lines(path)[0]["corpus"] == "central-bank"
