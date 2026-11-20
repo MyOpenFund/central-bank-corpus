@@ -252,10 +252,10 @@ def _seed_html_row(tmp_path, code="a"):
     cfg.manifest_path.parent.mkdir(parents=True, exist_ok=True)
     with cfg.manifest_path.open("a") as fh:
         fh.write(_json.dumps({
-            "bank_code": "ecb", "doc_type": "A3", "title": "x",
+            "corpus": "central-bank", "source_code": "ecb", "doc_type": "A3", "title": "x",
             "document_url": f"https://e.test/{code}.en.html", "date": "2024-01-01",
             "year": 2024, "doc_id": code, "mime_type": "text/html",
-            "local_path": str(html), "sha256": None, "language": "en"}) + "\n")
+            "local_path": cfg.stored_path(html), "sha256": None, "language": "en"}) + "\n")
     return cfg, html
 
 

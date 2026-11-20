@@ -221,17 +221,17 @@ def test_date_kind_is_not_part_of_the_identity():
 # ---- every reader of the manifest tolerates the new key ---------------
 
 def _manifest(cfg, rows):
-    f = cfg.manifest_file(rows[0]["bank_code"])
+    f = cfg.manifest_file(rows[0]["source_code"])
     f.parent.mkdir(parents=True, exist_ok=True)
     f.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
     return f
 
 
 def _row(i, **extra):
-    r = {"bank_code": "gb", "doc_type": "A3", "title": f"Minutes {i}",
+    r = {"corpus": "central-bank", "source_code": "gb", "doc_type": "A3", "title": f"Minutes {i}",
          "document_url": f"https://boe/m{i}.pdf", "source_url": f"https://boe/p{i}",
          "date": f"2024-{i:02d}-01", "language": "en", "provenance": "bank_site",
-         "mime_type": "application/pdf", "sha256": f"h{i}", "local_path": f"/raw/m{i}.pdf",
+         "mime_type": "application/pdf", "sha256": f"h{i}", "local_path": f"raw/m{i}.pdf",
          "doc_id": f"id{i}", "year": 2024}
     r.update(extra)
     return r

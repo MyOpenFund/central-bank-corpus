@@ -15,7 +15,7 @@ from typing import Optional
 
 from .config import Config
 from .htmlpdf import RenderRefused, find_chrome, render_allowed, render_url_to_pdf
-from .models import row_url
+from .models import URL_KEY
 from .storage import apply_row_updates, iter_manifest_rows, render_pdf_checked
 
 
@@ -81,8 +81,7 @@ def _convert_one(row: dict, *, dry_run: bool,
     if row.get("mime_type") != "text/html":
         return "skip-not-html"
     cfg = cfg or Config()
-    # Either stored form (contract `raw/...` or legacy `data/raw/...`),
-    # resolved against the data root, never the CWD.
+    # The stored `raw/...`, resolved against the data root, never the CWD.
     html_path = cfg.resolve_stored_path(row.get("local_path"))
     if html_path is None:
         return "skip-missing"
@@ -91,9 +90,9 @@ def _convert_one(row: dict, *, dry_run: bool,
         return "skip-already"
     if not html_path.exists():
         return "skip-missing"
-    reason = render_allowed(row_url(row) or "", cfg, resolver=resolver)
+    reason = render_allowed(row.get(URL_KEY) or "", cfg, resolver=resolver)
     if reason:
-        print(f"[convert-html] render refused for {row_url(row)}: {reason}",
+        print(f"[convert-html] render refused for {row.get(URL_KEY)}: {reason}",
               file=sys.stderr, flush=True)
         return "refused"
     if dry_run:
@@ -104,10 +103,10 @@ def _convert_one(row: dict, *, dry_run: bool,
     try:
         render_pdf_checked(
             pdf_path, cfg,
-            lambda tmp: render_url_to_pdf(row_url(row), tmp,
+            lambda tmp: render_url_to_pdf(row.get(URL_KEY), tmp,
                                           user_data_dir=user_data_dir,
                                           cfg=cfg, resolver=resolver),
-            url=row_url(row), label="convert-html")
+            url=row.get(URL_KEY), label="convert-html")
     except RenderRefused:
         return "refused"
     except Exception:

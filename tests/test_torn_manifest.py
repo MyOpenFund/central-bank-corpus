@@ -31,9 +31,8 @@ from cb_corpus.storage import iter_manifest_rows
 
 
 def _plain(rows):
-    """Rows as written: the reader adds `corpus` to a row without it
-    (documents-contract transition, models.upgrade_row)."""
-    return [{k: v for k, v in r.items() if k != "corpus"} for r in rows]
+    """Rows without the two contract keys every fixture row carries."""
+    return [{k: v for k, v in r.items() if k not in ("corpus", "source_code")} for r in rows]
 
 
 def _write(path, data: bytes) -> None:
@@ -45,9 +44,9 @@ def _write(path, data: bytes) -> None:
 def test_torn_final_line_is_repaired(tmp_path, capsys):
     cfg = Config(data_dir=tmp_path)
     f = cfg.manifest_file("us")
-    good1 = json.dumps({"doc_id": "a"}) + "\n"
-    good2 = json.dumps({"doc_id": "b"}) + "\n"
-    torn = '{"doc_id": "c", "title": "trunc'   # no closing brace/quote, no \n
+    good1 = json.dumps({"corpus": "central-bank", "source_code": "us", "doc_id": "a"}) + "\n"
+    good2 = json.dumps({"corpus": "central-bank", "source_code": "us", "doc_id": "b"}) + "\n"
+    torn = '{"corpus": "central-bank", "source_code": "us", "doc_id": "c", "title": "trunc'   # no closing brace/quote, no \n
     _write(f, (good1 + good2 + torn).encode())
 
     rows = list(iter_manifest_rows(cfg, "us"))
@@ -72,9 +71,9 @@ def test_torn_final_line_is_repaired(tmp_path, capsys):
 def test_torn_middle_line_raises(tmp_path):
     cfg = Config(data_dir=tmp_path)
     f = cfg.manifest_file("us")
-    good1 = json.dumps({"doc_id": "a"}) + "\n"
+    good1 = json.dumps({"corpus": "central-bank", "source_code": "us", "doc_id": "a"}) + "\n"
     bad = "{not json at all}\n"
-    good2 = json.dumps({"doc_id": "b"}) + "\n"
+    good2 = json.dumps({"corpus": "central-bank", "source_code": "us", "doc_id": "b"}) + "\n"
     _write(f, (good1 + bad + good2).encode())
 
     with pytest.raises(ValueError) as exc_info:
@@ -93,9 +92,9 @@ def test_torn_middle_line_raises(tmp_path):
 def test_intact_file_is_byte_identical_after_load(tmp_path):
     cfg = Config(data_dir=tmp_path)
     f = cfg.manifest_file("us")
-    content = (json.dumps({"doc_id": "a"}) + "\n"
-               + json.dumps({"doc_id": "b"}) + "\n"
-               + json.dumps({"doc_id": "c"}) + "\n")
+    content = (json.dumps({"corpus": "central-bank", "source_code": "us", "doc_id": "a"}) + "\n"
+               + json.dumps({"corpus": "central-bank", "source_code": "us", "doc_id": "b"}) + "\n"
+               + json.dumps({"corpus": "central-bank", "source_code": "us", "doc_id": "c"}) + "\n")
     _write(f, content.encode())
     before = f.read_bytes()
     before_mtime_ns = f.stat().st_mtime_ns
@@ -131,7 +130,7 @@ def test_empty_and_blank_only_files_load_as_zero_rows(tmp_path):
 def test_torn_final_line_mid_multibyte_char_is_repaired(tmp_path, capsys):
     cfg = Config(data_dir=tmp_path)
     f = cfg.manifest_file("us")
-    good = json.dumps({"doc_id": "a"}) + "\n"
+    good = json.dumps({"corpus": "central-bank", "source_code": "us", "doc_id": "a"}) + "\n"
     # "Stabilité" -> the trailing 'é' encodes as the 2-byte sequence
     # b"\xc3\xa9"; dropping the last byte leaves a dangling lead byte
     # (0xc3) with no continuation byte -- exactly what a SIGKILL mid-write
@@ -165,12 +164,12 @@ def test_torn_final_line_mid_multibyte_char_is_repaired(tmp_path, capsys):
 def test_torn_middle_line_invalid_utf8_raises_with_file_and_line(tmp_path):
     cfg = Config(data_dir=tmp_path)
     f = cfg.manifest_file("us")
-    good1 = json.dumps({"doc_id": "a"}) + "\n"
+    good1 = json.dumps({"corpus": "central-bank", "source_code": "us", "doc_id": "a"}) + "\n"
     # 0xc3 (a UTF-8 lead byte) followed by 'e' (0x65, not a valid
     # continuation byte) is structurally "complete" JSON-shaped but not
     # valid UTF-8 -- real corruption, not a torn tail.
     bad = b'{"doc_id":"x","title":"Stabilit\xc3e"}\n'
-    good2 = json.dumps({"doc_id": "b"}) + "\n"
+    good2 = json.dumps({"corpus": "central-bank", "source_code": "us", "doc_id": "b"}) + "\n"
     _write(f, good1.encode() + bad + good2.encode())
 
     with pytest.raises(ValueError) as exc_info:
@@ -198,8 +197,8 @@ def test_repair_rechecks_under_lock_before_truncating(tmp_path, monkeypatch):
 
     cfg = Config(data_dir=tmp_path)
     f = cfg.manifest_file("us")
-    good1 = json.dumps({"doc_id": "a"}) + "\n"
-    prefix = '{"doc_id": "c", "title": "trunc'   # no closing brace/quote yet
+    good1 = json.dumps({"corpus": "central-bank", "source_code": "us", "doc_id": "a"}) + "\n"
+    prefix = '{"corpus": "central-bank", "source_code": "us", "doc_id": "c", "title": "trunc'   # no closing brace/quote yet
     _write(f, (good1 + prefix).encode())
 
     completion = '"}\n'  # what the "other process" finishes the line with
@@ -234,13 +233,13 @@ def test_non_object_final_line_is_a_torn_tail_for_readers_and_rewriters(tmp_path
     from cb_corpus.storage import _read_rows_for_rewrite
     cfg = Config(data_dir=tmp_path)
     f = cfg.manifest_file("us")
-    _write(f, b'{"doc_id": "a"}\n[1, 2]\n')
+    _write(f, b'{"corpus": "central-bank", "source_code": "us", "doc_id": "a"}\n[1, 2]\n')
     pairs = _read_rows_for_rewrite(f)                     # no AttributeError
     assert [d for _, d in pairs] == ["a"]
     assert f.with_name("us.jsonl.torn").read_bytes() == b"[1, 2]\n"
-    _write(f, b'{"doc_id": "a"}\n[1, 2]\n')
+    _write(f, b'{"corpus": "central-bank", "source_code": "us", "doc_id": "a"}\n[1, 2]\n')
     assert _plain(iter_manifest_rows(cfg, "us")) == [{"doc_id": "a"}]
-    assert f.read_bytes() == b'{"doc_id": "a"}\n'         # repaired like a torn append
+    assert f.read_bytes() == b'{"corpus": "central-bank", "source_code": "us", "doc_id": "a"}\n'         # repaired like a torn append
 
 
 @pytest.mark.parametrize("bad", [b"[1, 2]", b'"text"', b"42", b"null"])
@@ -248,7 +247,7 @@ def test_non_object_line_before_the_end_is_a_hard_stop(tmp_path, bad):
     from cb_corpus.storage import _read_rows_for_rewrite
     cfg = Config(data_dir=tmp_path)
     f = cfg.manifest_file("us")
-    _write(f, b'{"doc_id": "a"}\n' + bad + b'\n{"doc_id": "b"}\n')
+    _write(f, b'{"corpus": "central-bank", "source_code": "us", "doc_id": "a"}\n' + bad + b'\n{"corpus": "central-bank", "source_code": "us", "doc_id": "b"}\n')
     with pytest.raises(ValueError, match="corrupt manifest line"):
         _read_rows_for_rewrite(f)
     with pytest.raises(ValueError, match="corrupt manifest line"):

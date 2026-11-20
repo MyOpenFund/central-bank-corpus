@@ -183,3 +183,82 @@ def test_a_clean_run_has_no_warnings_key(tmp_path, monkeypatch):
     monkeypatch.setenv("CB_DATA_DIR", str(tmp_path))
     assert cli.main(["discover", "--banks", "us"]) == 0
     assert "warnings" not in _read_report(tmp_path)
+
+
+# --- an old stored form is a clean `error:` line, not a traceback ---------------
+
+_LEGACY_ROW = {"bank_code": "jp", "doc_type": "D1", "title": "t", "doc_id": "0123456789abcdef",
+               "document_url": "https://x/a.pdf", "date": "2020-01-01", "year": 2020,
+               "local_path": "data/raw/jp/D1/2020/0123456789abcdef.pdf"}
+
+
+def _legacy_manifest(root):
+    (root / "data" / "manifest").mkdir(parents=True)
+    (root / "data" / "manifest" / "jp.jsonl").write_text(json.dumps(_LEGACY_ROW) + "\n")
+
+
+def test_a_legacy_manifest_row_is_an_error_line_not_a_traceback(tmp_path, monkeypatch, capsys):
+    _legacy_manifest(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CB_DATA_DIR", str(tmp_path / "data"))
+    assert cli.main(["report", "--years", "2020"]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("error: jp.jsonl: manifest row '0123456789abcdef'")
+    assert "migrate-contract" in err and "Traceback" not in err
+
+
+def test_a_reporting_command_still_records_a_contract_error_as_failed(tmp_path, monkeypatch):
+    from cb_corpus.models import check_contract_row
+
+    def legacy_read(**kwargs):
+        check_contract_row(_LEGACY_ROW, "jp.jsonl")
+
+    monkeypatch.setattr(cli, "run", legacy_read)
+    monkeypatch.setenv("CB_DATA_DIR", str(tmp_path))
+    assert cli.main(["discover", "--banks", "jp"]) == 1
+    rep = _read_report(tmp_path)
+    assert rep["outcome"] == "failed"
+    assert rep["fatal"].startswith("ContractRowError: jp.jsonl") and "migrate-contract" in rep["fatal"]
+
+
+def test_a_real_discover_on_a_legacy_manifest_records_failed_in_runs_log(
+        tmp_path, monkeypatch, capsys):
+    """End to end, cli.run untouched: the real pipeline opens the storage,
+    reads the legacy row and stops; the reporting wrapper records the
+    ContractRowError as `outcome: failed`. No adapter is ever reached (a
+    stub that fails the test if it is), no network."""
+    import cb_corpus.pipeline as pipeline
+
+    def no_adapter(*a, **k):
+        raise AssertionError("an adapter ran on a legacy manifest")
+
+    monkeypatch.setattr(pipeline, "_discover_and_save_bank", no_adapter)
+    _legacy_manifest(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CB_DATA_DIR", str(tmp_path / "data"))
+    assert cli.main(["discover", "--banks", "jp"]) == 1
+    rep = _read_report(tmp_path / "data")
+    assert rep["outcome"] == "failed" and rep["command"] == "discover"
+    assert rep["fatal"].startswith("ContractRowError: jp.jsonl: manifest row '0123456789abcdef'")
+    assert "migrate-contract" in rep["fatal"]
+    assert "Traceback" not in capsys.readouterr().err
+
+
+def test_recover_downloads_old_inventory_key_is_an_error_line(tmp_path, monkeypatch, capsys):
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "download_errors.jsonl").write_text(
+        json.dumps({"bank_code": "fr", "pdf_url": "https://x/old.pdf"}) + "\n")
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["recover-downloads"]) == 1
+    err = capsys.readouterr().err
+    assert "error: " in err and "migrate-document-url" in err and "Traceback" not in err
+
+
+def test_recover_downloads_old_candidate_key_is_an_error_line(tmp_path, monkeypatch, capsys):
+    (tmp_path / "data").mkdir()
+    cands = tmp_path / "cands.jsonl"
+    cands.write_text(json.dumps({"dead_pdf_url": "https://x/b.pdf", "file_path": "b"}) + "\n")
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["recover-downloads", "--candidates", str(cands)]) == 1
+    err = capsys.readouterr().err
+    assert "error: " in err and "rename the key `dead_pdf_url`" in err

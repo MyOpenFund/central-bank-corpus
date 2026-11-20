@@ -315,11 +315,10 @@ def test_failed_rewrite_leaves_the_file_and_no_temp(tmp_path, monkeypatch):
     cfg = Config(data_dir=tmp_path)
     path = _write(cfg.manifest_file("aa"), [_row("aa", 1)])
     before = path.read_bytes()
-    import cb_corpus.contract_migrate as cm
 
     def boom(src, dst):
         raise OSError(28, "No space left on device")
-    monkeypatch.setattr(cm.os, "replace", boom)
+    monkeypatch.setattr(os, "replace", boom)
     with pytest.raises(OSError):
         migrate_contract(cfg, write=True)
     assert path.read_bytes() == before
@@ -327,11 +326,10 @@ def test_failed_rewrite_leaves_the_file_and_no_temp(tmp_path, monkeypatch):
 
 
 def test_rewrite_is_fsynced_before_the_replace(tmp_path, monkeypatch):
-    import cb_corpus.contract_migrate as cm
     events = []
     real_fsync, real_replace = os.fsync, os.replace
-    monkeypatch.setattr(cm.os, "fsync", lambda fd: (events.append("fsync"), real_fsync(fd))[1])
-    monkeypatch.setattr(cm.os, "replace",
+    monkeypatch.setattr(os, "fsync", lambda fd: (events.append("fsync"), real_fsync(fd))[1])
+    monkeypatch.setattr(os, "replace",
                         lambda a, b: (events.append("replace"), real_replace(a, b))[1])
     cfg = Config(data_dir=tmp_path)
     _write(cfg.manifest_file("aa"), [_row("aa", 1)])
@@ -355,3 +353,143 @@ def test_write_waits_for_a_writer_holding_the_sidecar_lock(tmp_path):
     proc.wait()
     assert elapsed >= hold * 0.8, f"migrate-contract ignored the sidecar lock ({elapsed:.2f}s)"
     assert res.files[0].upgraded == 1 and _lines(path)[0]["corpus"] == "central-bank"
+
+
+# --- the readers' verdict: a row they would refuse is never "unchanged" ---------
+
+def _both_urls(bank, i):
+    r = _row(bank, i)
+    return {**r, "pdf_url": r["document_url"]}
+
+
+_REFUSED = {
+    "both_urls": _both_urls,
+    "dup_both_urls": lambda b, i: _row(b, i, retired_duplicates=[
+        {"doc_id": "d", "document_url": "https://x/a.pdf", "pdf_url": "https://x/a.pdf"}]),
+    "empty_source": lambda b, i: _new(_row(b, i, bank_code="")),
+    "wrong_corpus": lambda b, i: {**_new(_row(b, i)), "corpus": "news"},
+}
+
+
+@pytest.mark.parametrize("kind", sorted(_REFUSED))
+@pytest.mark.parametrize("write", [False, True])
+def test_a_row_the_readers_refuse_is_reported_refused_never_unchanged(
+        tmp_path, monkeypatch, capsys, kind, write):
+    cfg = Config(data_dir=tmp_path / "data")
+    bad = _REFUSED[kind]("aa", 2)
+    path = _write(cfg.manifest_file("aa"), [_row("aa", 1), bad])
+    bad_line = path.read_text(encoding="utf-8").splitlines()[1]
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["migrate-contract"] + (["--write"] if write else [])) == 1
+    out = capsys.readouterr().out
+    assert "refused=1" in out and "upgraded=1 unchanged=0" in out
+    assert f"refused_ids={bad['doc_id']}" in out
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert lines[1] == bad_line                          # left as is, like both / bad_path
+    if write:
+        assert json.loads(lines[0])["source_code"] == "aa"   # the other row migrated
+
+
+def test_refused_counts_and_ids_on_the_result(tmp_path):
+    cfg = Config(data_dir=tmp_path / "data")
+    rows = [_REFUSED["wrong_corpus"]("aa", i) for i in range(3)] + [_new(_row("aa", 9))]
+    _write(cfg.manifest_file("aa"), rows)
+    res = migrate_contract(cfg)
+    f = res.files[0]
+    assert (f.rows, f.refused, f.unchanged, f.upgraded) == (4, 3, 1, 0)
+    assert f.refused_ids == [r["doc_id"] for r in rows[:3]]
+    assert summary(res)["refused"] == 3
+
+
+def test_refused_ids_list_is_capped_in_the_report(tmp_path):
+    from cb_corpus.contract_migrate import SHOW_IDS_DEFAULT, report_lines
+    assert SHOW_IDS_DEFAULT == 20
+    cfg = Config(data_dir=tmp_path / "data")
+    n = SHOW_IDS_DEFAULT + 5
+    _write(cfg.manifest_file("aa"), [_REFUSED["wrong_corpus"]("aa", i) for i in range(n)])
+    res = migrate_contract(cfg)
+    lines = report_lines(res, write=False)
+    shown = lines[0].split("refused_ids=")[1].split()[0].split(",")
+    assert len(shown) == SHOW_IDS_DEFAULT and "(+5 more)" in lines[0]
+    # one "why" line per listed id, no more
+    assert sum(1 for ln in lines if ": refused " in ln
+               and "reasons" not in ln) == SHOW_IDS_DEFAULT
+    assert len(res.files[0].refused_ids) == n            # the result keeps them all
+
+
+# --- why a row is refused, and how to fix it by hand --------------------------
+
+_WHY = {
+    "both_urls": ("pre-2026-11-19 `pdf_url`", "remove `pdf_url`"),
+    "dup_both_urls": ("pre-2026-11-19 `pdf_url`", "remove `pdf_url`"),
+    "empty_source": ("no `source_code`", "fill `source_code` with `aa`"),
+    "wrong_corpus": ("`corpus` is 'news', not 'central-bank'", "move the row out"),
+}
+
+
+@pytest.mark.parametrize("kind", sorted(_REFUSED))
+def test_the_report_says_why_each_listed_row_is_refused_and_how_to_fix_it(
+        tmp_path, monkeypatch, capsys, kind):
+    cfg = Config(data_dir=tmp_path / "data")
+    bad = _REFUSED[kind]("aa", 2)
+    _write(cfg.manifest_file("aa"), [_row("aa", 1), bad])
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["migrate-contract"]) == 1
+    out = capsys.readouterr().out
+    phrase, fix = _WHY[kind]
+    assert f"aa.jsonl: refused reasons: {phrase}=1" in out
+    why = [ln for ln in out.splitlines() if f"aa.jsonl: refused {bad['doc_id']}: " in ln]
+    assert len(why) == 1 and phrase in why[0] and f"fix by hand: {fix}" in why[0]
+    # the closing line: by hand, never "run migrate-contract --write" again
+    tail = [ln for ln in out.splitlines() if "refused=" not in ln and "by hand" in ln
+            and ": refused " not in ln]
+    assert len(tail) == 1 and "cannot fix" in tail[0]
+    assert "--write" not in "\n".join(why + tail)
+
+
+def test_refused_reasons_are_counted_per_file(tmp_path):
+    from cb_corpus.contract_migrate import report_lines
+    cfg = Config(data_dir=tmp_path / "data")
+    rows = ([_REFUSED["wrong_corpus"]("aa", i) for i in range(3)]
+            + [_REFUSED["both_urls"]("aa", 7)])
+    _write(cfg.manifest_file("aa"), rows)
+    res = migrate_contract(cfg)
+    f = res.files[0]
+    assert f.refused_reasons == {"`corpus` is 'news', not 'central-bank'": 3,
+                                 "pre-2026-11-19 `pdf_url`": 1}
+    assert f.refused_why[-1] == ["pre-2026-11-19 `pdf_url`"]
+    line = [ln for ln in report_lines(res, write=False) if "refused reasons:" in ln][0]
+    assert line.endswith("refused reasons: `corpus` is 'news', not 'central-bank'=3; "
+                         "pre-2026-11-19 `pdf_url`=1")
+
+
+def test_a_clean_run_has_no_refused_lines(tmp_path):
+    from cb_corpus.contract_migrate import report_lines
+    cfg = Config(data_dir=tmp_path / "data")
+    _write(cfg.manifest_file("aa"), [_row("aa", 1)])
+    lines = report_lines(migrate_contract(cfg), write=False)
+    assert not [ln for ln in lines if "refused " in ln or "by hand" in ln]
+
+
+@pytest.mark.parametrize("flag,shown", [(["--show-ids", "3"], 3), (["--show-ids", "0"], 25),
+                                        ([], 20)])
+def test_show_ids_sets_how_many_ids_and_why_lines_the_report_lists(
+        tmp_path, monkeypatch, capsys, flag, shown):
+    cfg = Config(data_dir=tmp_path / "data")
+    _write(cfg.manifest_file("aa"), [_REFUSED["wrong_corpus"]("aa", i) for i in range(25)])
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["migrate-contract"] + flag) == 1
+    out = capsys.readouterr().out
+    first = out.splitlines()[0]
+    assert len(first.split("refused_ids=")[1].split()[0].split(",")) == shown
+    assert ("more)" in first) == (shown < 25)
+    assert sum(1 for ln in out.splitlines() if "aa.jsonl: refused " in ln
+               and "reasons" not in ln) == shown
+
+
+def test_show_ids_is_documented_and_never_negative(capsys):
+    with pytest.raises(SystemExit):
+        cli.main(["migrate-contract", "--help"])
+    assert "--show-ids" in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        cli.main(["migrate-contract", "--show-ids", "-1"])

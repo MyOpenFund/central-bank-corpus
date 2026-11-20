@@ -32,9 +32,9 @@ import sys
 from datetime import date
 from typing import Iterable, Optional
 
-from .config import LEGACY_DATA_PREFIX, Config
+from .config import Config
 from .http import Fetcher
-from .models import row_bank, row_url
+from .models import SOURCE_KEY, URL_KEY
 from .sources.wayback import first_capture
 from .storage import Storage, apply_row_updates
 from .wp_migrate import normalize_title, repec_handle_from_source_url
@@ -79,7 +79,7 @@ def row_key(row: dict) -> Optional[str]:
     t = normalize_title(row.get("title") or "")
     if not t:
         return None
-    bank = (row_bank(row) or "").strip().lower()
+    bank = (row.get(SOURCE_KEY) or "").strip().lower()
     return f"t:{bank}:{t}"
 
 
@@ -198,12 +198,9 @@ def _file_evidence(stored: Optional[str]) -> str:
     """`evidence_url` of a PDF /CreationDate hit. The committed index spells
     every one `file://data/raw/...` (the path as seen from the app directory,
     the manifests' form before the documents contract); it is evidence text,
-    never read back as a path, so new entries keep that single spelling
-    whichever form the row stores (`raw/...` or `data/raw/...`)."""
-    s = stored or ""
-    if s and not s.startswith("/") and not s.startswith(LEGACY_DATA_PREFIX):
-        s = LEGACY_DATA_PREFIX + s
-    return f"file://{s}"
+    never read back as a path, so new entries keep that single spelling,
+    built from the row's `raw/...`."""
+    return f"file://data/{stored}" if stored else "file://"
 
 
 def _abs_variant(url: Optional[str]) -> Optional[str]:
@@ -223,7 +220,7 @@ def _url_variants(row: dict) -> list[str]:
     """Distinct URLs worth querying Wayback for: the document_url, its abs/pdf sibling,
     and any alt_urls (e.g. the native bank URL registered during migration)."""
     out: list[str] = []
-    for u in [row_url(row), *(row.get("alt_urls") or [])]:
+    for u in [row.get(URL_KEY), *(row.get("alt_urls") or [])]:
         if not u:
             continue
         out.append(u)
@@ -241,7 +238,7 @@ def recover(fetcher: Fetcher, row: dict, use_wayback: bool = True,
     the Wayback first-capture of each URL variant (PDF, its abs/pdf sibling,
     alt_urls). Every candidate must pass the month constraint.
     """
-    # the stored path (either form) is relative to the data root, not the CWD
+    # the stored path is relative to the data root, not the CWD
     on_disk = (cfg or Config()).resolve_stored_path(row.get("local_path"))
     cd = pdf_creation_date(str(on_disk) if on_disk else None)
     if month_ok(cd, row):
@@ -293,7 +290,7 @@ def run_wp_dates(bank_codes: Optional[Iterable[str]] = None,
 
     try:
         for row in storage.iter_manifest():
-            if (row_bank(row) not in codes or row.get("doc_type") not in ("D1", "D2")
+            if (row.get(SOURCE_KEY) not in codes or row.get("doc_type") not in ("D1", "D2")
                     or row.get("date_precision") == "day"):
                 continue
             if row.get("date_precision") == "year":

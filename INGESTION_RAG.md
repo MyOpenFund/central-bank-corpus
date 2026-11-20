@@ -30,8 +30,9 @@ Fields useful for ingestion:
 > **Field rename, 2026-11-19:** `pdf_url` is now **`document_url`** (the canonical document
 > URL: PDF preferred, HTML accepted). Same value, same position in the row, same `doc_id`
 > (it hashes the URL value, not the field name). Manifests published before the NAS
-> migration (`migrate-document-url`) still carry `pdf_url`: a reader of older snapshots
-> takes `document_url`, else `pdf_url`.
+> migration still carry `pdf_url`; this repo's code reads only `document_url`, so bring an
+> older snapshot to the current form first (`python -m cb_corpus migrate-contract --write`,
+> below, renames `pdf_url` too).
 
 > **Documents contract, 2026-11-20.** Every row follows the MyOpenFund `documents` contract
 > ([vault-contract 1.0.0](https://github.com/MyOpenFund/vault/tree/master/contract), the
@@ -44,9 +45,10 @@ Fields useful for ingestion:
 >   `<data root> / local_path` (in this repo the data root is `data/`).
 >
 > Undated rows no longer carry a `date_precision` (null) nor a `date_kind`. Manifests
-> published before the NAS migration (`migrate-contract`) still carry `bank_code`, no
-> `corpus` and `data/raw/...` paths: a reader of older snapshots takes `source_code`, else
-> `bank_code`, and drops a leading `data/` from a path.
+> published before the NAS migration (commit `5fec83a`) still carry `bank_code`, no `corpus`
+> and `data/raw/...` paths. This repo's code reads the contract form only (a row in an older
+> form stops a command with an error naming the fix); to read an older snapshot, rewrite it
+> once with `python -m cb_corpus migrate-contract --write` (README § Maintenance).
 >
 > The codes a row may use are declared in **`vocabulary.json`**, written at the data root
 > next to `manifest/` (generated from the code: `source_codes` = the 63 banks of
@@ -57,14 +59,15 @@ Fields useful for ingestion:
 > `python -c "from pathlib import Path; from cb_corpus.vocabulary import write_vocabulary; write_vocabulary(Path('data'))"`.
 > To check a snapshot against the contract (dev requirements install `vault-contract`):
 > `python -m vault_contract.check data/manifest --corpus central-bank --vocabulary data/vocabulary.json`
-> (add `--no-transition` to judge it as after the transition).
+> (add `--no-transition` to judge it as the vault does since the transition cleanup:
+> 0 refusals on the committed manifests).
 
 
 | Field | RAG usage |
 |---|---|
 | `corpus` | always `central-bank` (the documents contract's corpus code) |
 | `local_path` | **path of the file to read** (PDF, or HTML if rendering failed), relative to the data root (`raw/<bank>/<type>/<year>/<doc_id>.<ext>`) |
-| `source_code` | the bank: **filter** + metadata (map to full name via `cb_corpus.banks` or `vocabulary.json`); `bank_code` before 2026-11-20 |
+| `source_code` | the bank: **filter** + metadata (map to full name via `cb_corpus.banks` or `vocabulary.json`) |
 | `doc_type` | **filter** + metadata (map to a readable label, cf. §5) |
 | `year`, `date` | **temporal filter** / facet. `date` is always a full `YYYY-MM-DD` or `null`; read it with `date_precision` (§1a) |
 | `title` | chunk title / display |
@@ -184,7 +187,7 @@ def iter_docs():
         lp = d.get("local_path")
         if not lp or not lp.endswith(".pdf"):
             continue
-        p = DATA / lp.removeprefix("data/")   # (data/: snapshots before 2026-11-20)
+        p = DATA / lp                          # relative to the data root
         if p.exists():
             yield d, p
 
@@ -196,8 +199,8 @@ def doc_metadata(d: dict) -> dict:
     """Clean metadata, ready for filtering + citation."""
     return {
         "doc_id":   d["doc_id"],
-        "source_code": d.get("source_code") or d.get("bank_code"),   # (bank_code: before 2026-11-20)
-        "bank_name": get_bank(d.get("source_code") or d["bank_code"]).name,
+        "source_code": d["source_code"],
+        "bank_name": get_bank(d["source_code"]).name,
         "doc_type":  d["doc_type"],
         "doc_type_label": by_code(d["doc_type"]).label,  # ex. "Speech"
         "year":   d.get("year"),
@@ -205,8 +208,7 @@ def doc_metadata(d: dict) -> dict:
         "date_precision": d.get("date_precision"),   # day | month | year | None (§1a)
         "date_kind": d.get("date_kind"),             # meeting | publication | period | None
         "title":  d.get("title", ""),
-        "source_url": d.get("document_url") or d.get("pdf_url"),   # <- the official citation
-                                                     # (pdf_url: snapshots before 2026-11-19)
+        "source_url": d.get("document_url"),   # <- the official citation
         "language":   d.get("language", "en"),
     }
 ```

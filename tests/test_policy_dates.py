@@ -28,10 +28,10 @@ BOC = "https://www.bankofcanada.ca"
 
 def row(bank, dt, title, document_url, stored, source_url="", **extra):
     """A manifest row as the corpus holds them; `stored` is its date today."""
-    r = {"bank_code": bank, "doc_type": dt, "title": title, "document_url": document_url,
+    r = {"corpus": "central-bank", "source_code": bank, "doc_type": dt, "title": title, "document_url": document_url,
          "source_url": source_url, "date": stored, "language": "en",
          "provenance": "bank_site", "mime_type": "application/pdf",
-         "sha256": "sha-" + document_url[-12:], "local_path": "/data/raw/" + document_url[-12:],
+         "sha256": "sha-" + document_url[-12:], "local_path": "raw/" + document_url[-12:],
          "doc_id": f"{bank}-{dt}-{abs(hash(document_url)) % 10**8}",
          "year": int(stored[:4]) if stored else None}
     r.update(extra)

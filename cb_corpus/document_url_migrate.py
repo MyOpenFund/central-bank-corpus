@@ -3,8 +3,10 @@
 One-shot for the field rename of 2026-11-19 (`DocRecord.pdf_url` became
 `DocRecord.document_url`; the value, and so every doc_id, is unchanged).
 New rows are written with `document_url`; this command renames the key in
-the rows already stored, so the transition fallback (models.row_url /
-models.upgrade_row) can be removed afterwards.
+the rows already stored (the readers' transition fallback was removed on
+2026-11-20: a reader now refuses a row still carrying `pdf_url`). Kept for
+an outside clone still holding such rows: it works on the raw JSON, with no
+reader of this package involved (`migrate-contract` also renames the key).
 
 Files handled (the persistent state that stores the key):
 
@@ -18,7 +20,8 @@ Not handled, and why: `wp_dates_index.jsonl` (`evidence_url`) and
 `download_quarantine.jsonl` (`url`) never stored the key; the CSV reports
 under `data/reports/` are rewritten whole by their own command on the next
 run and never read back; a recover-downloads `--candidates` file is the
-operator's own input, read with the old key as fallback (`dead_pdf_url`).
+operator's own input (a line still using `dead_pdf_url` is refused by
+recover-downloads with a message asking for `dead_document_url`).
 
 Each file is processed under its sidecar lock (filelock.locked_sidecar, the
 manifests' and the download-error log's writers take the same lock), re-read
@@ -26,9 +29,9 @@ fresh under it. Per row: the key is renamed IN PLACE (same position, every
 value unchanged, `json.dumps(..., ensure_ascii=False)` like every writer);
 a row already using the new name is kept byte-identical; a row carrying BOTH
 names is an error: it is left untouched and reported, never guessed at. The
-file is rewritten (temp + os.replace) only when a row changed, so a second
-run does nothing. Dry run by default: nothing is written, the sidecar lock
-is not taken (a read of a live file may see a partly written last line,
+file is rewritten only when a row changed (rewrite_file: temp file, fsync,
+os.replace, temp removed on any failure), so a second run does nothing.
+Dry run by default: nothing is written, the sidecar lock is not taken (a read of a live file may see a partly written last line,
 which the counts report as `torn`).
 
 Malformed lines: a manifest follows storage's rewrite rule (a torn FINAL
@@ -47,10 +50,12 @@ from typing import Iterable, Optional
 
 from .config import Config
 from .filelock import locked_sidecar
-from .models import LEGACY_URL_KEY, URL_KEY
+from .models import URL_KEY
 from .storage import _read_rows_for_rewrite
 
 DOWNLOAD_ERRORS = "download_errors.jsonl"
+#: The document URL key's name until 2026-11-19.
+LEGACY_URL_KEY = "pdf_url"
 
 
 @dataclass
@@ -183,13 +188,28 @@ def _migrate_file(path: Path, *, write: bool, manifest: bool) -> FileCounts:
         # A torn manifest tail is dropped by the rewrite, as storage's other
         # locked rewrites do (only when a row remains, like apply_row_updates).
         if counts.renamed or (manifest and counts.torn and out):
-            tmp = path.with_suffix(path.suffix + ".tmp")
-            with tmp.open("w", encoding="utf-8", errors="surrogateescape") as fh:
-                for line in out:
-                    fh.write(line + "\n")
-            os.replace(tmp, path)
+            rewrite_file(path, out, errors="surrogateescape")
             counts.written = True
     return counts
+
+
+def rewrite_file(path: Path, lines: list[str], *, errors: str = "strict") -> None:
+    """Replace `path` with `lines` (one per line, UTF-8): written to a temp
+    file beside it, fsynced, then os.replace'd over it -- a crash leaves the
+    old file or the new one, never a torn one. The temp file is removed on
+    any failure. `errors="surrogateescape"` writes back verbatim a line kept
+    undecoded (a malformed download-error log line)."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        with tmp.open("w", encoding="utf-8", errors=errors) as fh:
+            for line in lines:
+                fh.write(line + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)      # never leave a half-written temp
+        raise
 
 
 def migrate_document_url(cfg: Config, *, write: bool = False,

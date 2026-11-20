@@ -1,7 +1,8 @@
 """Manifest rows follow the `documents` contract (vault-contract 1.0.0):
 `corpus: central-bank`, `source_code` (was `bank_code`), paths relative to the
-data root. Rows written before it are read in the contract form (transition,
-models.upgrade_row) and rewritten in it by every rewrite path."""
+data root. Every reader and writer expects that form: a row in an older one
+is refused loudly (models.ContractRowError, naming migrate-contract), which
+rewrites it on the raw JSON."""
 from __future__ import annotations
 
 import copy
@@ -12,9 +13,10 @@ import pytest
 from vault_contract import check_row, golden, load_vocabulary
 
 from cb_corpus.config import Config
-from cb_corpus.models import (CORPUS, DocRecord, contract_upgrade, row_bank,
-                              upgrade_row)
-from cb_corpus.storage import Storage, apply_row_updates, iter_manifest_rows
+from cb_corpus.contract_migrate import contract_upgrade
+from cb_corpus.models import CORPUS, ContractRowError, DocRecord, check_contract_row
+from cb_corpus.storage import (Storage, _write_per_bank_unlocked, apply_row_updates,
+                               iter_manifest_rows, merge_rows_locked, migrate_legacy_layout)
 from cb_corpus.taxonomy import DocType
 from cb_corpus.vocabulary import build_vocabulary
 
@@ -98,6 +100,18 @@ def test_golden_rows_pass_our_vocabulary(case):
 
 
 @pytest.mark.parametrize("case", sorted(CB_GOLDEN))
+def test_our_readers_refuse_exactly_what_the_vault_refuses_without_transition(case):
+    row = CB_GOLDEN[case]["row"]
+    vault_ok = _check(row, transition=False).refusals == ()
+    try:
+        check_contract_row(row)
+        ours_ok = True
+    except ContractRowError:
+        ours_ok = False
+    assert ours_ok == vault_ok
+
+
+@pytest.mark.parametrize("case", sorted(CB_GOLDEN))
 def test_upgraded_golden_rows_need_no_transition(case):
     """The one-shot's upgrade turns every golden form, the legacy one
     included, into a row the post-transition contract accepts; the columns
@@ -107,6 +121,7 @@ def test_upgraded_golden_rows_need_no_transition(case):
     contract_upgrade(row)
     checked = _check(row, transition=False)
     assert checked.refusals == ()
+    assert check_contract_row(row) is row           # and our own readers accept it
     notices = {n.reason for n in checked.notices}
     assert not notices & {"corpus_missing", "legacy_alias", "legacy_data_prefix",
                           "precision_without_date", "kind_without_date"}
@@ -114,7 +129,7 @@ def test_upgraded_golden_rows_need_no_transition(case):
     assert checked.columns == want
 
 
-# --- upgrade (transition) ----------------------------------------------------
+# --- migrate-contract's per-row upgrade ----------------------------------------------------
 
 LEGACY = {"bank_code": "jp", "doc_type": "D1", "title": "t",
           "document_url": "https://www.boj.or.jp/a.pdf", "source_url": "",
@@ -168,55 +183,128 @@ def test_contract_upgrade_keeps_absolute_paths_and_dated_precision():
     assert row["date_precision"] == "month" and row["date_kind"] == "publication"
 
 
-def test_upgrade_row_applies_the_key_level_upgrade_only():
-    """Read-time: renames, corpus and paths; the undated-row data fixes stay
-    on disk until migrate-contract (policy-dates owns date changes)."""
-    row = upgrade_row(dict(LEGACY))
-    assert row["corpus"] == CORPUS and row["source_code"] == "jp"
-    assert row["local_path"] == "raw/jp/D1/0/6349348f8603c010.pdf"
-    assert row["date_precision"] == "month" and row["date_kind"] == "publication"
+# --- readers: the contract form only, an old form fails loudly ----------------
 
-
-def test_row_bank_reads_both_names():
-    assert row_bank({"source_code": "ecb"}) == "ecb"
-    assert row_bank({"bank_code": "us"}) == "us"
-    assert row_bank({"source_code": "ecb", "bank_code": "us"}) == "ecb"
-    assert row_bank({}) is None
-
-
-# --- storage: legacy manifests are read in the contract form -----------------
-
-def _write_legacy(cfg: Config, rows: list[dict]) -> None:
+def _write_legacy(cfg: Config, rows: list[dict], bank: str = "jp") -> None:
     cfg.manifest_dir.mkdir(parents=True, exist_ok=True)
-    with cfg.manifest_file("jp").open("w", encoding="utf-8") as fh:
+    with cfg.manifest_file(bank).open("w", encoding="utf-8") as fh:
         for r in rows:
             fh.write(json.dumps(r) + "\n")
 
 
-def test_legacy_rows_read_in_the_contract_form_and_rewritten_in_it(tmp_path):
-    cfg = Config(data_dir=tmp_path)
-    other = dict(LEGACY, doc_id="other", local_path="data/raw/jp/D1/0/other.pdf")
-    _write_legacy(cfg, [dict(LEGACY), other])
-    rows = list(iter_manifest_rows(cfg))
-    assert all(r["corpus"] == CORPUS and r["source_code"] == "jp" for r in rows)
-    assert rows[0]["local_path"] == "raw/jp/D1/0/6349348f8603c010.pdf"
-    rows[0]["title"] = "new"
-    assert apply_row_updates(cfg, {rows[0]["doc_id"]: rows[0]}) == 1
-    lines = [json.loads(ln) for ln in cfg.manifest_file("jp").read_text().splitlines()]
-    assert lines[0]["title"] == "new" and "bank_code" not in lines[0]
-    assert lines[0]["corpus"] == CORPUS
-    assert lines[1] == other                          # untouched row: verbatim
+def _contract(**kw) -> dict:
+    row = _rec(**kw).to_row()
+    row.update(local_path="raw/ecb/A1/2022/x.pdf")
+    return row
 
 
-def test_storage_indexes_legacy_and_new_rows_by_bank(tmp_path):
+def test_the_transition_readers_are_gone():
+    import cb_corpus.models as models
+    for name in ("row_bank", "row_url", "upgrade_row", "contract_upgrade",
+                 "LEGACY_URL_KEY", "LEGACY_URL_KEYS", "LEGACY_SOURCE_KEY"):
+        assert not hasattr(models, name), name
+
+
+def test_check_contract_row_passes_a_written_row():
+    row = _contract()
+    assert check_contract_row(row) is row
+    assert check_contract_row(_rec().to_row()) is not None   # no path at all
+
+
+@pytest.mark.parametrize("change,what", [
+    (lambda r: r.pop("corpus"), "corpus"),
+    (lambda r: r.update(corpus="company"), "corpus"),
+    (lambda r: r.__setitem__("bank_code", r.pop("source_code")), "bank_code"),
+    (lambda r: r.update(bank_code="ecb"), "bank_code"),
+    (lambda r: r.pop("source_code"), "source_code"),
+    (lambda r: r.update(source_code=""), "source_code"),
+    (lambda r: r.__setitem__("pdf_url", r.pop("document_url")), "pdf_url"),
+    (lambda r: r.update(retired_duplicates=[{"doc_id": "d", "pdf_url": "u"}]), "pdf_url"),
+    (lambda r: r.update(local_path="data/raw/ecb/A1/2022/x.pdf"), "local_path"),
+    (lambda r: r.update(html_path="data/raw/ecb/A1/2022/x.html"), "html_path"),
+    (lambda r: r.update(local_path="/app/data/raw/ecb/A1/2022/x.pdf"), "local_path"),
+])
+def test_check_contract_row_refuses_every_old_form_naming_migrate_contract(change, what):
+    row = _contract()
+    change(row)
+    with pytest.raises(ContractRowError) as exc:
+        check_contract_row(row, "ecb.jsonl")
+    msg = str(exc.value)
+    assert what in msg and "migrate-contract" in msg and "ecb.jsonl" in msg
+    assert row["doc_id"] in msg
+    assert isinstance(exc.value, ValueError)
+
+
+def test_reading_a_legacy_manifest_fails_loudly(tmp_path):
     cfg = Config(data_dir=tmp_path)
     _write_legacy(cfg, [dict(LEGACY)])
-    st = Storage(cfg)
-    assert st._bank_by_id["6349348f8603c010"] == "jp"
-    # a row given to apply_row_updates under the old name still lands in jp.jsonl
-    assert apply_row_updates(cfg, {"6349348f8603c010": dict(LEGACY, title="x")}) == 1
+    with pytest.raises(ContractRowError, match="migrate-contract") as exc:
+        list(iter_manifest_rows(cfg))
+    assert "jp.jsonl" in str(exc.value) and "6349348f8603c010" in str(exc.value)
+    with pytest.raises(ContractRowError, match="migrate-contract"):
+        Storage(cfg)
+
+
+def test_a_legacy_row_is_never_filed_under_unknown(tmp_path):
+    cfg = Config(data_dir=tmp_path)
+    row = _contract()
+    _write_legacy(cfg, [row], bank="ecb")
+    before = cfg.manifest_file("ecb").read_bytes()
+    old = dict(row, title="x")
+    old["bank_code"] = old.pop("source_code")
+    with pytest.raises(ContractRowError, match="migrate-contract"):
+        apply_row_updates(cfg, {row["doc_id"]: old})
+    with pytest.raises(ContractRowError, match="migrate-contract"):
+        _write_per_bank_unlocked(cfg, [old])
+    assert cfg.manifest_file("ecb").read_bytes() == before
+    assert not cfg.manifest_file("_unknown").exists()
+
+
+def test_merge_on_a_legacy_row_on_disk_fails_and_writes_nothing(tmp_path):
+    cfg = Config(data_dir=tmp_path)
+    _write_legacy(cfg, [dict(LEGACY)])
+    before = cfg.manifest_file("jp").read_bytes()
+    with pytest.raises(ContractRowError, match="migrate-contract"):
+        merge_rows_locked(cfg, {"jp": {"6349348f8603c010": lambda r: True}})
+    assert cfg.manifest_file("jp").read_bytes() == before
+
+
+def test_outside_clone_migrates_then_reads(tmp_path, monkeypatch):
+    """An outside clone still holding pre-contract manifests (even under the
+    pre-2026-11-19 `pdf_url`): the one-shot migrate-contract works on the raw
+    JSON, after which every reader accepts the rows."""
+    from cb_corpus import cli
+    cfg = Config(data_dir=tmp_path)
+    old = {("pdf_url" if k == "document_url" else k): v for k, v in LEGACY.items()}
+    _write_legacy(cfg, [old])
+    monkeypatch.chdir(tmp_path.parent)
+    monkeypatch.setattr(cli, "Config", lambda: cfg)
+    assert cli.main(["migrate-contract", "--write"]) == 0
     [row] = list(iter_manifest_rows(cfg))
-    assert row["title"] == "x" and row["source_code"] == "jp"
+    assert row["source_code"] == "jp" and row["document_url"] == LEGACY["document_url"]
+    assert Storage(cfg)._bank_by_id == {"6349348f8603c010": "jp"}
+
+
+def test_legacy_single_manifest_is_split_then_migrated(tmp_path):
+    """A pre-split `manifest.jsonl` (pre-contract rows): migrate-contract
+    --write splits it per bank first, then upgrades the split files."""
+    from cb_corpus.contract_migrate import migrate_contract
+    cfg = Config(data_dir=tmp_path)
+    cfg.manifest_path.write_text(json.dumps(LEGACY) + "\n"
+                                 + json.dumps(dict(LEGACY, bank_code="us", doc_id="u1")) + "\n")
+    res = migrate_contract(cfg, write=True)
+    assert sorted(p.name for p in cfg.manifest_dir.glob("*.jsonl")) == ["jp.jsonl", "us.jsonl"]
+    assert sum(f.upgraded for f in res.files) == 2
+    assert {r["source_code"] for r in iter_manifest_rows(cfg)} == {"jp", "us"}
+
+
+def test_split_refuses_a_row_without_a_bank(tmp_path):
+    cfg = Config(data_dir=tmp_path)
+    nobank = {k: v for k, v in LEGACY.items() if k != "bank_code"}
+    cfg.manifest_path.write_text(json.dumps(LEGACY) + "\n" + json.dumps(nobank) + "\n")
+    with pytest.raises(ValueError, match="no source_code"):
+        migrate_legacy_layout(cfg)
+    assert cfg.manifest_path.exists() and not cfg.manifest_dir.exists()
 
 
 @pytest.mark.parametrize("bad", ["data//raw/x.pdf", "data/data/raw/x.pdf"])
@@ -230,3 +318,36 @@ def test_data_strip_is_a_fixed_point(bad):
     assert row["local_path"] == bad
     row2 = dict(LEGACY, html_path=bad)
     assert "bad_path" in contract_upgrade(row2) and row2["html_path"] == bad
+
+
+@pytest.mark.parametrize("bad", [dict(bank_code=""), dict(local_path="/abs/raw/ecb/x.pdf"),
+                                 dict(html_path="data/raw/ecb/x.html")])
+def test_append_never_writes_a_row_the_readers_would_refuse(tmp_path, bad):
+    cfg = Config(data_dir=tmp_path)
+    st = Storage(cfg)
+    st._append(_rec())
+    path = cfg.manifest_file("ecb")
+    before = path.read_bytes()
+    rec = _rec(document_url="https://www.ecb.europa.eu/other.pdf", **bad)
+    with pytest.raises(ContractRowError):
+        st._append(rec)
+    assert path.read_bytes() == before
+    assert not cfg.manifest_file("").exists() and not cfg.manifest_file("_unknown").exists()
+
+
+def test_an_append_refusal_names_a_producer_bug_not_the_migration(tmp_path):
+    """An in-memory record is not a stored row: migrate-contract cannot fix
+    it, so the refusal names the problem and the producer, not the one-shot."""
+    st = Storage(Config(data_dir=tmp_path))
+    with pytest.raises(ContractRowError) as ei:
+        st._append(_rec(bank_code=""))
+    msg = str(ei.value)
+    assert "no `source_code`" in msg and "producer bug" in msg
+    assert "migrate-contract" not in msg
+
+
+def test_the_readers_message_says_refused_rows_are_fixed_by_hand():
+    with pytest.raises(ContractRowError) as ei:
+        check_contract_row({"doc_id": "x", "bank_code": "aa"}, "aa.jsonl")
+    msg = str(ei.value)
+    assert "migrate-contract --write" in msg and "by hand" in msg

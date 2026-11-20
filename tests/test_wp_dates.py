@@ -24,7 +24,7 @@ def _setup(tmp_path, rows: list[dict], index: list[dict]) -> Config:
     Storage(cfg)
     by_bank: dict[str, list[dict]] = {}
     for r in rows:
-        by_bank.setdefault(r["bank_code"], []).append(r)
+        by_bank.setdefault(r["source_code"], []).append(r)
     for bank, rs in by_bank.items():
         p = cfg.manifest_file(bank)
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -35,7 +35,7 @@ def _setup(tmp_path, rows: list[dict], index: list[dict]) -> Config:
 
 def _row(doc_id: str, bank: str, date: str, title: str = "Inflation dynamics",
          **extra) -> dict:
-    return {"doc_id": doc_id, "bank_code": bank, "doc_type": "D1", "date": date,
+    return {"doc_id": doc_id, "corpus": "central-bank", "source_code": bank, "doc_type": "D1", "date": date,
             "year": int(date[:4]), "date_precision": "month", "date_source": "repec",
             "title": title, "document_url": f"https://{bank}.example/{doc_id}.pdf", **extra}
 

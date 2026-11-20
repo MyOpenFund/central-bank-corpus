@@ -38,10 +38,9 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from .config import Config
-from .orphans import _resolve_local_path
 from .pdfcheck import EOF_MARKER, EOF_WINDOW, MAGIC_WINDOW, pdf_problem
 from .storage import iter_manifest_rows
-from .models import row_bank
+from .models import SOURCE_KEY
 
 #: Default number of trailing bytes searched for the last `%%EOF` of a file
 #: that fails the window rule (the measurement, not the rule).
@@ -147,11 +146,11 @@ def _write_audit(cfg, wanted, tmp, tail_bytes, progress_every, summary,
         writer = csv.DictWriter(fh, fieldnames=CSV_FIELDS)
         writer.writeheader()
         for row in iter_manifest_rows(cfg):
-            bank = (row_bank(row) or "").lower()
+            bank = (row.get(SOURCE_KEY) or "").lower()
             if wanted and bank not in wanted:
                 continue
             lp = row.get("local_path") or ""
-            path = _resolve_local_path(cfg, lp) if lp else None
+            path = cfg.resolve_stored_path(lp)
             if not lp or not _is_pdf_row(row):
                 continue
             summary.rows_checked += 1

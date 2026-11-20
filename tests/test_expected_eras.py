@@ -149,7 +149,7 @@ def test_completeness_flags_a_pre_2015_ecb_year_short_of_its_era(tmp_path):
     """9 decisions in 2010 used to be `ok` against the flat 8; the 2002-2014
     era expects 11, so the cell is now `partial`. 8 in 2016 stays ok."""
     cfg = Config(data_dir=tmp_path)
-    rows = [{"doc_id": f"a{y}{i}", "bank_code": "ecb", "doc_type": "A1", "year": y,
+    rows = [{"doc_id": f"a{y}{i}", "corpus": "central-bank", "source_code": "ecb", "doc_type": "A1", "year": y,
              "date": f"{y}-{i + 1:02d}-10", "title": "d",
              "document_url": f"https://ecb/{y}/{i}.pdf"}
             for y, n in ((2010, 9), (2016, 8)) for i in range(n)]

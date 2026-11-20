@@ -191,7 +191,7 @@ def test_wp_migrate_undated_native_touches_no_date_field(monkeypatch, extra):
                         document_url="https://www.banque-france.fr/system/files/2006-03/WP155.pdf",
                         date=None, date_precision=None)]
     monkeypatch.setitem(wp_migrate._NATIVE, "fr", lambda fetcher: iter(native))
-    row = {"doc_id": "fr155", "bank_code": "fr", "doc_type": "D1", "date": "2006-03-01",
+    row = {"doc_id": "fr155", "corpus": "central-bank", "source_code": "fr", "doc_type": "D1", "date": "2006-03-01",
            "year": 2006,
            "document_url": "https://publications.banque-france.fr/wp_155_2006.pdf",
            "source_url": "https://ideas.repec.org/p/bfr/banfra/155.html", **extra}

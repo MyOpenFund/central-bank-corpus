@@ -77,8 +77,8 @@ from typing import Any, Iterator, Optional
 
 from .config import Config
 from .http import Fetcher
-from .models import row_bank, row_url
-from .orphans import OrphanEntry, _resolve_local_path, _sha256_of, move_to_orphans
+from .models import SOURCE_KEY, URL_KEY
+from .orphans import OrphanEntry, _sha256_of, move_to_orphans
 from .pdfcheck import check_pdf_bytes
 from .sources.wayback import pdf_captures, raw_url
 from .storage import (Storage, _atomic_write_bytes, is_stampable_owner, iter_manifest_rows,
@@ -203,7 +203,7 @@ class _Run:
 
     # -- helpers -------------------------------------------------------------
     def _path_key(self, local_path: str) -> str:
-        p = _resolve_local_path(self.cfg, local_path) if local_path else None
+        p = self.cfg.resolve_stored_path(local_path)
         return str(p.resolve()) if p is not None else ""
 
     def _single(self, doc_id: str, what: str) -> None:
@@ -236,7 +236,7 @@ class _Run:
         seen: set[str] = set()
         for tok in tokens:
             if tok.lower() == WAYBACK:
-                target = row_url(row) or ""
+                target = row.get(URL_KEY) or ""
                 try:
                     stamps = pdf_captures(self.fetcher, target, max_captures=self.wayback_max)
                 except Exception as exc:  # noqa: BLE001 - reported, never fatal
@@ -261,9 +261,9 @@ class _Run:
         row = self.rows.get(plan.doc_id)
         if row is None:
             raise _RowError(f"unknown doc_id {plan.doc_id!r} (not in any manifest)")
-        res["bank_code"] = row_bank(row) or ""
+        res["bank_code"] = row.get(SOURCE_KEY) or ""
         lp = row.get("local_path") or ""
-        path = _resolve_local_path(self.cfg, lp) if lp else None
+        path = self.cfg.resolve_stored_path(lp)
         if path is None or path.suffix.lower() != ".pdf":
             raise _RowError(f"artifact is not a .pdf path ({lp or 'no local_path'}): "
                             f"only a PDF artifact can be replaced")
@@ -323,7 +323,7 @@ class _Run:
         path.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write_bytes(path, body)
         at = self.at()
-        own = normalize_url(row_url(row) or "")
+        own = normalize_url(row.get(URL_KEY) or "")
 
         def merge(r: dict) -> bool:
             # previous_sha256 from the row as re-read under the lock.
@@ -341,7 +341,7 @@ class _Run:
                 r["alt_urls"] = [url, *rest]
             return True
 
-        bank = row_bank(row) or "_unknown"
+        bank = row[SOURCE_KEY]
         n = merge_rows_locked(self.cfg, {bank: {plan.doc_id: merge}})
         if n == 0:
             raise _RowError(f"file replaced, but row {plan.doc_id} was not found in "
@@ -372,7 +372,7 @@ class _Run:
                 res["outcome"] = "already-retired"
                 return
             raise _RowError(f"unknown doc_id {plan.doc_id!r} (not in any manifest)")
-        res["bank_code"] = row_bank(row) or ""
+        res["bank_code"] = row.get(SOURCE_KEY) or ""
         self._single(plan.doc_id, "row")
         self._single(owner_id, "owner")
         if not is_stampable_owner(owner, self.cfg):
@@ -380,7 +380,7 @@ class _Run:
                             f"{owner.get('mime_type')!r}, html_path "
                             f"{'set' if owner.get('html_path') else 'unset'})")
         olp = owner.get("local_path") or ""
-        opath = _resolve_local_path(self.cfg, olp) if olp else None
+        opath = self.cfg.resolve_stored_path(olp)
         if opath is None:
             raise _RowError(f"owner {owner_id} has no resolvable local_path ({olp!r})")
         problem = pdf_file_problem(opath, self.cfg)
@@ -394,7 +394,7 @@ class _Run:
         paths: list[Path] = []
         for key in ("local_path", "html_path"):
             lp = row.get(key) or ""
-            p = _resolve_local_path(self.cfg, lp) if lp else None
+            p = self.cfg.resolve_stored_path(lp)
             if p is not None and p not in paths:
                 if not _inside(p, self.cfg.raw_dir):
                     raise _RowError(f"{key} {p} is outside {self.cfg.raw_dir}")
@@ -418,11 +418,11 @@ class _Run:
 
         st = self.storage()
         _, _, persisted = st.stamp_duplicates(
-            [{"url": row_url(row) or "", "source_url": row.get("source_url") or "",
+            [{"url": row.get(URL_KEY) or "", "source_url": row.get("source_url") or "",
               "owner_doc_id": owner_id}], LABEL)
         if owner_id not in persisted:
             raise _RowError(f"owner {owner_id} could not be stamped (row changed?)")
-        entry = {"doc_id": plan.doc_id, "document_url": row_url(row) or "",
+        entry = {"doc_id": plan.doc_id, "document_url": row.get(URL_KEY) or "",
                  "source_url": row.get("source_url") or "",
                  "previous_sha256": row.get("sha256") or "", "at": self.at(),
                  "note": plan.note}
@@ -434,7 +434,7 @@ class _Run:
             r["retired_duplicates"] = [*current, entry]
             return True
 
-        merge_rows_locked(self.cfg, {row_bank(owner) or "_unknown": {owner_id: audit}})
+        merge_rows_locked(self.cfg, {owner[SOURCE_KEY]: {owner_id: audit}})
 
         for p in paths:
             if not p.exists():
@@ -448,7 +448,7 @@ class _Run:
             move_to_orphans(e, self.cfg)
             if e.action != "moved":
                 raise _RowError(f"could not move {p} to raw_orphans/: {e.error}")
-        remove_rows_locked(self.cfg, {row_bank(row) or "_unknown": [plan.doc_id]})
+        remove_rows_locked(self.cfg, {row[SOURCE_KEY]: [plan.doc_id]})
         self._set_sha(plan.doc_id, row.get("sha256") or "", "")
         del self.rows[plan.doc_id]
         owner.setdefault("retired_duplicates", []).append(entry)

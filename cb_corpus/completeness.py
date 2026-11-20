@@ -20,14 +20,14 @@ from .adapters.base import get_adapter
 from .banks import BIS_63
 from .storage import Storage
 from .taxonomy import DocType, FULL_SCOPE, by_code
-from .models import row_bank
+from .models import SOURCE_KEY
 
 
 def actual_counts(storage: Storage) -> dict[tuple[str, str, int], int]:
     counts: dict[tuple[str, str, int], int] = defaultdict(int)
     for row in storage.iter_manifest():
         year = row.get("year") or 0
-        counts[(row_bank(row), row["doc_type"], int(year))] += 1
+        counts[(row.get(SOURCE_KEY), row["doc_type"], int(year))] += 1
     return counts
 
 

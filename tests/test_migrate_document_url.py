@@ -160,3 +160,34 @@ def test_cli_dry_run_reports_counts_and_exits_zero(corpus, monkeypatch, capsys):
     assert "(dry-run): aa.jsonl: rows=3 renamed=2 already_new=1" in out
     assert "TOTAL files=3 rows=7 renamed=5" in out
     assert _snapshot(corpus.data_dir) == before
+
+
+# --- durability: same rewrite discipline as migrate-contract -------------------
+
+@pytest.mark.parametrize("name", ["aa.jsonl", "download_errors.jsonl"])
+def test_failed_rewrite_leaves_the_file_and_no_temp(corpus, monkeypatch, name):
+    path = (corpus.manifest_file("aa") if name == "aa.jsonl"
+            else corpus.data_dir / "download_errors.jsonl")
+    before = path.read_bytes()
+    import cb_corpus.document_url_migrate as mdu
+
+    def boom(src, dst):
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(mdu.os, "replace", boom)
+    with pytest.raises(OSError):
+        migrate_document_url(corpus, write=True,
+                             bank_codes=["aa"] if name == "aa.jsonl" else None)
+    assert path.read_bytes() == before
+    assert not [p for p in corpus.data_dir.rglob("*.tmp")]
+
+
+def test_rewrite_is_fsynced_before_the_replace(corpus, monkeypatch):
+    import cb_corpus.document_url_migrate as mdu
+    events = []
+    real_fsync, real_replace = os.fsync, os.replace
+    monkeypatch.setattr(mdu.os, "fsync", lambda fd: (events.append("fsync"), real_fsync(fd))[1])
+    monkeypatch.setattr(mdu.os, "replace",
+                        lambda a, b: (events.append("replace"), real_replace(a, b))[1])
+    res = migrate_document_url(corpus, write=True)
+    assert sum(r.written for r in res) == 3
+    assert events == ["fsync", "replace"] * 3

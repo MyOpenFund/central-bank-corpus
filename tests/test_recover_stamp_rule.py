@@ -38,7 +38,7 @@ def _seed_owner(cfg: Config, tmp_path, *, rendered: bool) -> DocRecord:
     assert st.reindex(rec, src) == "reindexed"
     if rendered:
         row = next(r for r in iter_manifest_rows(cfg) if r["doc_id"] == rec.doc_id)
-        row["html_path"] = str(tmp_path / "seed.html")
+        row["html_path"] = cfg.stored_path(tmp_path / "seed.html")
         apply_row_updates(cfg, {rec.doc_id: row})
     return rec
 

@@ -5,7 +5,7 @@ from datetime import date
 from pathlib import Path
 
 from cb_corpus.config import Config
-from cb_corpus.models import DocRecord, upgrade_row
+from cb_corpus.models import DocRecord
 from cb_corpus.storage import Storage, iter_manifest_rows
 from cb_corpus.taxonomy import DocType
 from cb_corpus import c2_migrate
@@ -42,7 +42,7 @@ def test_c2_migrate_stamps_title_and_date(tmp_path, monkeypatch):
                         lambda fetcher, since=None: iter(native))
 
     cfg = Config(data_dir=tmp_path)
-    row = {"doc_id": "id1", "bank_code": "ecb", "doc_type": "C2",
+    row = {"doc_id": "id1", "corpus": "central-bank", "source_code": "ecb", "doc_type": "C2",
           "title": "ECB C2 2026-07-15",
           "document_url": "https://www.ecb.europa.eu/press/inter/date/2026/html/ecb.in260715~aa.en.html",
           "date": "2026-07-16", "date_precision": "month", "date_source": "bank_site"}
@@ -75,7 +75,7 @@ def test_c2_migrate_keeps_nongeneric_titles(tmp_path, monkeypatch):
                         lambda fetcher, since=None: iter(native))
 
     cfg = Config(data_dir=tmp_path)
-    row = {"doc_id": "id1", "bank_code": "ecb", "doc_type": "C2",
+    row = {"doc_id": "id1", "corpus": "central-bank", "source_code": "ecb", "doc_type": "C2",
           "title": "A Hand-Picked Non-Generic Title",
           "document_url": "https://www.ecb.europa.eu/press/inter/date/2026/html/ecb.in260715~aa.en.html",
           "date": "2026-07-15", "date_precision": "day", "date_source": "bank_site"}
@@ -107,7 +107,7 @@ def test_c2_migrate_matches_double_slash_urls(tmp_path, monkeypatch):
     cfg = Config(data_dir=tmp_path)
     legacy_url = ("https://www.ecb.europa.eu//press/inter/date/2019/html/"
                  "ecb.in191216~8014b1bae6.en.html")
-    row = {"doc_id": "id1", "bank_code": "ecb", "doc_type": "C2",
+    row = {"doc_id": "id1", "corpus": "central-bank", "source_code": "ecb", "doc_type": "C2",
           "title": "ECB C2 2019-12-16", "document_url": legacy_url,
           "date": "2019-12-16", "date_precision": "day", "date_source": "bank_site"}
     _write_ecb_manifest(cfg, [row])
@@ -135,7 +135,7 @@ def test_c2_migrate_dry_run_touches_nothing(tmp_path, monkeypatch):
                         lambda fetcher, since=None: iter(native))
 
     cfg = Config(data_dir=tmp_path)
-    row = {"doc_id": "id1", "bank_code": "ecb", "doc_type": "C2",
+    row = {"doc_id": "id1", "corpus": "central-bank", "source_code": "ecb", "doc_type": "C2",
           "title": "ECB C2 2026-07-15",
           "document_url": "https://www.ecb.europa.eu/press/inter/date/2026/html/ecb.in260715~aa.en.html",
           "date": "2026-07-15", "date_precision": "month", "date_source": "bank_site"}
@@ -170,7 +170,7 @@ def test_c2_migrate_matches_corrupted_url(tmp_path, monkeypatch):
 
     cfg = Config(data_dir=tmp_path)
     corrupted_url = clean_url + "/nter/date/2019/html/ecb.in191216~e43be9798e.en.html"
-    row = {"doc_id": "id1", "bank_code": "ecb", "doc_type": "C2",
+    row = {"doc_id": "id1", "corpus": "central-bank", "source_code": "ecb", "doc_type": "C2",
           "title": "ECB C2 2019-12-16", "document_url": corrupted_url,
           "date": "2019-12-16", "date_precision": "day", "date_source": "bank_site"}
     _write_ecb_manifest(cfg, [row])
@@ -206,7 +206,7 @@ def test_c2_migrate_matches_known_rehash(tmp_path, monkeypatch):
                         lambda fetcher, since=None: iter(native))
 
     cfg = Config(data_dir=tmp_path)
-    row = {"doc_id": "id1", "bank_code": "ecb", "doc_type": "C2",
+    row = {"doc_id": "id1", "corpus": "central-bank", "source_code": "ecb", "doc_type": "C2",
           "title": "ECB C2 2019-12-02", "document_url": old_url,
           "date": "2019-12-02", "date_precision": "day", "date_source": "bank_site"}
     _write_ecb_manifest(cfg, [row])
@@ -233,12 +233,11 @@ def test_c2_migrate_non_c2_ecb_rows_pass_through_unchanged(tmp_path, monkeypatch
                         lambda fetcher, since=None: iter([]))
 
     cfg = Config(data_dir=tmp_path)
-    d1_row = {"doc_id": "wpid", "bank_code": "ecb", "doc_type": "D1",
+    d1_row = {"doc_id": "wpid", "corpus": "central-bank", "source_code": "ecb", "doc_type": "D1",
              "title": "Some WP", "document_url": "https://www.ecb.europa.eu/pub/pdf/x.pdf",
              "date": "2026-01-01"}
     _write_ecb_manifest(cfg, [d1_row])
 
     run_c2_migrate(cfg, fetcher=object(), write=True)
     after = {r["doc_id"]: r for r in iter_manifest_rows(cfg, "ecb")}
-    # as read: the documents-contract upgrade (corpus, source_code) only
-    assert after["wpid"] == upgrade_row(dict(d1_row))
+    assert after["wpid"] == d1_row

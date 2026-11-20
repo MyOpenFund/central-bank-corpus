@@ -37,7 +37,7 @@ from typing import Iterable, Optional
 
 from .config import Config
 from .http import Fetcher
-from .models import row_bank, row_url
+from .models import SOURCE_KEY, URL_KEY
 from .sources.ecb_foedb import discover_ecb_interviews
 from .storage import Storage
 
@@ -130,10 +130,10 @@ def build_report(fetcher: Fetcher, manifest_rows: Iterable[dict]) -> tuple[dict,
     changes: list[dict] = []
 
     for row in manifest_rows:
-        if row_bank(row) != "ecb" or row.get("doc_type") != "C2":
+        if row.get(SOURCE_KEY) != "ecb" or row.get("doc_type") != "C2":
             continue
         summary["manifest_total"] += 1
-        url = row_url(row) or ""
+        url = row.get(URL_KEY) or ""
         native, match_type = _match_native(url, native_by_url)
 
         if native is None:

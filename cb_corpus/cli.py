@@ -17,6 +17,7 @@ from pathlib import Path
 from .banks import BIS_63
 from .completeness import build_matrix, export_csv, summarize
 from .config import Config
+from .models import ContractRowError, LegacyKeyError
 from .convert import convert_existing
 from .pipeline import (run, run_bis_sitemap, run_repec,
                        reindex_bis_from_disk, reindex_native_from_disk)
@@ -58,6 +59,13 @@ def _types(s: str) -> tuple:
     return tuple(by_code(c.strip()) for c in s.split(",") if c.strip())
 
 
+def _non_negative(s: str) -> int:
+    n = int(s)
+    if n < 0:
+        raise argparse.ArgumentTypeError(f"must be >= 0, got {n}")
+    return n
+
+
 def _banks(s: str) -> list[str] | None:
     return [c for c in s.split(",") if c] or None
 
@@ -74,6 +82,20 @@ def _temps_moved_note(summary) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """The CLI. A stored row or entry in a form this code no longer reads
+    (models.ContractRowError: a manifest row outside the documents contract;
+    models.LegacyKeyError: a recover-downloads input under a renamed key) is
+    one `error: ...` line on stderr naming the fix, exit 1 -- not a
+    traceback. A reporting command catches it first, like any crash, and
+    records it in runs.jsonl as `outcome: failed` (exit 1 too)."""
+    try:
+        return _main(argv)
+    except (ContractRowError, LegacyKeyError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+
+def _main(argv: list[str] | None) -> int:
     p = argparse.ArgumentParser(prog="cb_corpus")
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -293,7 +315,7 @@ def main(argv: list[str] | None = None) -> int:
     rdl.add_argument("--candidates", default="",
                      help="JSONL of externally-recovered docs ({dead_document_url, file_path, "
                           "recovered_from: wayback|bank_site|mirror, final_url, title?}; "
-                          "the old key dead_pdf_url is still read) -- "
+                          "a line still using the old key dead_pdf_url is refused) -- "
                           "switches to candidates-only mode, no CDX walk; --download registers "
                           "them into the corpus via Storage.reindex")
     rdl.add_argument("--seed-quarantine", default="",
@@ -329,12 +351,17 @@ def main(argv: list[str] | None = None) -> int:
                              "data/ prefix, undated rows without date_precision/date_kind) "
                              "under each file's sidecar lock, and write vocabulary.json at "
                              "the data root. Default dry-run (counts only); exit 1 when a "
-                             "row carries both bank_code and source_code or an absolute "
-                             "path outside the data root.")
+                             "row carries both bank_code and source_code, an absolute "
+                             "path outside the data root, or anything else the readers "
+                             "would still refuse (refused=N, left as is).")
     mc.add_argument("--banks", default="",
                     help="restrict to these manifests")
     mc.add_argument("--write", action="store_true",
                     help="rewrite the files (idempotent: a second run upgrades nothing)")
+    mc.add_argument("--show-ids", type=_non_negative, default=None, metavar="N",
+                    help="how many doc_ids the report lists per kind of error and "
+                         "file, and how many refused rows it explains one line "
+                         "each (default 20; 0 = all)")
 
     args = p.parse_args(argv)
     banks = _banks(getattr(args, "banks", ""))
@@ -577,10 +604,11 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
-        for line in _mc.report_lines(result, write=args.write):
+        show = _mc.SHOW_IDS_DEFAULT if args.show_ids is None else args.show_ids
+        for line in _mc.report_lines(result, write=args.write, show_ids=show):
             print(line)
         t = _mc.summary(result)
-        return 1 if (t["both"] or t["bad_path"]) else 0
+        return 1 if (t["both"] or t["bad_path"] or t["refused"]) else 0
 
     if args.cmd == "recover-downloads":
         from .recover import run_recover_downloads

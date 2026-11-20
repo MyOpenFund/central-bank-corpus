@@ -1,6 +1,7 @@
 """The 2026-11-19 field rename `pdf_url` -> `document_url`: no doc_id moves,
-the transition fallback (models.row_url / models.upgrade_row) reads rows
-written under the old name, and every rewrite path writes the new name only."""
+every writer writes the new name, and since the transition cleanup
+(2026-11-20) a row, download-error entry or recover candidate still under the
+old name is refused loudly, naming its one-shot fix."""
 from __future__ import annotations
 
 import json
@@ -9,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from cb_corpus.config import Config
-from cb_corpus.models import DocRecord, compute_doc_id, row_url, upgrade_row
+from cb_corpus.models import ContractRowError, DocRecord, compute_doc_id
 from cb_corpus.storage import (Storage, apply_row_updates, iter_manifest_rows,
                                merge_rows_locked)
 from cb_corpus.taxonomy import DocType
@@ -49,7 +50,8 @@ def test_committed_manifest_doc_ids_hash_the_url_value():
             if not line.strip():
                 continue
             row = json.loads(line)
-            assert compute_doc_id(row["bank_code"], row["doc_type"], row_url(row)) == row["doc_id"]
+            assert compute_doc_id(row["source_code"], row["doc_type"],
+                                  row["document_url"]) == row["doc_id"]
             n += 1
     assert n > 0
 
@@ -62,43 +64,12 @@ def test_to_row_keeps_the_field_position():
                              "source_url"]
 
 
-# -- row_url / upgrade_row ---------------------------------------------------
-
-def test_row_url_reads_new_then_old_key():
-    assert row_url({"document_url": "n"}) == "n"
-    assert row_url({"pdf_url": "o"}) == "o"
-    assert row_url({"document_url": "n", "pdf_url": "o"}) == "n"
-    assert row_url({"document_url": None, "pdf_url": "o"}) is None   # new key present wins
-    assert row_url({}) is None
-    assert row_url({"dead_pdf_url": "d"}, "dead_document_url") == "d"
-    assert row_url({"dead_document_url": "n", "dead_pdf_url": "d"}, "dead_document_url") == "n"
-
-
-def test_upgrade_row_renames_in_place_keeping_position_and_values():
-    row = {"bank_code": "xx", "title": "t", "pdf_url": "u", "source_url": "s",
-           "retired_duplicates": [{"doc_id": "r1", "pdf_url": "ru", "at": "x"}, "junk"]}
-    same = upgrade_row(row)
-    assert same is row
-    # (the documents-contract upgrade also adds corpus and renames bank_code)
-    assert list(row) == ["corpus", "source_code", "title", "document_url", "source_url",
-                         "retired_duplicates"]
-    assert row["document_url"] == "u"
-    assert list(row["retired_duplicates"][0]) == ["doc_id", "document_url", "at"]
-    assert row["retired_duplicates"][1] == "junk"
-
-
-def test_upgrade_row_leaves_both_names_alone():
-    row = {"pdf_url": "o", "document_url": "n"}
-    assert upgrade_row(row) == {"corpus": "central-bank", "pdf_url": "o", "document_url": "n"}
-    assert upgrade_row({"document_url": "n"}) == {"corpus": "central-bank", "document_url": "n"}
-
-
-# -- storage: read under the old name, rewrite under the new one -------------
+# -- an old name is refused, never read as a missing URL ---------------------
 
 def _legacy_row(bank: str, i: int, **extra) -> dict:
     url = f"https://example.org/{bank}/{i}.pdf"
-    return {"bank_code": bank, "doc_type": "D1", "title": f"t{i}", "pdf_url": url,
-            "source_url": f"https://example.org/{bank}/{i}.html", "date": None,
+    return {"corpus": "central-bank", "source_code": bank, "doc_type": "D1", "title": f"t{i}",
+            "pdf_url": url, "source_url": f"https://example.org/{bank}/{i}.html", "date": None,
             "doc_id": compute_doc_id(bank, "D1", url), "year": None, **extra}
 
 
@@ -110,60 +81,60 @@ def _write_raw(cfg: Config, bank: str, rows: list[dict], tail: str = "") -> Path
     return path
 
 
-def _disk_rows(path: Path) -> list[dict]:
-    return [json.loads(ln) for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
-
-
-def test_legacy_rows_are_read_under_the_new_name(tmp_path):
+def test_a_manifest_row_under_the_old_name_is_refused(tmp_path):
     cfg = Config(data_dir=tmp_path)
     _write_raw(cfg, "xx", [_legacy_row("xx", 1)])
-    rows = list(iter_manifest_rows(cfg))
-    assert "pdf_url" not in rows[0] and rows[0]["document_url"] == "https://example.org/xx/1.pdf"
-    st = Storage(cfg)
-    assert st.is_known_url("https://example.org/xx/1.pdf")
+    with pytest.raises(ContractRowError, match="pdf_url.*migrate-contract"):
+        list(iter_manifest_rows(cfg))
+    with pytest.raises(ContractRowError, match="pdf_url"):
+        Storage(cfg)
 
 
-def test_apply_row_updates_from_a_legacy_snapshot_writes_the_new_name_only(tmp_path):
+def test_writers_refuse_a_row_under_the_old_name(tmp_path):
     cfg = Config(data_dir=tmp_path)
-    path = _write_raw(cfg, "xx", [_legacy_row("xx", 1), _legacy_row("xx", 2)])
-    snap = list(iter_manifest_rows(cfg))
-    upd = dict(snap[0]); upd["title"] = "new"
-    # a caller handing a raw legacy dict is upgraded too
-    raw = _legacy_row("xx", 2, title="raw")
-    assert apply_row_updates(cfg, {upd["doc_id"]: upd, raw["doc_id"]: raw}) == 2
-    on_disk = _disk_rows(path)
-    for row in on_disk:
-        assert "pdf_url" not in row and list(row)[4] == "document_url"   # after corpus
-    assert [r["title"] for r in on_disk] == ["new", "raw"]
+    good = _legacy_row("xx", 1)
+    good["document_url"] = good.pop("pdf_url")
+    path = _write_raw(cfg, "xx", [good])
+    before = path.read_bytes()
+    with pytest.raises(ContractRowError, match="pdf_url"):
+        apply_row_updates(cfg, {good["doc_id"]: _legacy_row("xx", 1, title="raw")})
+    dup = dict(good, retired_duplicates=[{"doc_id": "r", "pdf_url": "u"}])
+    with pytest.raises(ContractRowError, match="pdf_url"):
+        apply_row_updates(cfg, {good["doc_id"]: dup})
+    assert path.read_bytes() == before
 
 
-def test_merge_rows_locked_rewrites_a_changed_legacy_row_under_the_new_name(tmp_path):
+def test_merge_on_a_row_under_the_old_name_is_refused(tmp_path):
     cfg = Config(data_dir=tmp_path)
-    r1, r2 = _legacy_row("xx", 1), _legacy_row("xx", 2)
-    path = _write_raw(cfg, "xx", [r1, r2])
-    untouched_line = path.read_text(encoding="utf-8").splitlines()[1]
-
-    def merge(row):
-        assert row_url(row) == r1["pdf_url"] and "pdf_url" not in row
-        row["title"] = "merged"
-        return True
-
-    assert merge_rows_locked(cfg, {"xx": {r1["doc_id"]: merge}}) == 1
-    lines = path.read_text(encoding="utf-8").splitlines()
-    first = json.loads(lines[0])
-    assert "pdf_url" not in first and first["document_url"] == r1["pdf_url"]
-    assert lines[1] == untouched_line          # an unchanged row stays verbatim
+    r1 = _legacy_row("xx", 1)
+    path = _write_raw(cfg, "xx", [r1])
+    before = path.read_bytes()
+    with pytest.raises(ContractRowError, match="pdf_url"):
+        merge_rows_locked(cfg, {"xx": {r1["doc_id"]: lambda row: True}})
+    assert path.read_bytes() == before
 
 
-def test_recover_inventory_reads_legacy_download_errors(tmp_path):
+def test_recover_inventory_refuses_an_entry_under_the_old_name(tmp_path):
     from cb_corpus.recover import _read_inventory
     cfg = Config(data_dir=tmp_path)
     p = tmp_path / "download_errors.jsonl"
-    p.write_text(json.dumps({"bank_code": "fr", "pdf_url": "https://x/old.pdf"}) + "\n"
-                 + json.dumps({"bank_code": "fr", "document_url": "https://x/new.pdf"}) + "\n",
+    p.write_text(json.dumps({"bank_code": "fr", "document_url": "https://x/new.pdf"}) + "\n"
+                 + json.dumps({"bank_code": "fr", "pdf_url": "https://x/old.pdf"}) + "\n",
                  encoding="utf-8")
-    assert sorted(row_url(e) for e in _read_inventory(cfg)) == [
-        "https://x/new.pdf", "https://x/old.pdf"]
+    with pytest.raises(ValueError, match=r"download_errors.jsonl:2:.*migrate-document-url"):
+        _read_inventory(cfg)
+    p.write_text(json.dumps({"bank_code": "fr", "document_url": "https://x/new.pdf"}) + "\n",
+                 encoding="utf-8")
+    assert [e["document_url"] for e in _read_inventory(cfg)] == ["https://x/new.pdf"]
+
+
+def test_recover_candidates_refuse_the_old_key(tmp_path):
+    from cb_corpus.recover import _read_candidates
+    p = tmp_path / "cands.jsonl"
+    p.write_text(json.dumps({"dead_document_url": "https://x/a.pdf", "file_path": "a"}) + "\n"
+                 + json.dumps({"dead_pdf_url": "https://x/b.pdf", "file_path": "b"}) + "\n")
+    with pytest.raises(ValueError, match=r"cands.jsonl:2: rename the key `dead_pdf_url`"):
+        _read_candidates(str(p))
 
 
 def test_download_error_log_is_written_under_the_new_name(tmp_path):
