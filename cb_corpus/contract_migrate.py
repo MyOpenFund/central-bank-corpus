@@ -175,8 +175,10 @@ class FileCounts:
     `bad_path_ids`). `refused`: a row the readers would still refuse once
     upgraded (models.contract_problems: `pdf_url` and `document_url` both,
     an empty `source_code`, another `corpus`), left as is, an error (see
-    `refused_ids`). `torn`: malformed final line
-    (dropped on a --write rewrite)."""
+    `refused_ids`; `refused_why`, parallel to it, holds each row's
+    contract_problems phrases and `refused_reasons` counts each phrase:
+    such a row is fixed by hand, see fix_by_hand). `torn`: malformed final
+    line (dropped on a --write rewrite)."""
     path: str
     upgraded: int = 0
     unchanged: int = 0
@@ -196,6 +198,8 @@ class FileCounts:
     both_ids: list[str] = field(default_factory=list)
     bad_path_ids: list[str] = field(default_factory=list)
     refused_ids: list[str] = field(default_factory=list)
+    refused_why: list[list[str]] = field(default_factory=list)
+    refused_reasons: dict[str, int] = field(default_factory=dict)
 
     @property
     def rows(self) -> int:
@@ -267,11 +271,15 @@ def _migrate_file(path: Path, cfg: Config, *, write: bool) -> FileCounts:
                 out.append(raw)
                 continue
             changes += [k for k in rel if k not in changes]
-            if contract_problems(new):
+            probs = contract_problems(new)
+            if probs:
                 # what every reader would still refuse: never guessed at,
                 # never "unchanged"; the whole row left as is, exit 1
                 counts.refused += 1
                 counts.refused_ids.append(did)
+                counts.refused_why.append(probs)
+                for p in probs:
+                    counts.refused_reasons[p] = counts.refused_reasons.get(p, 0) + 1
                 out.append(raw)
                 continue
             for name in changes:
@@ -338,9 +346,11 @@ _TOTAL_KEYS = ("upgraded", "unchanged", "both", "corpus", "source_code", "docume
                "local_path", "html_path", "date_precision", "date_kind", "bad_path",
                "refused", "torn")
 
-#: How many doc_ids a report line lists per kind of error (the result keeps
-#: them all); the rest is summed up as "(+N more)".
-IDS_SHOWN = 20
+#: How many doc_ids the report lists per kind of error and file, and how many
+#: refused rows it explains one line each (the result keeps them all); the
+#: rest is summed up as "(+N more)". The CLI's `--show-ids N` default; 0 =
+#: all.
+SHOW_IDS_DEFAULT = 20
 
 
 def summary(result: MigrationResult) -> dict:
@@ -362,24 +372,61 @@ def _counts(d) -> str:
             f"refused={get('refused')} torn={get('torn')}")
 
 
-def _ids(name: str, ids: list[str]) -> str:
-    """` <name>=a,b,c` (at most IDS_SHOWN ids, then ` (+N more)`), or ""."""
+def _ids(name: str, ids: list[str], show: int) -> str:
+    """` <name>=a,b,c` (at most `show` ids, 0 = all, then ` (+N more)`), or ""."""
     if not ids:
         return ""
-    more = f" (+{len(ids) - IDS_SHOWN} more)" if len(ids) > IDS_SHOWN else ""
-    return f" {name}={','.join(ids[:IDS_SHOWN])}{more}"
+    n = show or len(ids)
+    more = f" (+{len(ids) - n} more)" if len(ids) > n else ""
+    return f" {name}={','.join(ids[:n])}{more}"
 
 
-def report_lines(result: MigrationResult, *, write: bool) -> list[str]:
+def fix_by_hand(problem: str, bank: str) -> str:
+    """How an operator fixes a refused row for one contract_problems phrase
+    (what remains after the upgrade: migrate-contract handles the rest)."""
+    if "pdf_url" in problem:
+        return ("remove `pdf_url` (on the row or its retired_duplicates entry) once its "
+                "URL is checked against `document_url`; keep `document_url`")
+    if problem == f"no `{SOURCE_KEY}`":
+        return f"fill `{SOURCE_KEY}` with `{bank}` (this manifest's bank code)"
+    if problem.startswith("`corpus`"):
+        return ("move the row out of this manifest: it belongs to another corpus "
+                "(never relabel it)")
+    return "edit the row so its keys follow the documents contract"
+
+
+def report_lines(result: MigrationResult, *, write: bool,
+                 show_ids: int = SHOW_IDS_DEFAULT) -> list[str]:
+    """The report: one count line per file (ids listed up to `show_ids`, 0 =
+    all), then per file with refused rows its per-reason counts and one line
+    per listed refused id (its problems and how to fix it by hand), the
+    TOTAL, the vocabulary line and, when rows were refused, a closing line
+    saying this command cannot fix them."""
     head = "migrate-contract" + ("" if write else " (dry-run)")
     lines = []
     for r in result.files:
+        name = Path(r.path).name
         flag = " WRITTEN" if r.written else ""
-        lines.append(f"{head}: {Path(r.path).name}: {_counts(r)}{flag}"
-                     + _ids("both_ids", r.both_ids) + _ids("bad_path_ids", r.bad_path_ids)
-                     + _ids("refused_ids", r.refused_ids))
+        lines.append(f"{head}: {name}: {_counts(r)}{flag}"
+                     + _ids("both_ids", r.both_ids, show_ids)
+                     + _ids("bad_path_ids", r.bad_path_ids, show_ids)
+                     + _ids("refused_ids", r.refused_ids, show_ids))
+        if r.refused:
+            reasons = "; ".join(f"{p}={n}" for p, n in r.refused_reasons.items())
+            lines.append(f"{head}: {name}: refused reasons: {reasons}")
+            bank = Path(r.path).stem
+            n = show_ids or len(r.refused_ids)
+            for did, probs in zip(r.refused_ids[:n], r.refused_why[:n]):
+                fixes = "; ".join(dict.fromkeys(fix_by_hand(p, bank) for p in probs))
+                lines.append(f"{head}: {name}: refused {did}: {'; '.join(probs)} "
+                             f"-> fix by hand: {fixes}")
     t = summary(result)
     lines.append(f"{head}: TOTAL files={t['files']} {_counts(t)} "
                  f"files_written={t['files_written']}")
     lines.append(f"{head}: {VOCABULARY_FILE}: {result.vocabulary}")
+    if t["refused"]:
+        lines.append(f"{head}: {t['refused']} refused row(s) left as is: this command "
+                     f"cannot fix them; edit each by hand as its line says (no job "
+                     f"running; --show-ids 0 lists them all), then run this dry run "
+                     f"again")
     return lines

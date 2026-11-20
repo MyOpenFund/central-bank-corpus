@@ -236,7 +236,8 @@ the vault ingestion reads the same file as `VOCABULARY_PATH=/cbdata/vocabulary.j
 migration). A row in an older form -- no `corpus`, `bank_code`, `pdf_url`, a `data/raw/...`
 or absolute path -- stops the command (exit 1) with one stderr line `error: <bank>.jsonl:
 manifest row '<doc_id>' is not in the documents-contract form (...): run python -m cb_corpus
-migrate-contract --write once on this data root`; a nightly job (`discover`, `bis-sitemap`,
+migrate-contract --write once on this data root; a row it then reports as refused cannot be
+migrated and is fixed by hand, as its report says (...)`; a nightly job (`discover`, `bis-sitemap`,
 `repec`) records the same message as `fatal: "ContractRowError: ..."` in `runs.jsonl`
 (`outcome: failed`). It stops at the first read of that manifest, before any manifest row is
 written; what runs before that read may already have happened: `vocabulary.json` rewritten (the
@@ -251,19 +252,30 @@ image appended rows. **Repair:** every container on the current image, then `cb-
 `command: ["/app/deploy/run-job.sh", "campaign", "migrate-contract"]` and "Mettre à jour"
 (dry run: per-file counts in the container log, nothing written; `both=0`, `bad_path=0`,
 `refused=0` are what matter), then the same with `"--write"` (each manifest rewritten under its sidecar lock;
-the autocommit pushes them; a pre-split single `manifest.jsonl` is split per bank first), then
+the autocommit pushes them only on a clean run, exit 0; a pre-split single `manifest.jsonl` is split per bank first), then
 the dry run once more: `upgraded=0` everywhere. For `download_errors.jsonl`, the same with
 `migrate-document-url`. Both one-shots work on the raw JSON and are safe to repeat.
 
-Exit 1 of `migrate-contract` has three causes, all visible in the log: a row carrying both
+Exit 1 of `migrate-contract` has four causes, all visible in the log: a row carrying both
 `bank_code` and `source_code` (left untouched, `both_ids=` lists its `doc_id`), a path the
 migration cannot make relative to the data root -- an absolute path outside it, or
-`data//...`, `data/data/...` (the row left untouched, `bad_path_ids=`) -- or a malformed line
+`data//...`, `data/data/...` (the row left untouched, `bad_path_ids=`), a row the readers
+would still refuse once upgraded (`refused=N`, see below) -- or a malformed line
 before the end of a manifest (the run stops there; files sorted before it are already
 rewritten, the bad file is untouched). `migrate-document-url` exits 1 on a row carrying both
 URL names or a malformed earlier manifest line. On exit 1 `run-job.sh` marks the run FAILED
 and skips the autocommit; fix the cause and run `--write` again. Both rewrite each file
 through a temp file, fsynced before `os.replace` and removed on any failure.
+
+**When `refused>0`:** the migration cannot fix those rows (it would have to guess) and leaves
+them as is. The log has a `<bank>.jsonl: refused reasons:` line (a count per problem) and, per
+listed row, `refused <doc_id>: <problems> -> fix by hand: <what to do>`; add `"--show-ids",
+"0"` to the command to list every row (default 20). With no job running, edit each row in the
+manifest on the NAS: `pdf_url` next to `document_url` (on the row or a `retired_duplicates`
+entry) -- check both carry the same URL, remove `pdf_url`; an empty `source_code` -- fill it
+with the file's bank code; another `corpus` -- move the row out of this manifest (it is not a
+central-bank document; never relabel it). Then the dry run again until `refused=0`, then
+`--write`.
 
 **Rollback** of the transition cleanup: the image of `0d96289` (#46, the documents contract,
 the last image before the cleanup: `ghcr.io/myopenfund/central-bank-corpus:0d962893c193f9640f81fbbd05753429610624d7`)

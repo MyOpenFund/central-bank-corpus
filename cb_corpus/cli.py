@@ -59,6 +59,13 @@ def _types(s: str) -> tuple:
     return tuple(by_code(c.strip()) for c in s.split(",") if c.strip())
 
 
+def _non_negative(s: str) -> int:
+    n = int(s)
+    if n < 0:
+        raise argparse.ArgumentTypeError(f"must be >= 0, got {n}")
+    return n
+
+
 def _banks(s: str) -> list[str] | None:
     return [c for c in s.split(",") if c] or None
 
@@ -351,6 +358,10 @@ def _main(argv: list[str] | None) -> int:
                     help="restrict to these manifests")
     mc.add_argument("--write", action="store_true",
                     help="rewrite the files (idempotent: a second run upgrades nothing)")
+    mc.add_argument("--show-ids", type=_non_negative, default=None, metavar="N",
+                    help="how many doc_ids the report lists per kind of error and "
+                         "file, and how many refused rows it explains one line "
+                         "each (default 20; 0 = all)")
 
     args = p.parse_args(argv)
     banks = _banks(getattr(args, "banks", ""))
@@ -593,7 +604,8 @@ def _main(argv: list[str] | None) -> int:
         except ValueError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
-        for line in _mc.report_lines(result, write=args.write):
+        show = _mc.SHOW_IDS_DEFAULT if args.show_ids is None else args.show_ids
+        for line in _mc.report_lines(result, write=args.write, show_ids=show):
             print(line)
         t = _mc.summary(result)
         return 1 if (t["both"] or t["bad_path"] or t["refused"]) else 0

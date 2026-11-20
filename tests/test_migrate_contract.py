@@ -402,12 +402,94 @@ def test_refused_counts_and_ids_on_the_result(tmp_path):
 
 
 def test_refused_ids_list_is_capped_in_the_report(tmp_path):
-    from cb_corpus.contract_migrate import IDS_SHOWN, report_lines
+    from cb_corpus.contract_migrate import SHOW_IDS_DEFAULT, report_lines
+    assert SHOW_IDS_DEFAULT == 20
     cfg = Config(data_dir=tmp_path / "data")
-    n = IDS_SHOWN + 5
+    n = SHOW_IDS_DEFAULT + 5
     _write(cfg.manifest_file("aa"), [_REFUSED["wrong_corpus"]("aa", i) for i in range(n)])
     res = migrate_contract(cfg)
-    line = report_lines(res, write=False)[0]
-    shown = line.split("refused_ids=")[1].split()[0].split(",")
-    assert len(shown) == IDS_SHOWN and "(+5 more)" in line
+    lines = report_lines(res, write=False)
+    shown = lines[0].split("refused_ids=")[1].split()[0].split(",")
+    assert len(shown) == SHOW_IDS_DEFAULT and "(+5 more)" in lines[0]
+    # one "why" line per listed id, no more
+    assert sum(1 for ln in lines if ": refused " in ln
+               and "reasons" not in ln) == SHOW_IDS_DEFAULT
     assert len(res.files[0].refused_ids) == n            # the result keeps them all
+
+
+# --- why a row is refused, and how to fix it by hand --------------------------
+
+_WHY = {
+    "both_urls": ("pre-2026-11-19 `pdf_url`", "remove `pdf_url`"),
+    "dup_both_urls": ("pre-2026-11-19 `pdf_url`", "remove `pdf_url`"),
+    "empty_source": ("no `source_code`", "fill `source_code` with `aa`"),
+    "wrong_corpus": ("`corpus` is 'news', not 'central-bank'", "move the row out"),
+}
+
+
+@pytest.mark.parametrize("kind", sorted(_REFUSED))
+def test_the_report_says_why_each_listed_row_is_refused_and_how_to_fix_it(
+        tmp_path, monkeypatch, capsys, kind):
+    cfg = Config(data_dir=tmp_path / "data")
+    bad = _REFUSED[kind]("aa", 2)
+    _write(cfg.manifest_file("aa"), [_row("aa", 1), bad])
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["migrate-contract"]) == 1
+    out = capsys.readouterr().out
+    phrase, fix = _WHY[kind]
+    assert f"aa.jsonl: refused reasons: {phrase}=1" in out
+    why = [ln for ln in out.splitlines() if f"aa.jsonl: refused {bad['doc_id']}: " in ln]
+    assert len(why) == 1 and phrase in why[0] and f"fix by hand: {fix}" in why[0]
+    # the closing line: by hand, never "run migrate-contract --write" again
+    tail = [ln for ln in out.splitlines() if "refused=" not in ln and "by hand" in ln
+            and ": refused " not in ln]
+    assert len(tail) == 1 and "cannot fix" in tail[0]
+    assert "--write" not in "\n".join(why + tail)
+
+
+def test_refused_reasons_are_counted_per_file(tmp_path):
+    from cb_corpus.contract_migrate import report_lines
+    cfg = Config(data_dir=tmp_path / "data")
+    rows = ([_REFUSED["wrong_corpus"]("aa", i) for i in range(3)]
+            + [_REFUSED["both_urls"]("aa", 7)])
+    _write(cfg.manifest_file("aa"), rows)
+    res = migrate_contract(cfg)
+    f = res.files[0]
+    assert f.refused_reasons == {"`corpus` is 'news', not 'central-bank'": 3,
+                                 "pre-2026-11-19 `pdf_url`": 1}
+    assert f.refused_why[-1] == ["pre-2026-11-19 `pdf_url`"]
+    line = [ln for ln in report_lines(res, write=False) if "refused reasons:" in ln][0]
+    assert line.endswith("refused reasons: `corpus` is 'news', not 'central-bank'=3; "
+                         "pre-2026-11-19 `pdf_url`=1")
+
+
+def test_a_clean_run_has_no_refused_lines(tmp_path):
+    from cb_corpus.contract_migrate import report_lines
+    cfg = Config(data_dir=tmp_path / "data")
+    _write(cfg.manifest_file("aa"), [_row("aa", 1)])
+    lines = report_lines(migrate_contract(cfg), write=False)
+    assert not [ln for ln in lines if "refused " in ln or "by hand" in ln]
+
+
+@pytest.mark.parametrize("flag,shown", [(["--show-ids", "3"], 3), (["--show-ids", "0"], 25),
+                                        ([], 20)])
+def test_show_ids_sets_how_many_ids_and_why_lines_the_report_lists(
+        tmp_path, monkeypatch, capsys, flag, shown):
+    cfg = Config(data_dir=tmp_path / "data")
+    _write(cfg.manifest_file("aa"), [_REFUSED["wrong_corpus"]("aa", i) for i in range(25)])
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["migrate-contract"] + flag) == 1
+    out = capsys.readouterr().out
+    first = out.splitlines()[0]
+    assert len(first.split("refused_ids=")[1].split()[0].split(",")) == shown
+    assert ("more)" in first) == (shown < 25)
+    assert sum(1 for ln in out.splitlines() if "aa.jsonl: refused " in ln
+               and "reasons" not in ln) == shown
+
+
+def test_show_ids_is_documented_and_never_negative(capsys):
+    with pytest.raises(SystemExit):
+        cli.main(["migrate-contract", "--help"])
+    assert "--show-ids" in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        cli.main(["migrate-contract", "--show-ids", "-1"])
