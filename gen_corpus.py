@@ -139,8 +139,10 @@ def build_corpus_md(cfg: Config) -> str:
         W(f"| {t} | " + " | ".join(str(ty_dec[t].get(d, 0) or "—") for d in decs) + " |")
 
     W("\n## 6. RAG ingestion notes (see `INGESTION_RAG.md` for detail)\n")
-    W("- Filters: `bank_code`, `doc_type`, `year`, `provenance`.")
-    W("- Citation: `document_url` + `title` + `date`. Loading: `local_path`.")
+    W("- Filters: `source_code` (the bank; `bank_code` before 2026-11-20), `doc_type`, "
+      "`year`, `provenance`.")
+    W("- Citation: `document_url` + `title` + `date`. Loading: `local_path` "
+      "(relative to `data/`).")
     W("- Dedup already done (`sha256`). `text/html` rows are indexed documents too.")
     if total:
         W(f"- Composition: speeches {100*bytype['C1']//total}% · working papers "

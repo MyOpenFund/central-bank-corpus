@@ -32,7 +32,7 @@ import sys
 from datetime import date
 from typing import Iterable, Optional
 
-from .config import Config
+from .config import LEGACY_DATA_PREFIX, Config
 from .http import Fetcher
 from .models import row_bank, row_url
 from .sources.wayback import first_capture
@@ -194,6 +194,18 @@ def pdf_creation_date(local_path: Optional[str]) -> Optional[date]:
         return None
 
 
+def _file_evidence(stored: Optional[str]) -> str:
+    """`evidence_url` of a PDF /CreationDate hit. The committed index spells
+    every one `file://data/raw/...` (the path as seen from the app directory,
+    the manifests' form before the documents contract); it is evidence text,
+    never read back as a path, so new entries keep that single spelling
+    whichever form the row stores (`raw/...` or `data/raw/...`)."""
+    s = stored or ""
+    if s and not s.startswith("/") and not s.startswith(LEGACY_DATA_PREFIX):
+        s = LEGACY_DATA_PREFIX + s
+    return f"file://{s}"
+
+
 def _abs_variant(url: Optional[str]) -> Optional[str]:
     """The Fed PDF<->abstract sibling next to `url` (…NNNpap.pdf <-> …NNNabs.html)."""
     if url and url.endswith("pap.pdf"):
@@ -234,7 +246,7 @@ def recover(fetcher: Fetcher, row: dict, use_wayback: bool = True,
     cd = pdf_creation_date(str(on_disk) if on_disk else None)
     if month_ok(cd, row):
         return {"date": cd.isoformat(), "date_source": "pdf_meta",
-                "evidence_url": f"file://{row.get('local_path')}"}
+                "evidence_url": _file_evidence(row.get("local_path"))}
     if not use_wayback:
         return None
     for url in _url_variants(row):

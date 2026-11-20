@@ -190,3 +190,20 @@ def test_orphan_resolver_reads_either_form(elsewhere, form):
     from cb_corpus.orphans import _resolve_local_path
     assert _resolve_local_path(elsewhere, _stored(form, "raw/us/C1/2015/a.pdf")) == \
         elsewhere.raw_dir / "us" / "C1" / "2015" / "a.pdf"
+
+
+@pytest.mark.parametrize("form", FORMS)
+def test_wp_dates_evidence_keeps_the_committed_index_form(elsewhere, form):
+    """The committed wp_dates_index.jsonl spells PDF evidence
+    `file://data/raw/...` (1,309 entries on 2026-11-20, the path as seen from
+    the app directory). It is evidence text, never read back as a path, so a
+    new entry keeps that one spelling whichever form the row stores."""
+    from cb_corpus.wp_dates import recover
+    rel = "raw/us/D1/2002/x.pdf"
+    p = elsewhere.data_dir / rel
+    p.parent.mkdir(parents=True)
+    p.write_bytes(b"%PDF-1.4 /CreationDate (D:20020115120000) x")
+    row = {"date": "2002-01-01", "document_url": "https://x/200201pap.pdf",
+           "local_path": _stored(form, rel)}
+    r = recover(object(), row, use_wayback=False, cfg=elsewhere)
+    assert r["evidence_url"] == "file://data/raw/us/D1/2002/x.pdf"
