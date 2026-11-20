@@ -242,7 +242,7 @@ filed under the bank `_unknown`. A `download_errors.jsonl` entry still under `pd
 manifest was restored from a backup older than `5fec83a`, or a container on a pre-contract
 image appended rows. **Repair:** every container on the current image, then `cb-campain` with
 `command: ["/app/deploy/run-job.sh", "campaign", "migrate-contract"]` and "Mettre à jour"
-(dry run: per-file counts in the container log, nothing written; `both=0`, `bad_path=0` are
+(dry run: per-file counts in the container log, nothing written; `both=0`, `bad_path=0`, `refused=0` are
 what matter), then the same with `"--write"` (each manifest rewritten under its sidecar lock;
 the autocommit pushes them; a pre-split single `manifest.jsonl` is split per bank first), then
 the dry run once more: `upgraded=0` everywhere. For `download_errors.jsonl`, the same with

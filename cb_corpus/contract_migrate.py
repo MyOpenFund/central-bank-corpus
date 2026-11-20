@@ -21,6 +21,17 @@ every key keeping its position, every other value unchanged):
   - an undated row: `date_precision` nulled and `date_kind` dropped (no date,
     no precision, no kind -- the vault would only notice them).
 
+The upgraded row is then held to the readers' own check
+(models.contract_problems): a row they would still refuse -- `pdf_url` AND
+`document_url` (in the row or a `retired_duplicates` entry), an empty
+`source_code`, another `corpus` -- is not something this command can fix
+without guessing, so it is never counted `unchanged`: it is `refused`, left
+as is and reported by doc_id (exit 1). Like `both` and `bad_path`, the
+verdict is per row: the file's other rows are still upgraded (the command
+has never been all-or-nothing per file; a refused row is kept byte-identical
+either way, so the file is no worse, and a rerun after the hand fix reports
+only what is left).
+
 It also writes `vocabulary.json` at the data root (vocabulary.write_vocabulary).
 
 Files handled: every per-bank manifest `data/manifest/<bank>.jsonl`; with
@@ -58,7 +69,7 @@ from .config import Config
 from .document_url_migrate import (LEGACY_URL_KEY, _read_lines_dry, _read_lines_locked,
                                    rewrite_file)
 from .filelock import locked_sidecar
-from .models import CORPUS, PATH_KEYS, SOURCE_KEY, URL_KEY
+from .models import CORPUS, PATH_KEYS, SOURCE_KEY, URL_KEY, contract_problems
 from .storage import migrate_legacy_layout
 from .vocabulary import VOCABULARY_FILE, vocabulary_bytes, write_vocabulary
 
@@ -161,7 +172,10 @@ class FileCounts:
     relative to the data root, `date_precision` nulled / `date_kind` dropped
     on an undated row. `bad_path`: an absolute path outside the data root
     or an unclean `data/` prefix (the row is left as is, an error, see
-    `bad_path_ids`). `torn`: malformed final line
+    `bad_path_ids`). `refused`: a row the readers would still refuse once
+    upgraded (models.contract_problems: `pdf_url` and `document_url` both,
+    an empty `source_code`, another `corpus`), left as is, an error (see
+    `refused_ids`). `torn`: malformed final line
     (dropped on a --write rewrite)."""
     path: str
     upgraded: int = 0
@@ -175,15 +189,17 @@ class FileCounts:
     date_precision: int = 0
     date_kind: int = 0
     bad_path: int = 0
+    refused: int = 0
     torn: int = 0
     unparsed: int = 0          # never set for a manifest (kept for the shared readers)
     written: bool = False
     both_ids: list[str] = field(default_factory=list)
     bad_path_ids: list[str] = field(default_factory=list)
+    refused_ids: list[str] = field(default_factory=list)
 
     @property
     def rows(self) -> int:
-        return self.upgraded + self.unchanged + self.both + self.bad_path
+        return self.upgraded + self.unchanged + self.both + self.bad_path + self.refused
 
 
 @dataclass
@@ -251,6 +267,13 @@ def _migrate_file(path: Path, cfg: Config, *, write: bool) -> FileCounts:
                 out.append(raw)
                 continue
             changes += [k for k in rel if k not in changes]
+            if contract_problems(new):
+                # what every reader would still refuse: never guessed at,
+                # never "unchanged"; the whole row left as is, exit 1
+                counts.refused += 1
+                counts.refused_ids.append(did)
+                out.append(raw)
+                continue
             for name in changes:
                 attr = _CHANGE_FIELDS[name]
                 setattr(counts, attr, getattr(counts, attr) + 1)
@@ -312,7 +335,12 @@ def migrate_contract(cfg: Config, *, write: bool = False,
 
 
 _TOTAL_KEYS = ("upgraded", "unchanged", "both", "corpus", "source_code", "document_url",
-               "local_path", "html_path", "date_precision", "date_kind", "bad_path", "torn")
+               "local_path", "html_path", "date_precision", "date_kind", "bad_path",
+               "refused", "torn")
+
+#: How many doc_ids a report line lists per kind of error (the result keeps
+#: them all); the rest is summed up as "(+N more)".
+IDS_SHOWN = 20
 
 
 def summary(result: MigrationResult) -> dict:
@@ -330,7 +358,16 @@ def _counts(d) -> str:
             f"both={get('both')} corpus={get('corpus')} source_code={get('source_code')} "
             f"document_url={get('document_url')} local_path={get('local_path')} "
             f"html_path={get('html_path')} date_precision={get('date_precision')} "
-            f"date_kind={get('date_kind')} bad_path={get('bad_path')} torn={get('torn')}")
+            f"date_kind={get('date_kind')} bad_path={get('bad_path')} "
+            f"refused={get('refused')} torn={get('torn')}")
+
+
+def _ids(name: str, ids: list[str]) -> str:
+    """` <name>=a,b,c` (at most IDS_SHOWN ids, then ` (+N more)`), or ""."""
+    if not ids:
+        return ""
+    more = f" (+{len(ids) - IDS_SHOWN} more)" if len(ids) > IDS_SHOWN else ""
+    return f" {name}={','.join(ids[:IDS_SHOWN])}{more}"
 
 
 def report_lines(result: MigrationResult, *, write: bool) -> list[str]:
@@ -339,8 +376,8 @@ def report_lines(result: MigrationResult, *, write: bool) -> list[str]:
     for r in result.files:
         flag = " WRITTEN" if r.written else ""
         lines.append(f"{head}: {Path(r.path).name}: {_counts(r)}{flag}"
-                     + (f" both_ids={','.join(r.both_ids)}" if r.both_ids else "")
-                     + (f" bad_path_ids={','.join(r.bad_path_ids)}" if r.bad_path_ids else ""))
+                     + _ids("both_ids", r.both_ids) + _ids("bad_path_ids", r.bad_path_ids)
+                     + _ids("refused_ids", r.refused_ids))
     t = summary(result)
     lines.append(f"{head}: TOTAL files={t['files']} {_counts(t)} "
                  f"files_written={t['files_written']}")

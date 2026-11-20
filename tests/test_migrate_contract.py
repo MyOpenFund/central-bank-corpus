@@ -353,3 +353,61 @@ def test_write_waits_for_a_writer_holding_the_sidecar_lock(tmp_path):
     proc.wait()
     assert elapsed >= hold * 0.8, f"migrate-contract ignored the sidecar lock ({elapsed:.2f}s)"
     assert res.files[0].upgraded == 1 and _lines(path)[0]["corpus"] == "central-bank"
+
+
+# --- the readers' verdict: a row they would refuse is never "unchanged" ---------
+
+def _both_urls(bank, i):
+    r = _row(bank, i)
+    return {**r, "pdf_url": r["document_url"]}
+
+
+_REFUSED = {
+    "both_urls": _both_urls,
+    "dup_both_urls": lambda b, i: _row(b, i, retired_duplicates=[
+        {"doc_id": "d", "document_url": "https://x/a.pdf", "pdf_url": "https://x/a.pdf"}]),
+    "empty_source": lambda b, i: _new(_row(b, i, bank_code="")),
+    "wrong_corpus": lambda b, i: {**_new(_row(b, i)), "corpus": "news"},
+}
+
+
+@pytest.mark.parametrize("kind", sorted(_REFUSED))
+@pytest.mark.parametrize("write", [False, True])
+def test_a_row_the_readers_refuse_is_reported_refused_never_unchanged(
+        tmp_path, monkeypatch, capsys, kind, write):
+    cfg = Config(data_dir=tmp_path / "data")
+    bad = _REFUSED[kind]("aa", 2)
+    path = _write(cfg.manifest_file("aa"), [_row("aa", 1), bad])
+    bad_line = path.read_text(encoding="utf-8").splitlines()[1]
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["migrate-contract"] + (["--write"] if write else [])) == 1
+    out = capsys.readouterr().out
+    assert "refused=1" in out and "upgraded=1 unchanged=0" in out
+    assert f"refused_ids={bad['doc_id']}" in out
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert lines[1] == bad_line                          # left as is, like both / bad_path
+    if write:
+        assert json.loads(lines[0])["source_code"] == "aa"   # the other row migrated
+
+
+def test_refused_counts_and_ids_on_the_result(tmp_path):
+    cfg = Config(data_dir=tmp_path / "data")
+    rows = [_REFUSED["wrong_corpus"]("aa", i) for i in range(3)] + [_new(_row("aa", 9))]
+    _write(cfg.manifest_file("aa"), rows)
+    res = migrate_contract(cfg)
+    f = res.files[0]
+    assert (f.rows, f.refused, f.unchanged, f.upgraded) == (4, 3, 1, 0)
+    assert f.refused_ids == [r["doc_id"] for r in rows[:3]]
+    assert summary(res)["refused"] == 3
+
+
+def test_refused_ids_list_is_capped_in_the_report(tmp_path):
+    from cb_corpus.contract_migrate import IDS_SHOWN, report_lines
+    cfg = Config(data_dir=tmp_path / "data")
+    n = IDS_SHOWN + 5
+    _write(cfg.manifest_file("aa"), [_REFUSED["wrong_corpus"]("aa", i) for i in range(n)])
+    res = migrate_contract(cfg)
+    line = report_lines(res, write=False)[0]
+    shown = line.split("refused_ids=")[1].split()[0].split(",")
+    assert len(shown) == IDS_SHOWN and "(+5 more)" in line
+    assert len(res.files[0].refused_ids) == n            # the result keeps them all

@@ -392,8 +392,10 @@ only when a row changed, so a rerun does nothing. Per file: `upgraded`, `unchang
 (`bank_code` **and** `source_code` on one row: left untouched, listed by `doc_id`, exit 1,
 never guessed), then the rows each change applies to (`corpus`, `source_code`,
 `document_url`, `local_path`, `html_path`, `date_precision`, `date_kind`), `bad_path` (an
-absolute path outside the data root: left as is, listed, exit 1) and `torn` (as
-`migrate-document-url`). `--banks` restricts to those manifests. Not migrated:
+absolute path outside the data root: left as is, listed, exit 1), `refused` (a row the
+readers would still refuse once upgraded -- `pdf_url` **and** `document_url`, an empty
+`source_code`, another `corpus`: left as is, listed, exit 1; the file's other rows are still
+upgraded) and `torn` (as `migrate-document-url`). Each id list shows the first 20. `--banks` restricts to those manifests. Not migrated:
 `download_errors.jsonl` and the cadence files are not documents rows (their `bank_code` is
 read back under that name by recover-downloads and cadence-watch). On the committed data
 (2026-11-20) the dry run counted 61 manifests, 39,664 rows, all `upgraded` (`local_path`

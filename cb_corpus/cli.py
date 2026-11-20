@@ -329,8 +329,9 @@ def main(argv: list[str] | None = None) -> int:
                              "data/ prefix, undated rows without date_precision/date_kind) "
                              "under each file's sidecar lock, and write vocabulary.json at "
                              "the data root. Default dry-run (counts only); exit 1 when a "
-                             "row carries both bank_code and source_code or an absolute "
-                             "path outside the data root.")
+                             "row carries both bank_code and source_code, an absolute "
+                             "path outside the data root, or anything else the readers "
+                             "would still refuse (refused=N, left as is).")
     mc.add_argument("--banks", default="",
                     help="restrict to these manifests")
     mc.add_argument("--write", action="store_true",
@@ -580,7 +581,7 @@ def main(argv: list[str] | None = None) -> int:
         for line in _mc.report_lines(result, write=args.write):
             print(line)
         t = _mc.summary(result)
-        return 1 if (t["both"] or t["bad_path"]) else 0
+        return 1 if (t["both"] or t["bad_path"] or t["refused"]) else 0
 
     if args.cmd == "recover-downloads":
         from .recover import run_recover_downloads
