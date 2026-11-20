@@ -1,5 +1,6 @@
 """Manifest paths (`local_path`, `html_path`) are relative to the data root
-(documents contract); readers still resolve the legacy `data/raw/...` form."""
+(documents contract), the only form read back: the pre-contract `data/raw/...`
+and absolute forms are refused, naming migrate-contract."""
 from __future__ import annotations
 
 from pathlib import Path

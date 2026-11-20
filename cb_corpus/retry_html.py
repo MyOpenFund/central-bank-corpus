@@ -121,7 +121,8 @@ def retry_failed(config: Optional[Config] = None,
         if row.get("mime_type") != "text/html":
             counts["skip"] = counts.get("skip", 0) + 1
             continue
-        # Either stored form, resolved against the data root (never the CWD).
+        # The contract form (`raw/...`), resolved against the data root (never
+        # the CWD); the manifest read has already refused any older form.
         html_path = cfg.resolve_stored_path(row.get("local_path"))
         url = row.get(URL_KEY)
         if html_path is None or not url:

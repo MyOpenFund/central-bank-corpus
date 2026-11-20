@@ -234,16 +234,23 @@ the vault ingestion reads the same file as `VOCABULARY_PATH=/cbdata/vocabulary.j
 
 **The image reads the contract form only** (since the transition cleanup that followed the NAS
 migration). A row in an older form -- no `corpus`, `bank_code`, `pdf_url`, a `data/raw/...`
-or absolute path -- stops the command with `ContractRowError: <bank>.jsonl: manifest row
-'<doc_id>' is not in the documents-contract form (...): run python -m cb_corpus
-migrate-contract --write once on this data root`, before anything is written; the row is never
-filed under the bank `_unknown`. A `download_errors.jsonl` entry still under `pdf_url` stops
-`recover-downloads` the same way, naming `migrate-document-url`. On the NAS this means a
+or absolute path -- stops the command (exit 1) with one stderr line `error: <bank>.jsonl:
+manifest row '<doc_id>' is not in the documents-contract form (...): run python -m cb_corpus
+migrate-contract --write once on this data root`; a nightly job (`discover`, `bis-sitemap`,
+`repec`) records the same message as `fatal: "ContractRowError: ..."` in `runs.jsonl`
+(`outcome: failed`). It stops at the first read of that manifest, before any manifest row is
+written; what runs before that read may already have happened: `vocabulary.json` rewritten (the
+nightly jobs), a torn final manifest line repaired (saved to `<file>.torn`), a pre-split
+`manifest.jsonl` split per bank. The row is never filed under the bank `_unknown`, and a new
+row the readers would refuse is never appended. A `download_errors.jsonl` entry still under
+`pdf_url` (or a `--candidates` line under `dead_pdf_url`) stops `recover-downloads` the same
+way, naming the fix. The ntfy push carries only the first 500 bytes of the `runs.jsonl` line:
+read the full message there or in the job log. On the NAS this means a
 manifest was restored from a backup older than `5fec83a`, or a container on a pre-contract
 image appended rows. **Repair:** every container on the current image, then `cb-campain` with
 `command: ["/app/deploy/run-job.sh", "campaign", "migrate-contract"]` and "Mettre à jour"
-(dry run: per-file counts in the container log, nothing written; `both=0`, `bad_path=0`, `refused=0` are
-what matter), then the same with `"--write"` (each manifest rewritten under its sidecar lock;
+(dry run: per-file counts in the container log, nothing written; `both=0`, `bad_path=0`,
+`refused=0` are what matter), then the same with `"--write"` (each manifest rewritten under its sidecar lock;
 the autocommit pushes them; a pre-split single `manifest.jsonl` is split per bank first), then
 the dry run once more: `upgraded=0` everywhere. For `download_errors.jsonl`, the same with
 `migrate-document-url`. Both one-shots work on the raw JSON and are safe to repeat.
