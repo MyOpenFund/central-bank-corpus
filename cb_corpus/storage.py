@@ -230,6 +230,24 @@ def _manifest_files(cfg: Config, bank_code: Optional[str] = None) -> list[Path]:
     return [cfg.manifest_path] if cfg.manifest_path.exists() else []
 
 
+class NotARow(ValueError):
+    """A manifest line that is valid JSON but not an object (`[1, 2]`, `42`,
+    `"text"`, `null`): malformed like a broken line -- a torn tail when it is
+    the final line, a hard stop before the end."""
+
+
+#: What a malformed manifest line raises from `_parse_row`.
+MALFORMED = (json.JSONDecodeError, UnicodeDecodeError, NotARow)
+
+
+def _parse_row(line: bytes) -> dict:
+    """One manifest line -> its row; raises one of MALFORMED otherwise."""
+    row = json.loads(line)
+    if not isinstance(row, dict):
+        raise NotARow(f"not a JSON object: {type(row).__name__}")
+    return row
+
+
 def _repair_torn_tail(f: Path, offset: int, *, expected_ino: int,
                       expected_size: int) -> list[dict]:
     """A malformed FINAL line, as seen by the caller's UNLOCKED first read, is
@@ -307,8 +325,8 @@ def _repair_torn_tail(f: Path, offset: int, *, expected_ino: int,
                 local_offset += len(ln)
                 continue
             try:
-                rows.append(json.loads(stripped))
-            except (json.JSONDecodeError, UnicodeDecodeError):
+                rows.append(_parse_row(stripped))
+            except MALFORMED:
                 torn_path = f.with_name(f.name + ".torn")
                 torn_path.write_bytes(ln)
                 fh.truncate(local_offset)
@@ -332,10 +350,11 @@ def _iter_manifest_file(f: Path) -> Iterator[dict]:
     ValueError naming the file and 1-based line number (hard stop). Blank
     lines are skipped. An intact file is only ever read, never rewritten.
 
-    "Malformed" covers both a structurally broken JSON line
-    (`json.JSONDecodeError`) and a line torn mid multi-byte UTF-8 character
+    "Malformed" covers a structurally broken JSON line
+    (`json.JSONDecodeError`), a line torn mid multi-byte UTF-8 character
     (`UnicodeDecodeError` — `json.loads` decodes `bytes` internally before
-    parsing); both are torn-append symptoms and are handled identically.
+    parsing) and a JSON value that is not an object (`NotARow`: `[1, 2]`,
+    `42`); all are handled identically (`_parse_row`, `MALFORMED`).
     """
     # Capture the file's identity (inode, size) on the very fd the bytes are
     # read from: _repair_torn_tail uses it to detect that an os.replace by a
@@ -363,8 +382,8 @@ def _iter_manifest_file(f: Path) -> Iterator[dict]:
             offset += len(ln)
             continue
         try:
-            rows.append(json.loads(stripped))
-        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            rows.append(_parse_row(stripped))
+        except MALFORMED as exc:
             if i == last_content_idx:
                 rows.extend(_repair_torn_tail(
                     f, offset,
@@ -477,8 +496,8 @@ def _read_rows_for_rewrite(f: Path) -> list[tuple[str, Optional[str]]]:
         if not stripped:
             continue
         try:
-            row = json.loads(stripped)
-        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            row = _parse_row(stripped)
+        except MALFORMED as exc:
             if i == last_content_idx:
                 torn_path = f.with_name(f.name + ".torn")
                 torn_path.write_bytes(ln)
