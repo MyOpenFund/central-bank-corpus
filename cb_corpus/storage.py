@@ -496,10 +496,11 @@ def _read_rows_for_rewrite(f: Path) -> list[tuple[str, Optional[str]]]:
 def apply_row_updates(cfg: Config, updates: Mapping[str, dict]) -> int:
     """Lock-protected keyed rewrite of manifest rows (issue #18).
 
-    `updates`: doc_id -> full replacement row (row's `bank_code` selects the
-    bank file). Per bank, under the sidecar lock: re-read fresh, replace rows
-    whose doc_id is in `updates`, keep every other line VERBATIM — including
-    rows appended after the caller built its snapshot — then temp+os.replace.
+    `updates`: doc_id -> full replacement row (row's `source_code`, or its
+    pre-contract `bank_code`, selects the bank file; models.row_bank). Per
+    bank, under the sidecar lock: re-read fresh, replace rows whose doc_id
+    is in `updates`, keep every other line VERBATIM — including rows
+    appended after the caller built its snapshot — then temp+os.replace.
     Expensive work (renders, network) belongs BEFORE this call, outside the
     lock. Deletions are not supported here: remove_rows_locked() is the one
     locked delete. doc_ids not found on disk are skipped with a
