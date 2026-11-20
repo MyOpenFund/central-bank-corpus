@@ -10,3 +10,7 @@
 -r requirements.txt
 pytest
 pytest-socket>=0.8
+# The `documents` contract (vault repo, contract/): validates our manifest rows
+# and vocabulary.json in tests only -- the runtime never imports it. Pinned by
+# commit (vault master 12ffd11, vault-contract 1.0.0).
+vault-contract @ git+https://github.com/MyOpenFund/vault@12ffd11d15c90c8133dc8c8a38b8e47e3b6a4fce#subdirectory=contract

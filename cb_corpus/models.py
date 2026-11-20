@@ -20,6 +20,20 @@ LEGACY_URL_KEY = "pdf_url"
 #: new key -> old key, for every row dict that may still carry the old name.
 LEGACY_URL_KEYS = {URL_KEY: LEGACY_URL_KEY, "dead_document_url": "dead_pdf_url"}
 
+#: This corpus's code in the `documents` contract (vault-contract 1.0.0):
+#: every manifest row carries `corpus: "central-bank"`; the vault's identity
+#: of a document is (`corpus`, `doc_id`).
+CORPUS = "central-bank"
+
+#: Every `provenance` value the code writes (how a document was obtained):
+#: the bank's own site, the BIS speeches index, a RePEc/IDEAS listing, a
+#: Wayback snapshot (recovery), a legitimate mirror/co-publication
+#: (recover-downloads candidates). Declared in vocabulary.json; the vault
+#: refuses a row whose provenance is not declared. A new provenance in the
+#: code MUST be added here (tests/test_vocabulary.py scans the package).
+PROVENANCES: tuple[str, ...] = ("bank_site", "bis_index", "repec_discovery",
+                                "wayback", "mirror")
+
 
 def row_url(row: Mapping[str, Any], key: str = URL_KEY) -> Any:
     """The document URL of a row dict: `row[key]` (default `document_url`),

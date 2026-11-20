@@ -23,6 +23,7 @@ from .pipeline import (run, run_bis_sitemap, run_repec,
 from .retry_html import retry_failed
 from .runreport import RunReport
 from .taxonomy import FULL_SCOPE, by_code
+from .vocabulary import write_vocabulary
 
 # Work commands that build a RunReport, feed it through the pipeline, and
 # ALWAYS write it (even on crash) before returning the doctrine exit code.
@@ -334,6 +335,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd in REPORTING_CMDS:
         report = RunReport("central-bank-corpus", args.cmd)
         try:
+            # The corpus vocabulary (documents contract) at the data root,
+            # beside runs.jsonl: rewritten only when the code changed it.
+            write_vocabulary(_runs_path().parent)
             if args.cmd == "discover":
                 scope = _types(args.types)
                 results = run(bank_codes=banks, scope=scope, since=args.since,

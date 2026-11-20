@@ -131,3 +131,22 @@ def test_guard_snapshot_never_enters_raw_or_follows_symlinks(tmp_path, monkeypat
     monkeypatch.setattr(conftest.os, "scandir", spy)
     assert conftest.data_tree_snapshot(tmp_path).keys() == {"manifest/us.jsonl"}
     assert sorted(scanned) == [".", "manifest"]
+
+
+def test_reporting_commands_write_the_vocabulary_next_to_runs_log(tmp_path, monkeypatch):
+    """discover / bis-sitemap / repec (the nightly sync) write
+    vocabulary.json at the data root, beside runs.jsonl, even when the run
+    itself fails: the vault reads it before the manifests."""
+    from cb_corpus.vocabulary import build_vocabulary
+
+    monkeypatch.setenv("CB_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(cli, "run", lambda **k: (_ for _ in ()).throw(RuntimeError("x")))
+    assert cli.main(["discover", "--banks", "us"]) == 1
+    voc = json.loads((tmp_path / "vocabulary.json").read_text(encoding="utf-8"))
+    assert voc == build_vocabulary()
+
+
+def test_non_reporting_commands_do_not_write_the_vocabulary(tmp_path, monkeypatch):
+    monkeypatch.setenv("CB_DATA_DIR", str(tmp_path))
+    assert cli.main(["list-banks"]) == 0
+    assert not (tmp_path / "vocabulary.json").exists()
